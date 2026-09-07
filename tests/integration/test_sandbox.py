@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from core.errors import SandboxError
 from sandbox.base import TRUNCATION_MARKER, cap_output
 from sandbox.docker import DockerSandbox
 
@@ -35,8 +36,8 @@ requires_docker = pytest.mark.skipif(
 
 
 @pytest.fixture
-async def box(tmp_path: Path) -> AsyncIterator[DockerSandbox]:
-    ws = tmp_path / "ws"
+async def box(host_tmp: Path) -> AsyncIterator[DockerSandbox]:
+    ws = host_tmp / "ws"
     ws.mkdir()
     sb = DockerSandbox(
         uuid.uuid4(),
@@ -109,11 +110,33 @@ async def test_runs_as_configured_user_with_no_capabilities(box: DockerSandbox) 
     assert (await box.exec("id -u")).stdout.strip() == str(os.getuid())
     caps = (await box.exec("grep CapEff /proc/self/status")).stdout.split()[-1]
     assert int(caps, 16) == 0
+    # no_new_privs is requested; some Docker builds refuse it and the sandbox falls back.
+    nnp = (await box.exec("grep NoNewPrivs /proc/self/status")).stdout.split()[-1]
+    assert (nnp == "1") == box.effective_no_new_privileges
 
 
 @requires_docker
-async def test_stop_is_idempotent(tmp_path: Path) -> None:
-    ws = tmp_path / "ws2"
+async def test_start_fails_loudly_when_the_container_cannot_run(host_tmp: Path) -> None:
+    ws = host_tmp / "bad"
+    ws.mkdir()
+    sb = DockerSandbox(
+        uuid.uuid4(),
+        ws,
+        image=IMAGE,
+        network="agent-install",
+        user="4000:4000",
+        no_new_privileges=False,
+    )
+    sb._start_sync = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        SandboxError("boom")
+    )
+    with pytest.raises(SandboxError):
+        await sb.start()
+
+
+@requires_docker
+async def test_stop_is_idempotent(host_tmp: Path) -> None:
+    ws = host_tmp / "ws2"
     ws.mkdir()
     sb = DockerSandbox(
         uuid.uuid4(), ws, image=IMAGE, network="agent-install", user=f"{os.getuid()}:{os.getgid()}"

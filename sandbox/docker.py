@@ -28,6 +28,9 @@ from sandbox.base import cap_output
 log = get_logger(__name__)
 
 EXIT_TIMEOUT = 124  # coreutils `timeout`
+START_TIMEOUT_S = 15.0
+START_POLL_S = 0.15
+START_SETTLE_SAMPLES = 4  # ~0.6s of continuous "running" before we trust it
 
 
 class DockerSandbox:
@@ -40,6 +43,7 @@ class DockerSandbox:
         network: str,
         user: str,
         runtime: str | None = None,
+        no_new_privileges: bool = True,
         client: Any | None = None,
     ) -> None:
         self.id = f"run-{run_id}"
@@ -48,6 +52,8 @@ class DockerSandbox:
         self.network = network
         self.user = user
         self.runtime = runtime
+        self.no_new_privileges = no_new_privileges
+        self.effective_no_new_privileges = no_new_privileges
         self._client = client
         self.container: Any | None = None
 
@@ -60,14 +66,14 @@ class DockerSandbox:
         return self._client
 
     async def start(self) -> None:
-        await asyncio.to_thread(self._start_sync)
+        await asyncio.to_thread(self._start_sync, self.no_new_privileges)
         # HOME and the uv cache live on the /tmp tmpfs so any uid can write them.
         res = await self.exec("mkdir -p /tmp/home /tmp/uv", timeout_s=10)
         if not res.ok:
             raise SandboxError(f"could not prepare /tmp in {self.id}: {res.stderr}")
         log.info("sandbox_started", sandbox=self.id, image=self.image)
 
-    def _start_sync(self) -> None:
+    def _start_sync(self, no_new_privileges: bool) -> None:
         if not self.workspace.is_dir():
             raise SandboxError(f"workspace does not exist: {self.workspace}")
         try:
@@ -91,7 +97,6 @@ class DockerSandbox:
             nano_cpus=2_000_000_000,
             pids_limit=512,
             cap_drop=["ALL"],
-            security_opt=["no-new-privileges"],
             environment={
                 "HOME": "/tmp/home",  # noqa: S108 (container path)
                 "UV_CACHE_DIR": "/tmp/uv",  # noqa: S108 (container path)
@@ -101,12 +106,61 @@ class DockerSandbox:
             },
             labels={"autoswe.run_id": self.id.removeprefix("run-")},
         )
+        if no_new_privileges:
+            kwargs["security_opt"] = ["no-new-privileges:true"]
         if self.runtime:
             kwargs["runtime"] = self.runtime
         try:
             self.container = self.client.containers.run(self.image, **kwargs)
         except APIError as e:
-            raise SandboxError(f"docker run failed for {self.id}: {e.explanation}") from e
+            hint = ""
+            if "bind source path does not exist" in str(e.explanation):
+                hint = (
+                    " (the Docker daemon cannot see this host path; with snap-packaged Docker, "
+                    "WORKTREES_DIR must live under your home directory)"
+                )
+            raise SandboxError(f"docker run failed for {self.id}: {e.explanation}{hint}") from e
+        why = self._exit_reason()
+        if why is None:
+            self.effective_no_new_privileges = no_new_privileges
+            return
+        # Some Docker builds refuse to exec anything under no_new_privs because their
+        # AppArmor profile transition needs it off. Retry once without it; the other
+        # boundaries (non-root, cap_drop ALL, read-only rootfs, no network) still hold.
+        self.container.remove(force=True)
+        self.container = None
+        if not (no_new_privileges and "operation not permitted" in why.lower()):
+            raise SandboxError(f"sandbox {self.id} exited immediately: {why}")
+        log.warning(
+            "sandbox_no_new_privileges_unsupported",
+            sandbox=self.id,
+            detail=why,
+            note="retrying without no_new_privs; other sandbox boundaries are unchanged",
+        )
+        self._start_sync(no_new_privileges=False)
+
+    def _exit_reason(self) -> str | None:
+        """None once the container is *stably* running, else why it stopped.
+
+        Docker reports ``running`` the moment it hands off to the runtime, before the
+        entrypoint has actually exec'd, so a single check can pass for a container that
+        dies milliseconds later. Require several consecutive running samples.
+        """
+        assert self.container is not None
+        deadline = time.monotonic() + START_TIMEOUT_S
+        consecutive_running = 0
+        while time.monotonic() < deadline:
+            self.container.reload()
+            status = self.container.status
+            if status in ("exited", "dead"):
+                logs = self.container.logs(tail=5).decode(errors="replace").strip()
+                state = self.container.attrs.get("State", {})
+                return logs or state.get("Error") or f"exit code {state.get('ExitCode')}"
+            consecutive_running = consecutive_running + 1 if status == "running" else 0
+            if consecutive_running >= START_SETTLE_SAMPLES:
+                return None
+            time.sleep(START_POLL_S)
+        return f"container never reached a stable running state (last status: {status})"
 
     async def stop(self, *, remove: bool = True) -> None:
         if self.container is None:

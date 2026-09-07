@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     repos_dir: Path = Path("/var/agent/repos")
     sandbox_image: str = "agent-sandbox:python-3.12"
     sandbox_network: str = "agent-install"
+    # no_new_privs blocks setuid escalation. Some Docker builds (snap-packaged Docker on
+    # Ubuntu Core) cannot start a container with it because their AppArmor profile
+    # transition needs it off; the sandbox detects that and falls back with a warning.
+    sandbox_no_new_privileges: bool = True
     sandbox_runtime: str | None = None  # "runsc" for gVisor in Phase 5
     # The container runs as this uid:gid so files it writes match the worker's files.
     sandbox_uid: int = Field(default_factory=os.getuid)
@@ -81,6 +85,7 @@ class Settings(BaseSettings):
             "repos_dir": str(self.repos_dir),
             "sandbox_image": self.sandbox_image,
             "sandbox_user": f"{self.sandbox_uid}:{self.sandbox_gid}",
+            "sandbox_no_new_privileges": str(self.sandbox_no_new_privileges),
             "environment": self.environment,
             "log_level": self.log_level,
         }
