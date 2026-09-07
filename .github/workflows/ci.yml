@@ -1,0 +1,45 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  lint-type:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with: { enable-cache: true }
+      - run: uv python install 3.12
+      - run: uv sync --all-extras
+      - run: make lint
+      - run: make type
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with: { enable-cache: true }
+      - run: uv python install 3.12
+      - run: uv sync --all-extras
+      - run: uv run pytest -m unit --cov --cov-report=xml
+      - uses: actions/upload-artifact@v4
+        with: { name: coverage, path: coverage.xml }
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with: { enable-cache: true }
+      - run: uv python install 3.12
+      - run: uv sync --all-extras
+      - run: make test-int
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
