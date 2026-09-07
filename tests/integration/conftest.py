@@ -3,7 +3,11 @@ per-test engine with NullPool so connections never cross event loops."""
 
 from __future__ import annotations
 
+import os
+import shutil
+import uuid
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
 import pytest
 from sqlalchemy import text
@@ -70,3 +74,16 @@ async def bus(redis_url: str) -> AsyncIterator[RedisBus]:
         yield b
     finally:
         await b.close()
+
+
+@pytest.fixture
+def host_tmp() -> Iterator[Path]:
+    """Scratch dir under $HOME (or AUTOSWE_TEST_TMP): snap-packaged Docker cannot bind /tmp."""
+    base = Path(os.environ.get("AUTOSWE_TEST_TMP", Path.home() / ".autoswe" / "tmp"))
+    base.mkdir(parents=True, exist_ok=True)
+    d = base / uuid.uuid4().hex
+    d.mkdir()
+    try:
+        yield d
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
