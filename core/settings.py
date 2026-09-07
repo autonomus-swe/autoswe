@@ -16,7 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, ValidationError
+from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 EXIT_CONFIG = 2
@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     # ---- misc ----
     environment: Literal["dev", "test", "prod"] = "dev"
     log_level: str = "INFO"
+
+    @field_validator("anthropic_api_key", "github_token", "llm_api_key", mode="before")
+    @classmethod
+    def _blank_secret_is_absent(cls, v: object) -> object:
+        """``LLM_API_KEY=`` in a .env file means "not set", not "the empty key"."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     @property
     def api_keys(self) -> frozenset[str]:

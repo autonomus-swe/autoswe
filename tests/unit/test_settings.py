@@ -129,3 +129,17 @@ def test_secrets_never_appear_in_repr_or_public_view(monkeypatch: pytest.MonkeyP
 def test_get_settings_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
     set_env(monkeypatch)
     assert get_settings() is get_settings()
+
+
+def test_blank_optional_secrets_are_treated_as_absent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A .env written by `cp .env.example .env` has empty values; they must not read as set.
+    set_env(monkeypatch, LLM_API_KEY="", GITHUB_TOKEN="   ")
+    s = load_settings(env_file=None)
+    assert s.llm_api_key is None and s.github_token is None
+    assert s.public_dict()["llm_api_key"] == "unset"
+    with pytest.raises(SystemExit):
+        s.require_worker()
+    err = capsys.readouterr().err
+    assert "LLM_API_KEY" in err and "GITHUB_TOKEN" in err
