@@ -71,11 +71,17 @@ def test_git_auth_env_never_contains_plain_token() -> None:
     assert env["GIT_CONFIG_VALUE_0"].startswith("AUTHORIZATION: basic ")
 
 
-def test_parse_repo_url() -> None:
+def test_parse_repo_url_reads_owner_and_name_from_any_location() -> None:
+    # Host policy lives at the API boundary (RunCreate), not here.
     assert parse_repo_url("https://github.com/acme/demo") == ("acme", "demo")
     assert parse_repo_url("https://github.com/acme/demo.git/") == ("acme", "demo")
-    with pytest.raises(RepoError):
-        parse_repo_url("https://gitlab.com/acme/demo")
+    assert parse_repo_url("git@github.com:acme/demo.git") == ("acme", "demo")
+    assert parse_repo_url("/tmp/scratch/origin") == ("scratch", "origin")
+    for bad in ("", "demo", "/"):
+        with pytest.raises(RepoError):
+            parse_repo_url(bad)
+    # A host-only URL cannot be told from owner/name without knowing hosts, so rejecting
+    # it is the API's job: tests/integration/test_api.py covers that boundary.
 
 
 async def test_push_branch_refuses_non_agent_branch(tmp_path: Path) -> None:

@@ -9,22 +9,34 @@ from typing import Any, Protocol
 from core.errors import RepoError
 from repo.gitcmd import git, git_auth_env
 
-_URL = re.compile(r"^https://github\.com/(?P<owner>[\w.-]+)/(?P<name>[\w.-]+?)(?:\.git)?/?$")
-
 
 def parse_repo_url(repo_url: str) -> tuple[str, str]:
-    m = _URL.match(repo_url.strip())
-    if not m:
-        raise RepoError(f"not a github.com repository URL: {repo_url}")
-    return m["owner"], m["name"]
+    """Split a repository location into ``(owner, name)``.
+
+    Which hosts are allowed is a control-plane policy (``api.schemas.RunCreate``), not a
+    git-layer one, so this accepts any location whose last two segments are the owner and
+    the repository: an https URL, an ssh remote, or a local path used by tests.
+    """
+    cleaned = re.sub(r"^[a-z][a-z0-9+.-]*://", "", repo_url.strip().rstrip("/"), flags=re.I)
+    cleaned = re.sub(r"^[^@/]+@", "", cleaned)  # ssh user, e.g. git@github.com:owner/name
+    if cleaned.endswith(".git"):
+        cleaned = cleaned[: -len(".git")]
+    segments = [part for part in re.split(r"[/:]", cleaned) if part]
+    if len(segments) < 2:
+        raise RepoError(f"cannot read owner/name from repository location: {repo_url}")
+    return segments[-2], segments[-1]
 
 
-async def push_branch(worktree: Path, branch: str, token: str) -> None:
-    """``git push origin <branch>`` with per-process credentials. Never forces, never main."""
+async def push_branch(worktree: Path, branch: str, token: str | None = None) -> None:
+    """``git push origin <branch>``. Never forces, never a non-agent branch.
+
+    ``token`` is only needed for remotes that authenticate (github.com over https); a
+    local path or an already-authenticated remote works without one.
+    """
     if not branch.startswith("agent/"):
         raise RepoError(f"refusing to push non-agent branch {branch!r}")
     refspec = f"refs/heads/{branch}:refs/heads/{branch}"
-    await git("push", "origin", refspec, cwd=worktree, env=git_auth_env(token))
+    await git("push", "origin", refspec, cwd=worktree, env=git_auth_env(token) if token else None)
 
 
 class GitHubClient(Protocol):

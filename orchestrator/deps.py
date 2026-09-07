@@ -74,9 +74,11 @@ class Deps:
         await self.bus.close()
         await self.engine.dispose()
 
-    def git_token(self) -> str:
+    def git_token(self) -> str | None:
+        """The GitHub token when one is configured. Local or already-authenticated
+        remotes push fine without it; ``open_pr`` is what truly needs it."""
         if self.settings.github_token is None:
-            raise RuntimeError("GITHUB_TOKEN is required to push and open pull requests")
+            return None
         return self.settings.github_token.get_secret_value()
 
     def worktrees_dir(self) -> Path:

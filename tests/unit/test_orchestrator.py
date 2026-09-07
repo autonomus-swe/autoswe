@@ -10,7 +10,13 @@ from typing import Any
 import pytest
 
 from contracts import TaskResult, TestReport
-from orchestrator.nodes import RunResources, install_command, synthetic_task, teardown
+from orchestrator.nodes import (
+    HARNESS_PACKAGES,
+    RunResources,
+    install_command,
+    synthetic_task,
+    teardown,
+)
 from orchestrator.state import Phase, RunState, status_for
 from orchestrator.transition import transition
 from tests.fakes import FakeSandbox
@@ -77,12 +83,19 @@ def test_status_mapping() -> None:
     assert Phase.DONE in {Phase.DONE, Phase.FAILED}
 
 
-def test_install_command_matches_the_manifest(tmp_path: Path) -> None:
-    assert install_command(tmp_path) is None
+def test_install_command_matches_the_manifest_and_always_adds_the_harness(
+    tmp_path: Path,
+) -> None:
+    # run_tests needs pytest-json-report inside the project venv, whatever the repo uses
+    assert install_command(tmp_path) == "uv venv && uv pip install " + HARNESS_PACKAGES
     (tmp_path / "requirements.txt").write_text("pytest\n")
-    assert "uv pip install -r requirements.txt" in (install_command(tmp_path) or "")
+    with_reqs = install_command(tmp_path)
+    assert with_reqs.startswith("uv venv && uv pip install -r requirements.txt")
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
-    assert (install_command(tmp_path) or "").startswith("uv sync")
+    with_project = install_command(tmp_path)
+    assert with_project.startswith("(uv sync --all-extras || uv sync)")
+    for cmd in (with_reqs, with_project):
+        assert cmd.endswith("uv pip install " + HARNESS_PACKAGES)
 
 
 def test_synthetic_task_carries_the_goal() -> None:
