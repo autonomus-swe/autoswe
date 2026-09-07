@@ -33,13 +33,13 @@ Suggested duration: 2–3 days.
 
 ## 1. Exit criteria
 
-- [ ] `uv sync` on a clean clone succeeds; `make check` (ruff + mypy + unit tests) is green.
-- [ ] `make up && make migrate` creates all eight core tables in a fresh Postgres; `alembic downgrade base` removes them.
-- [ ] Starting any entrypoint with a missing required variable exits with code 2 and prints the variable name (test exists).
-- [ ] Every LLM-facing contract produces a JSON schema with `additionalProperties: false` (test exists).
-- [ ] `make test-int` runs Postgres and Redis integration tests via testcontainers and passes.
-- [ ] CI runs lint, type-check, unit tests, and integration tests on every push to the fork; gitleaks step is green.
-- [ ] `CHANGELOG.md` created with a `0.0.1` entry. Tag `v0.0.1`.
+- [x] `uv sync` on a clean clone succeeds; `make check` (ruff + mypy + unit tests) is green.
+- [x] `make up && make migrate` creates all eight core tables in a fresh Postgres; `alembic downgrade base` removes them.
+- [x] Starting any entrypoint with a missing required variable exits with code 2 and prints the variable name (test exists).
+- [x] Every LLM-facing contract produces a JSON schema with `additionalProperties: false` (test exists).
+- [x] `make test-int` runs Postgres and Redis integration tests via testcontainers and passes.
+- [x] CI runs lint, type-check, unit tests, and integration tests on every push to the fork; gitleaks step is green.
+- [x] `CHANGELOG.md` created with a `0.0.1` entry. Tag `v0.0.1`.
 
 ---
 
@@ -665,7 +665,7 @@ env -u DATABASE_URL uv run python -c "from core.settings import get_settings; ge
 
 ## 7. Checklist before Phase 1
 
-- [ ] Exit criteria in §1 all ticked.
-- [ ] You can explain the two-model rule and why `TaskGraphSpec` and `TaskGraph` are different classes.
-- [ ] `run_cost()` is the only place that computes spend from `llm_calls`. Phase 3 budgets will depend on it.
-- [ ] Tag `v0.0.1`.
+- [x] Exit criteria in §1 all ticked.
+- [x] You can explain the two-model rule and why `TaskGraphSpec` and `TaskGraph` are different classes.
+- [x] `run_cost()` is the only place that computes spend from `llm_calls`. Phase 3 budgets will depend on it.
+- [x] Tag `v0.0.1`.
