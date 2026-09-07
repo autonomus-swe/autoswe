@@ -1,0 +1,27 @@
+# ruff and mypy run through the project environment (uv) so the hook, `make check`,
+# and CI all use the same pinned versions and see every dependency.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff (lint, autofix)
+        entry: uv run ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      - id: ruff-format
+        name: ruff (format)
+        entry: uv run ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      - id: mypy
+        name: mypy (strict, project env)
+        entry: uv run mypy .
+        language: system
+        pass_filenames: false
+        types_or: [python, pyi]
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
