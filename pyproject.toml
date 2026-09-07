@@ -58,7 +58,7 @@ packages = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["storage/migrations/versions", "*.md"]  # docs hold illustrative pseudo-code
+extend-exclude = ["storage/migrations/versions", "tests/fixtures", "*.md"]  # docs hold illustrative pseudo-code
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "S", "ASYNC", "RUF"]
@@ -78,7 +78,7 @@ strict = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 no_implicit_optional = true
-exclude = ["storage/migrations/"]
+exclude = ["storage/migrations/", "tests/fixtures/"]
 
 [[tool.mypy.overrides]]
 module = ["testcontainers.*", "asyncpg.*", "docker.*", "arq.*"]
@@ -93,7 +93,8 @@ markers = [
   "integration: needs Postgres/Redis/Docker via testcontainers",
   "e2e: needs real API keys; never in CI by default",
 ]
-addopts = "-q -m 'not e2e'"
+addopts = "-q -m 'not e2e' --ignore=tests/fixtures"
+norecursedirs = ["tests/fixtures", ".venv", "storage/migrations"]
 filterwarnings = [
   "error::pytest.PytestCollectionWarning",
   # testcontainers 4.13 deprecates its own internal @wait_container_is_ready decorator

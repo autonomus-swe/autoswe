@@ -64,13 +64,20 @@ async def _renew_forever(deps: Deps, key: str, owner: str) -> None:
         await deps.bus.renew_lock(key, owner, LOCK_TTL_S)
 
 
-def install_command(worktree: Path) -> str | None:
-    """The dependency install for this repo, or None when there is nothing to install."""
+# run_tests needs these in the *project* venv: `uv run --no-sync pytest` ignores anything
+# installed globally in the image, so they are installed while the network is still up.
+HARNESS_PACKAGES = "pytest pytest-json-report pytest-timeout"
+
+
+def install_command(worktree: Path) -> str:
+    """The dependency install for this repo. Always ends by adding the test harness."""
     if (worktree / "pyproject.toml").is_file():
-        return "uv sync --all-extras || uv sync"
-    if (worktree / "requirements.txt").is_file():
-        return "uv venv && uv pip install -r requirements.txt"
-    return None
+        deps = "(uv sync --all-extras || uv sync)"
+    elif (worktree / "requirements.txt").is_file():
+        deps = "uv venv && uv pip install -r requirements.txt"
+    else:
+        deps = "uv venv"
+    return f"{deps} && uv pip install {HARNESS_PACKAGES}"
 
 
 def synthetic_task(goal: str) -> TaskSpec:
@@ -104,12 +111,17 @@ async def setup_node(state: RunState, deps: Deps, res: RunResources) -> RunState
     res.sandbox = sandbox
     await sandbox.start()
 
+    await sandbox.connect_install_network()
     install = install_command(res.worktree.path)
-    if install:
-        await sandbox.connect_install_network()
-        result = await sandbox.exec(install, timeout_s=INSTALL_TIMEOUT_S)
-        if not result.ok:
-            log.warning("install_failed", exit_code=result.exit_code, stderr=result.stderr[-800:])
+    result = await sandbox.exec(install, timeout_s=INSTALL_TIMEOUT_S)
+    if not result.ok:
+        # Not fatal on its own: the repo may vendor its dependencies. TEST will say so
+        # clearly if the suite cannot run, and the output is on the step for diagnosis.
+        log.warning(
+            "install_failed",
+            exit_code=result.exit_code,
+            output=(result.stdout + result.stderr)[-1500:],
+        )
 
     await sandbox.disconnect_network()
     if await sandbox.has_network():  # the Coder must never start with network access
@@ -230,7 +242,7 @@ async def pr_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
         else "not run"
     )
     if deps.github is None:
-        raise RuntimeError("GITHUB_TOKEN is required to open a pull request")
+        raise RuntimeError("no GitHub client: set GITHUB_TOKEN so the run can open a pull request")
     state.pr_url = await open_pr(
         state.repo_url,
         head=state.work_branch,

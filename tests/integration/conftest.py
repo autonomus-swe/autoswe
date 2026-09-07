@@ -1,38 +1,18 @@
-"""Real Postgres (pgvector) and Redis via testcontainers. Session-scoped containers,
-per-test engine with NullPool so connections never cross event loops."""
+"""Per-test database engine and Redis bus on the shared containers from tests/conftest.py."""
 
 from __future__ import annotations
 
-import os
-import shutil
-import uuid
-from collections.abc import AsyncIterator, Iterator
-from pathlib import Path
+from collections.abc import AsyncIterator
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.pool import NullPool
-from testcontainers.postgres import PostgresContainer
-from testcontainers.redis import RedisContainer
 
 from core.settings import get_settings
 from storage.db import make_engine, session
-from storage.migrate import upgrade
 from storage.models import CORE_TABLES
 from storage.redis import RedisBus
-
-
-@pytest.fixture(scope="session")
-def pg_url() -> Iterator[str]:
-    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
-        yield pg.get_connection_url()
-
-
-@pytest.fixture(scope="session")
-def redis_url() -> Iterator[str]:
-    with RedisContainer("redis:7-alpine") as r:
-        yield f"redis://{r.get_container_host_ip()}:{r.get_exposed_port(6379)}/0"
 
 
 @pytest.fixture(autouse=True)
@@ -41,12 +21,6 @@ def _settings_env(monkeypatch: pytest.MonkeyPatch, pg_url: str, redis_url: str) 
     monkeypatch.setenv("REDIS_URL", redis_url)
     monkeypatch.setenv("API_KEYS", "test-key-123456")
     get_settings.cache_clear()
-
-
-@pytest.fixture(scope="session")
-def migrated_pg_url(pg_url: str) -> str:
-    upgrade(pg_url)
-    return pg_url
 
 
 @pytest.fixture
@@ -74,16 +48,3 @@ async def bus(redis_url: str) -> AsyncIterator[RedisBus]:
         yield b
     finally:
         await b.close()
-
-
-@pytest.fixture
-def host_tmp() -> Iterator[Path]:
-    """Scratch dir under $HOME (or AUTOSWE_TEST_TMP): snap-packaged Docker cannot bind /tmp."""
-    base = Path(os.environ.get("AUTOSWE_TEST_TMP", Path.home() / ".autoswe" / "tmp"))
-    base.mkdir(parents=True, exist_ok=True)
-    d = base / uuid.uuid4().hex
-    d.mkdir()
-    try:
-        yield d
-    finally:
-        shutil.rmtree(d, ignore_errors=True)

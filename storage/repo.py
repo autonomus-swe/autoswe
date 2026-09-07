@@ -244,6 +244,28 @@ async def insert_llm_call(
     return row.id
 
 
+async def list_tool_calls(s: AsyncSession, run_id: uuid.UUID) -> list[ToolCallRow]:
+    """Every tool call of a run, in the order it happened."""
+    res = await s.execute(
+        select(ToolCallRow)
+        .join(StepRow, StepRow.id == ToolCallRow.step_id)
+        .where(StepRow.run_id == run_id)
+        .order_by(ToolCallRow.seq)
+    )
+    return list(res.scalars())
+
+
+async def list_llm_calls(s: AsyncSession, run_id: uuid.UUID) -> list[LLMCallRow]:
+    """Every model turn of a run, in the order it happened."""
+    res = await s.execute(
+        select(LLMCallRow)
+        .join(StepRow, StepRow.id == LLMCallRow.step_id)
+        .where(StepRow.run_id == run_id)
+        .order_by(LLMCallRow.seq)
+    )
+    return list(res.scalars())
+
+
 async def run_cost(s: AsyncSession, run_id: uuid.UUID) -> Usage:
     """Budget source of truth: SUM over llm_calls of this run's steps."""
     stmt = (

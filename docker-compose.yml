@@ -25,6 +25,38 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+  # The API and worker are optional: `make up` starts only postgres and redis, and the
+  # demo runs them on the host. Start them with `docker compose --profile app up -d`.
+  api:
+    profiles: ["app"]
+    build: {context: ., dockerfile: deploy/Dockerfile}
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:dev@postgres:5432/autoswe
+      REDIS_URL: redis://redis:6379/0
+    ports: ["${API_PORT:-8000}:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+  worker:
+    profiles: ["app"]
+    build: {context: ., dockerfile: deploy/Dockerfile}
+    command: ["arq", "orchestrator.worker.WorkerSettings"]
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:dev@postgres:5432/autoswe
+      REDIS_URL: redis://redis:6379/0
+    # The daemon resolves bind-mount sources on the host, so the worktree path must be
+    # identical inside and outside this container. A named volume cannot work here.
+    user: "${SANDBOX_UID:-1000}:${SANDBOX_GID:-1000}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${WORKTREES_DIR:-/var/agent/worktrees}:${WORKTREES_DIR:-/var/agent/worktrees}
+      - ${REPOS_DIR:-/var/agent/repos}:${REPOS_DIR:-/var/agent/repos}
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
 volumes:
   pgdata: {}
-  worktrees: {}

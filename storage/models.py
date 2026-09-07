@@ -109,9 +109,15 @@ class StepRow(Base):
 
 class ToolCallRow(Base):
     __tablename__ = "tool_calls"
-    __table_args__ = (Index("ix_tool_calls_step_id", "step_id"),)
+    __table_args__ = (
+        Index("ix_tool_calls_step_id", "step_id"),
+        Index("ix_tool_calls_step_id_seq", "step_id", "seq"),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Rows written in one transaction share created_at, so replaying a run's actions in
+    # order needs a monotonic column (same reason artifacts has one).
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(), nullable=False, unique=True)
     step_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("steps.id", ondelete="CASCADE"), nullable=False
     )
@@ -126,9 +132,13 @@ class ToolCallRow(Base):
 
 class LLMCallRow(Base):
     __tablename__ = "llm_calls"
-    __table_args__ = (Index("ix_llm_calls_step_id", "step_id"),)
+    __table_args__ = (
+        Index("ix_llm_calls_step_id", "step_id"),
+        Index("ix_llm_calls_step_id_seq", "step_id", "seq"),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(), nullable=False, unique=True)
     step_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("steps.id", ondelete="CASCADE"), nullable=False
     )
