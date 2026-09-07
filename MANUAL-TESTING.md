@@ -1,7 +1,7 @@
 # Manual testing tour — Phase 0
 
-Phase 0 is the foundation layer: there is no API, worker, LLM call, or sandbox yet
-(those arrive in Phase 1+). What exists today, and what this tour exercises:
+Phase 1 adds the single-agent loop on top of Phase 0's foundations. What exists today,
+and what this tour exercises:
 
 | # | Capability | Where |
 |---|-----------|-------|
@@ -12,7 +12,11 @@ Phase 0 is the foundation layer: there is no API, worker, LLM call, or sandbox y
 | 5 | Structured logging with secret redaction | `observability/logging.py` |
 | 6 | OpenTelemetry spans | `observability/tracing.py` |
 | 7 | Migration up/down | `alembic` |
-| 8 | Automated suite (63 tests) | `tests/` |
+| 8 | Docker sandbox: non-root, read-only, no network | `sandbox/` |
+| 9 | Tool layer: bash, editor, run_tests, git | `tools/` |
+| 10 | LLM gateway over any OpenAI-compatible endpoint | `gateway/` |
+| 11 | Orchestrator, control plane and CLI | `orchestrator/`, `api/`, `cli/` |
+| 12 | Automated suite | `tests/` |
 
 Every command below was run and its output checked on 2026-09-07.
 
@@ -307,10 +311,100 @@ make test-int       # 15 integration tests on throwaway Postgres + Redis contain
 pytest -m unit -v   # read the test names as a list of guaranteed behaviours
 ```
 
-## 9. Not available yet
+## 9. Phase 1: the sandbox by hand
 
-No `autoswe run`, no HTTP API, no LLM calls, no git worktree or sandbox, no PR creation.
-Phase 1 (`docs/PHASE-1-single-agent-loop.md`) adds the first end-to-end coder loop.
+Build the image once, then poke at the container the agent gets:
+
+```bash
+make sandbox-image
+python - <<'EOF'
+import asyncio, os, uuid
+from pathlib import Path
+from sandbox.docker import DockerSandbox
+
+ws = Path.home() / ".autoswe" / "tmp" / "manual"; ws.mkdir(parents=True, exist_ok=True)
+
+async def main():
+    box = DockerSandbox(uuid.uuid4(), ws, image="agent-sandbox:python-3.12",
+                        network="agent-install", user=f"{os.getuid()}:{os.getgid()}")
+    await box.start()
+    print("whoami           ", (await box.exec("id -u")).stdout.strip())
+    print("capabilities     ", (await box.exec("grep CapEff /proc/self/status")).stdout.strip())
+    print("write /etc       ", (await box.exec("touch /etc/x")).exit_code, "(non-zero = read-only rootfs)")
+    print("write /workspace ", (await box.exec("touch /workspace/ok")).exit_code)
+    print("no host secrets  ", not any(k in (await box.exec("env")).stdout for k in ("ANTHROPIC","GITHUB","DATABASE_URL","LLM_API_KEY")))
+    print("network before   ", await box.has_network())
+    await box.disconnect_network()
+    print("network after    ", await box.has_network(), "| dns:", (await box.exec("getent hosts pypi.org")).exit_code)
+    print("timeout kills    ", (await box.exec("sleep 30", timeout_s=2)).timed_out)
+    await box.stop()
+
+asyncio.run(main())
+EOF
+```
+
+## 10. Phase 1: the whole loop, no API key, no money
+
+This is the strongest single check. It clones a real repository, starts the sandbox, lets
+a scripted coder edit files through the tools, runs the tests, commits, pushes the branch
+and opens a stub pull request, then asserts the database recorded every action in order.
+
+```bash
+uv run pytest tests/integration/test_full_run.py -v
+```
+
+## 11. Phase 1: a real model through OpenRouter
+
+Get a key at <https://openrouter.ai/keys>, put it in `.env` as `LLM_API_KEY`, then:
+
+```bash
+uv run pytest -m e2e tests/e2e/test_m1_local.py -v -s
+```
+
+It runs the same loop against a real model and prints the tool-call count and the cost.
+`LLM_MODEL` selects the model; the default is a free one. This test skips itself when
+`LLM_API_KEY` is empty.
+
+## 12. Phase 1: the control plane
+
+Two terminals:
+
+```bash
+make api        # terminal 1: uvicorn on 127.0.0.1:8000
+make worker     # terminal 2: the arq worker
+```
+
+Then:
+
+```bash
+curl -s localhost:8000/healthz | python3 -m json.tool
+curl -s -X POST localhost:8000/runs -H 'X-API-Key: dev-key-change-me' \
+  -H 'content-type: application/json' \
+  -d '{"repo_url":"https://github.com/you/autoswe-fixture-python","goal":"Implement subtract(a, b) and slugify(text) in fixture/ops.py so that tests/test_ops.py passes. Do not change the tests."}'
+
+export AUTOSWE_API_KEY=dev-key-change-me
+uv run autoswe run --repo https://github.com/you/autoswe-fixture-python --goal "..."
+uv run autoswe status <run-id>
+```
+
+Authentication and rate limiting, without a worker:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8000/runs \
+  -H 'content-type: application/json' -d '{}'                      # 401
+for i in $(seq 6); do curl -s -o /dev/null -w '%{http_code} ' \
+  -H 'X-API-Key: dev-key-change-me' localhost:8000/runs/00000000-0000-0000-0000-000000000000; done
+echo                                                                # 404 x5 then 429
+```
+
+Read the audit trail afterwards:
+
+```bash
+docker compose exec postgres psql -U postgres -d autoswe \
+  -c "select phase, status, cost_usd, pr_url from runs order by created_at desc limit 5" \
+  -c "select tc.seq, tc.name, tc.exit_code, tc.duration_ms from tool_calls tc join steps s on s.id = tc.step_id order by tc.seq" \
+  -c "select model, input_tokens, output_tokens, cost_usd, stop_reason from llm_calls order by seq"
+```
 
 ## Teardown
 

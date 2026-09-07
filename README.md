@@ -1,16 +1,86 @@
-# autoswe — Phase 0 (foundations)
+# autoswe — Phase 1 (single-agent loop)
 
-This directory is the project root produced by [PHASE-0-foundations.md](docs/PHASE-0-foundations.md).
-Later phases build in this same tree.
+An autonomous software engineering agent. Give it a repository and a goal; it clones the
+repository, edits it inside a locked-down container, runs the tests, commits, pushes
+`agent/<run-id>` and opens a pull request. Every command it runs and every model turn is a
+row in Postgres.
+
+The design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the build plan is in
+[docs/PHASES.md](docs/PHASES.md).
+
+## Quick start
 
 ```bash
-uv sync --all-extras          # deps (installs the dev group too)
-cp .env.example .env
-make up && make migrate       # postgres + redis, then alembic upgrade head
-                              # (set POSTGRES_PORT / REDIS_PORT in .env if 5432/6379 are taken, and match DATABASE_URL/REDIS_URL)
-make check                    # ruff + mypy + unit tests
-make test-int                 # integration tests via testcontainers (needs Docker)
-uv run autoswe config         # prints the non-secret settings; exits 2 naming any missing variable
+uv sync --all-extras                     # dependencies, including the dev group
+cp .env.example .env                     # then set LLM_API_KEY and GITHUB_TOKEN
+make up && make migrate                  # postgres + redis + the agent-install network, then migrations
+make sandbox-image                       # build the container the agent works in
+make check                               # ruff + mypy + unit tests
+make test-int                            # integration tests (needs Docker)
+uv run autoswe config                    # non-secret settings; exits 2 naming any missing variable
 ```
 
-Manual walkthrough of every Phase 0 capability: [MANUAL-TESTING.md](MANUAL-TESTING.md).
+Set `POSTGRES_PORT` / `REDIS_PORT` in `.env` if 5432 or 6379 are already taken locally,
+and match `DATABASE_URL` / `REDIS_URL` to them.
+
+## Running an agent
+
+```bash
+make api                                 # terminal 1: control plane on 127.0.0.1:8000
+make worker                              # terminal 2: the run worker
+
+export AUTOSWE_API_KEY=dev-key-change-me
+uv run autoswe run --repo https://github.com/you/some-repo \
+  --goal "Implement subtract(a, b) in ops.py so the tests pass. Do not change the tests."
+uv run autoswe status <run-id>           # phase: setup -> code -> test -> pr -> done
+```
+
+## Which model
+
+Any OpenAI-compatible endpoint works: OpenRouter (the default), vLLM, Ollama or Groq.
+Get an OpenRouter key at <https://openrouter.ai/keys> and set:
+
+```bash
+LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_API_KEY=sk-or-...
+LLM_MODEL=minimax/minimax-m3:free        # free models exist; pick one that supports tools
+```
+
+Agentic coding is demanding, so a stronger model finishes more runs. `gateway/routing.py`
+holds the per-role model tiers used when a provider distinguishes them.
+
+## What the sandbox guarantees
+
+One container per run, torn down afterwards. It runs as a non-root user with every Linux
+capability dropped, a read-only root filesystem, a memory, CPU and process cap, and only
+the run's worktree bind-mounted. It reaches the network only while dependencies install,
+and is disconnected before the agent sees the repository. It never receives your API keys
+or database credentials, and git is deliberately unavailable inside it: repository
+operations are host-side tools the agent has to call.
+
+## Layout
+
+| Directory | What lives there |
+|---|---|
+| `core/` | settings and the shared error hierarchy |
+| `contracts/` | every structured schema, split into model-facing and runtime models |
+| `storage/` | SQLAlchemy models, Alembic migrations, repository functions, the Redis bus |
+| `sandbox/` | the sandbox protocol and its Docker implementation |
+| `repo/` | clone cache, worktrees, push and pull requests |
+| `tools/` | the typed tools an agent may call, and the policy behind them |
+| `gateway/` | provider protocol, the OpenAI-compatible provider, routing and pricing |
+| `agents/` | agent base, prompts, and the Coder |
+| `orchestrator/` | phases, transitions, nodes, the runner and the worker |
+| `api/`, `cli/` | control plane and command line |
+| `observability/` | structured logging with secret redaction, tracing |
+
+## Testing
+
+```bash
+make test        # unit: fast, no containers
+make test-int    # integration: real Postgres, Redis and Docker; no API key, no spend
+make test-e2e    # end to end with a real model; needs LLM_API_KEY, skips without it
+```
+
+[MANUAL-TESTING.md](MANUAL-TESTING.md) is a hands-on tour of every capability with the
+expected output beside each command.
