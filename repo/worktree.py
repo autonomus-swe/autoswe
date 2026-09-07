@@ -1,0 +1,54 @@
+"""Per-run worktrees on the bare clone. The worktree's ``.git`` is a file pointing into the
+bare repo, which is invisible inside the sandbox: git is deliberately host-side only."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+from dataclasses import dataclass
+from pathlib import Path
+from uuid import UUID
+
+from core.errors import RepoError
+from repo.gitcmd import git
+
+EXCLUDES = (".venv/", ".autoswe/", "node_modules/", "__pycache__/")
+
+
+@dataclass(frozen=True)
+class Worktree:
+    path: Path
+    branch: str
+    bare: Path
+    run_id: str
+
+
+def branch_for(run_id: UUID | str) -> str:
+    return f"agent/{run_id}"
+
+
+def _write_excludes(common_dir: Path) -> None:
+    # Linked worktrees read info/exclude from the *common* dir, not their own gitdir.
+    info = common_dir / "info"
+    info.mkdir(exist_ok=True)
+    (info / "exclude").write_text("".join(f"{e}\n" for e in EXCLUDES))
+
+
+async def create(bare: Path, worktrees_dir: Path, run_id: UUID | str, base_branch: str) -> Worktree:
+    await asyncio.to_thread(worktrees_dir.mkdir, parents=True, exist_ok=True)
+    path = worktrees_dir / str(run_id)
+    branch = branch_for(run_id)
+    await git("worktree", "add", "-b", branch, str(path), base_branch, cwd=bare)
+    common = Path((await git("rev-parse", "--git-common-dir", cwd=path)).strip())
+    if not common.is_absolute():
+        common = (path / common).resolve()
+    await asyncio.to_thread(_write_excludes, common)
+    return Worktree(path=path, branch=branch, bare=bare, run_id=str(run_id))
+
+
+async def remove(wt: Worktree) -> None:
+    if await asyncio.to_thread(wt.path.exists):
+        await git("worktree", "remove", "--force", str(wt.path), cwd=wt.bare)
+    await git("worktree", "prune", cwd=wt.bare)
+    with contextlib.suppress(RepoError):  # branch already gone is fine
+        await git("branch", "-D", wt.branch, cwd=wt.bare)

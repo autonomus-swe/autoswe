@@ -10,6 +10,7 @@ Rules:
 
 from __future__ import annotations
 
+import os
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -30,11 +31,24 @@ class Settings(BaseSettings):
     api_keys_raw: str = Field(validation_alias="API_KEYS", min_length=8)
 
     # ---- Phase 1+: worker only ----
+    # LLM provider. ``openai_compat`` talks to any OpenAI-compatible endpoint (OpenRouter by
+    # default; also vLLM, Ollama, Groq). ``anthropic`` uses the Anthropic SDK (Phase 6).
+    llm_provider: Literal["openai_compat", "anthropic"] = "openai_compat"
+    llm_base_url: str = "https://openrouter.ai/api/v1"
+    llm_api_key: SecretStr | None = None
+    llm_model: str = "minimax/minimax-m3:free"
+    llm_max_tokens: int = Field(default=16_000, gt=0)
     anthropic_api_key: SecretStr | None = None
     github_token: SecretStr | None = None
     worktrees_dir: Path = Path("/var/agent/worktrees")
     repos_dir: Path = Path("/var/agent/repos")
     sandbox_image: str = "agent-sandbox:python-3.12"
+    sandbox_network: str = "agent-install"
+    sandbox_runtime: str | None = None  # "runsc" for gVisor in Phase 5
+    # The container runs as this uid:gid so files it writes match the worker's files.
+    sandbox_uid: int = Field(default_factory=os.getuid)
+    sandbox_gid: int = Field(default_factory=os.getgid)
+    keep_failed_sandbox: bool = False
 
     # ---- misc ----
     environment: Literal["dev", "test", "prod"] = "dev"
@@ -46,9 +60,8 @@ class Settings(BaseSettings):
 
     def require_worker(self) -> None:
         """Worker entrypoint only. Exits naming any missing worker secret."""
-        missing = [
-            name for name in ("anthropic_api_key", "github_token") if getattr(self, name) is None
-        ]
+        key_field = "anthropic_api_key" if self.llm_provider == "anthropic" else "llm_api_key"
+        missing = [name for name in (key_field, "github_token") if getattr(self, name) is None]
         if missing:
             _die(missing)
 
@@ -58,11 +71,16 @@ class Settings(BaseSettings):
             "database_url": _mask_dsn(self.database_url),
             "redis_url": _mask_dsn(self.redis_url),
             "api_keys": f"{len(self.api_keys)} key(s)",
+            "llm_provider": self.llm_provider,
+            "llm_base_url": self.llm_base_url,
+            "llm_model": self.llm_model,
+            "llm_api_key": "set" if self.llm_api_key else "unset",
             "anthropic_api_key": "set" if self.anthropic_api_key else "unset",
             "github_token": "set" if self.github_token else "unset",
             "worktrees_dir": str(self.worktrees_dir),
             "repos_dir": str(self.repos_dir),
             "sandbox_image": self.sandbox_image,
+            "sandbox_user": f"{self.sandbox_uid}:{self.sandbox_gid}",
             "environment": self.environment,
             "log_level": self.log_level,
         }

@@ -17,6 +17,10 @@ class SandboxError(AutosweError):
     """The sandbox could not be created, attached, or executed in."""
 
 
+class RepoError(AutosweError):
+    """A host-side git or GitHub operation failed or was refused."""
+
+
 class BudgetExceeded(AutosweError):
     """A run exceeded a token, dollar, or wall-clock budget."""
 
