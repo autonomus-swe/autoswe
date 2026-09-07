@@ -54,7 +54,7 @@ DATABASE_URL=mysql://nope autoswe config; echo "exit code: $?"
 ## 2. Contracts: what the LLM must produce, and the task graph
 
 ```bash
-python - <<'EOF'
+uv run python - <<'EOF'
 from pydantic import ValidationError
 from contracts import Budget, TaskGraph, TaskGraphSpec, Usage
 
@@ -118,7 +118,7 @@ docker compose exec postgres psql -U postgres -d autoswe -c '\dt' -c '\d runs' -
 Now simulate what a run will write, using only the repository functions:
 
 ```bash
-python - <<'EOF'
+uv run python - <<'EOF'
 import asyncio
 from contracts import Budget, TaskGraph, TaskGraphSpec, Usage
 from storage import repo
@@ -187,7 +187,7 @@ docker compose exec postgres psql -U postgres -d autoswe \
 Event stream, lock, token bucket, cancel flag in one go:
 
 ```bash
-python - <<'EOF'
+uv run python - <<'EOF'
 import asyncio, uuid
 from core.settings import get_settings
 from storage.redis import RedisBus
@@ -233,7 +233,7 @@ Paste the printed `redis-cli` line to see the raw stream entries, or `redis-cli 
 Human-in-the-loop inbox, two terminals. Terminal 1 (the "agent" blocks waiting for an answer):
 
 ```bash
-python - <<'EOF'
+uv run python - <<'EOF'
 import asyncio
 from core.settings import get_settings
 from storage.redis import RedisBus
@@ -257,7 +257,7 @@ Terminal 1 prints `got: {'type': 'answer', 'text': 'use JWT'}` immediately.
 ## 5. Logging with secret redaction
 
 ```bash
-python - <<'EOF'
+uv run python - <<'EOF'
 from observability.logging import bind_run, configure_logging, get_logger
 configure_logging("INFO")
 log = get_logger("demo")
@@ -277,7 +277,7 @@ coloured console output and the debug line.
 ## 6. Tracing
 
 ```bash
-python - <<'EOF'
+uv run python - <<'EOF'
 from opentelemetry.sdk.trace.export import ConsoleSpanExporter
 from observability.tracing import configure_tracing, trace_span
 configure_tracing("autoswe-demo", exporter=ConsoleSpanExporter())
@@ -317,7 +317,7 @@ Build the image once, then poke at the container the agent gets:
 
 ```bash
 make sandbox-image
-python - <<'EOF'
+uv run python - <<'EOF'
 import asyncio, os, uuid
 from pathlib import Path
 from sandbox.docker import DockerSandbox
@@ -332,7 +332,9 @@ async def main():
     print("capabilities     ", (await box.exec("grep CapEff /proc/self/status")).stdout.strip())
     print("write /etc       ", (await box.exec("touch /etc/x")).exit_code, "(non-zero = read-only rootfs)")
     print("write /workspace ", (await box.exec("touch /workspace/ok")).exit_code)
-    print("no host secrets  ", not any(k in (await box.exec("env")).stdout for k in ("ANTHROPIC","GITHUB","DATABASE_URL","LLM_API_KEY")))
+    env = (await box.exec("env")).stdout
+    leaked = [k for k in ("ANTHROPIC", "GITHUB", "DATABASE_URL", "LLM_API_KEY") if k in env]
+    print("host secrets     ", leaked or "none (correct)")
     print("network before   ", await box.has_network())
     await box.disconnect_network()
     print("network after    ", await box.has_network(), "| dns:", (await box.exec("getent hosts pypi.org")).exit_code)
@@ -378,24 +380,45 @@ Then:
 
 ```bash
 curl -s localhost:8000/healthz | python3 -m json.tool
-curl -s -X POST localhost:8000/runs -H 'X-API-Key: dev-key-change-me' \
-  -H 'content-type: application/json' \
-  -d '{"repo_url":"https://github.com/you/autoswe-fixture-python","goal":"Implement subtract(a, b) and slugify(text) in fixture/ops.py so that tests/test_ops.py passes. Do not change the tests."}'
+# {"status": "ok", "checks": {"database": "ok", "redis": "ok"}}
 
 export AUTOSWE_API_KEY=dev-key-change-me
-uv run autoswe run --repo https://github.com/you/autoswe-fixture-python --goal "..."
+uv run autoswe run --repo https://github.com/you/autoswe-fixture-python \
+  --goal "Implement subtract(a, b) and slugify(text) in fixture/ops.py so that tests/test_ops.py passes. Do not change the tests."
+# prints the run id
+
 uv run autoswe status <run-id>
+# phase        setup      (then code, test, pr, done as the worker progresses)
+# status       queued
+# cost_usd     0.0
+# work_branch  agent/<run-id>
 ```
+
+`autoswe status` exits 1 and prints `error: 401 unauthorized` if the key is wrong, so it
+is safe to use in a script.
 
 Authentication and rate limiting, without a worker:
 
 ```bash
+# no key at all: 401, and it never reaches the rate limiter
 curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8000/runs \
-  -H 'content-type: application/json' -d '{}'                      # 401
+  -H 'content-type: application/json' -d '{}'
+
+# a non-GitHub URL with a valid key: 422
+curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8000/runs \
+  -H 'X-API-Key: dev-key-change-me' -H 'content-type: application/json' \
+  -d '{"repo_url":"https://gitlab.com/a/b","goal":"Implement subtract(a, b)"}'
+
+# the burst: five authenticated requests per key per minute, then 429
 for i in $(seq 6); do curl -s -o /dev/null -w '%{http_code} ' \
   -H 'X-API-Key: dev-key-change-me' localhost:8000/runs/00000000-0000-0000-0000-000000000000; done
-echo                                                                # 404 x5 then 429
+echo
 ```
+
+Expected: `401`, then `422`, then `404 404 404 404 404 429`. The bucket is per API key and
+shared across every authenticated endpoint, refilling at five per minute, so if you ran
+other authenticated calls in the last minute you will see the `429` arrive earlier. Wait a
+minute for a clean run.
 
 Read the audit trail afterwards:
 
