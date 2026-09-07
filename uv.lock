@@ -210,6 +210,9 @@ api = [
     { name = "sse-starlette" },
     { name = "uvicorn", extra = ["standard"] },
 ]
+cli = [
+    { name = "httpx" },
+]
 worker = [
     { name = "anthropic" },
     { name = "arq" },
@@ -240,6 +243,7 @@ requires-dist = [
     { name = "docker", marker = "extra == 'worker'", specifier = ">=7.1" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.115" },
     { name = "gitpython", marker = "extra == 'worker'", specifier = ">=3.1" },
+    { name = "httpx", marker = "extra == 'cli'", specifier = ">=0.27" },
     { name = "openai", marker = "extra == 'worker'", specifier = ">=1.50" },
     { name = "opentelemetry-api", specifier = ">=1.27" },
     { name = "opentelemetry-sdk", specifier = ">=1.27" },
@@ -254,7 +258,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'api'", specifier = ">=0.30" },
 ]
-provides-extras = ["api", "worker"]
+provides-extras = ["api", "cli", "worker"]
 
 [package.metadata.requires-dev]
 dev = [
