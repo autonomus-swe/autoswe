@@ -20,7 +20,14 @@ dependencies = [
 
 [project.optional-dependencies]
 api = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "sse-starlette>=2.1"]
-worker = ["arq>=0.26", "docker>=7.1", "GitPython>=3.1", "PyGithub>=2.4", "anthropic>=0.116"]
+worker = [
+    "arq>=0.26",
+    "docker>=7.1",
+    "GitPython>=3.1",
+    "PyGithub>=2.4",
+    "anthropic>=0.116",
+    "openai>=1.50",
+]
 
 [dependency-groups]
 dev = [
@@ -69,7 +76,7 @@ no_implicit_optional = true
 exclude = ["storage/migrations/"]
 
 [[tool.mypy.overrides]]
-module = ["testcontainers.*", "asyncpg.*"]
+module = ["testcontainers.*", "asyncpg.*", "docker.*", "arq.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

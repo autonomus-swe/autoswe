@@ -81,22 +81,35 @@ def test_short_api_keys_rejected(
 def test_require_worker_names_missing_secrets(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    set_env(monkeypatch, ANTHROPIC_API_KEY="sk-ant-unit-test-key-000000")
+    set_env(monkeypatch, LLM_API_KEY="sk-or-unit-test-key-000000")
     s = load_settings(env_file=None)
     with pytest.raises(SystemExit) as exc:
         s.require_worker()
     assert exc.value.code == EXIT_CONFIG
     err = capsys.readouterr().err
-    assert "GITHUB_TOKEN" in err and "ANTHROPIC_API_KEY" not in err
+    assert "GITHUB_TOKEN" in err and "LLM_API_KEY" not in err and "ANTHROPIC" not in err
+
+
+def test_require_worker_key_depends_on_provider(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    set_env(monkeypatch, LLM_PROVIDER="anthropic", GITHUB_TOKEN="ghp_unittest000000000000")
+    with pytest.raises(SystemExit):
+        load_settings(env_file=None).require_worker()
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
 
 
 def test_require_worker_passes_when_both_set(monkeypatch: pytest.MonkeyPatch) -> None:
     set_env(
         monkeypatch,
-        ANTHROPIC_API_KEY="sk-ant-unit-test-key-000000",
+        LLM_API_KEY="sk-or-unit-test-key-000000",
         GITHUB_TOKEN="ghp_unittest000000000000",
     )
-    load_settings(env_file=None).require_worker()
+    s = load_settings(env_file=None)
+    s.require_worker()
+    public = s.public_dict()
+    assert public["llm_api_key"] == "set" and public["llm_provider"] == "openai_compat"
+    assert public["sandbox_user"].count(":") == 1
 
 
 def test_secrets_never_appear_in_repr_or_public_view(monkeypatch: pytest.MonkeyPatch) -> None:
