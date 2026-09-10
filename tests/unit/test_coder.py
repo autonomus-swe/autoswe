@@ -109,7 +109,11 @@ async def test_coder_returns_submitted_result(tmp_path: Path) -> None:
     assert provider.tool_names[-1] == "submit_result" and "bash" in provider.tool_names
 
 
-async def test_coder_without_submit_raises(tmp_path: Path) -> None:
-    provider = Scripted([final("I give up")])
+async def test_coder_without_submit_raises_after_reminders(tmp_path: Path) -> None:
+    """The loop reminds a silent model, but a model that never submits still fails."""
+    from gateway.openai_compat_provider import MISSING_SUBMIT_REMINDERS
+
+    provider = Scripted([final("I give up")] * (MISSING_SUBMIT_REMINDERS + 1))
     with pytest.raises(AgentError, match="did not submit"):
         await CoderAgent().run(provider, make_ctx(tmp_path), "goal", TASK, NullHooks())
+    assert provider.script == []  # every reminder was actually used

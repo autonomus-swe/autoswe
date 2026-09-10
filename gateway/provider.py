@@ -19,6 +19,9 @@ class Request:
     messages: list[dict[str, Any]] = field(default_factory=list)  # chat messages after system
     max_tokens: int = 16_000
     max_iterations: int = 60
+    # A tool the agent must call before its turn may end (e.g. "submit_result"). When the
+    # model stops without it, the loop reminds it rather than discarding the whole run.
+    must_call: str | None = None
 
 
 @dataclass

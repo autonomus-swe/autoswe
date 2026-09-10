@@ -45,6 +45,7 @@ class Agent:
         hooks: Hooks,
         *,
         extra_tools: list[BaseTool] | None = None,
+        must_call: str | None = None,
         **prompt_vars: Any,
     ) -> RunOutcome:
         req = Request(
@@ -52,6 +53,7 @@ class Agent:
             system=self.system_prompt(**prompt_vars),
             messages=[{"role": "user", "content": user_content}],
             max_iterations=self.max_iterations,
+            must_call=must_call,
         )
         return await provider.run_tools(req, [*self.tools(), *(extra_tools or [])], ctx, hooks)
 

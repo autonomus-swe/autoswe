@@ -8,6 +8,7 @@ validates the arguments with pydantic and retries once with the validation error
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import Sequence
@@ -25,6 +26,50 @@ from observability.logging import get_logger
 from tools.base import BaseTool, RunContext
 
 log = get_logger(__name__)
+
+# A 200 with no choices is a transient upstream hiccup, not a real answer.
+EMPTY_RESPONSE_RETRIES = 3
+EMPTY_RESPONSE_BACKOFF_S = 2.0
+# How many times to remind an agent that stopped without calling its required tool.
+MISSING_SUBMIT_REMINDERS = 2
+# Some gateways (Groq) judge the model's generation server-side and answer 400 instead of
+# handing the unusable output back: a tool call that fails schema validation, or prose where
+# a tool call was due. Both are the model erring mid-run, so they are corrected, not fatal.
+INVALID_TOOL_CALL_RETRIES = 3
+_RECOVERABLE_MARKERS = (
+    "tool_use_failed",
+    "tool call validation failed",
+    "output_parse_failed",
+    "could not be parsed",
+)
+
+
+class _InvalidToolCall(Exception):
+    """The gateway rejected the model's own output before this code ever saw it."""
+
+    def __init__(self, detail: str, generation: str | None = None) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.generation = generation
+
+
+def _invalid_tool_call_detail(err: Any) -> tuple[str, str | None] | None:
+    """``(complaint, what the model generated)`` when the gateway rejected it, else None."""
+    haystack = f"{getattr(err, 'code', '') or ''} {getattr(err, 'message', '') or ''}".lower()
+    body = getattr(err, "body", None)
+    if isinstance(body, dict):
+        haystack += " " + str(body).lower()
+    if not any(marker in haystack for marker in _RECOVERABLE_MARKERS):
+        return None
+    detail = getattr(err, "message", None) or str(err)
+    generation = None
+    inner = body.get("error") if isinstance(body, dict) else None
+    if isinstance(inner, dict):
+        if inner.get("message"):
+            detail = str(inner["message"])
+        if inner.get("failed_generation"):
+            generation = str(inner["failed_generation"])[:600]
+    return detail[:600], generation
 
 
 @dataclass
@@ -137,6 +182,12 @@ class OpenAICompatProvider:
         tool_choice: Any,
         max_tokens: int,
     ) -> ChatTurn:
+        """One model turn, retrying responses that carry no usable content.
+
+        A gateway can answer 200 with an empty ``choices`` list when its upstream hiccups
+        (OpenRouter's free router does this). The SDK only retries HTTP failures, so
+        without this an agentic run dies on a blip after minutes of real work.
+        """
         from openai import APIError
 
         kwargs: dict[str, Any] = {
@@ -149,12 +200,31 @@ class OpenAICompatProvider:
             kwargs["tool_choice"] = tool_choice or "auto"
         if self._extra_body:
             kwargs["extra_body"] = self._extra_body
-        try:
-            resp = await self.client.chat.completions.create(**kwargs)
-        except APIError as e:
-            raise ProviderError(f"{type(e).__name__}: {getattr(e, 'message', e)}") from e
-        if not resp.choices:
-            raise ProviderError("provider returned no choices")
+
+        resp = None
+        for attempt in range(EMPTY_RESPONSE_RETRIES + 1):
+            try:
+                resp = await self.client.chat.completions.create(**kwargs)
+            except APIError as e:
+                rejected = _invalid_tool_call_detail(e)
+                if rejected is not None:
+                    raise _InvalidToolCall(*rejected) from e
+                raise ProviderError(f"{type(e).__name__}: {getattr(e, 'message', e)}") from e
+            if resp.choices:
+                break
+            if attempt < EMPTY_RESPONSE_RETRIES:
+                log.warning(
+                    "provider_empty_response",
+                    model=self.model,
+                    attempt=attempt + 1,
+                    retries=EMPTY_RESPONSE_RETRIES,
+                )
+                await asyncio.sleep(EMPTY_RESPONSE_BACKOFF_S * (attempt + 1))
+        if resp is None or not resp.choices:
+            raise ProviderError(
+                f"provider returned no choices {EMPTY_RESPONSE_RETRIES + 1} times "
+                f"(model {self.model!r})"
+            )
         choice = resp.choices[0]
         msg = choice.message
         calls = [
@@ -181,11 +251,44 @@ class OpenAICompatProvider:
         by_name = {t.name: t for t in tools}
         total = Usage()
         turns = 0
+        called: set[str] = set()
+        reminders = 0
+        rejected = 0
         while turns < req.max_iterations:
             t0 = time.monotonic()
-            turn = await self._complete(
-                messages=messages, tools=tool_defs, tool_choice="auto", max_tokens=req.max_tokens
-            )
+            try:
+                turn = await self._complete(
+                    messages=messages,
+                    tools=tool_defs,
+                    tool_choice="auto",
+                    max_tokens=req.max_tokens,
+                )
+            except _InvalidToolCall as e:
+                rejected += 1
+                if rejected > INVALID_TOOL_CALL_RETRIES:
+                    raise ProviderError(
+                        f"the gateway rejected {rejected} malformed tool calls in a row; "
+                        f"model {self.model!r} cannot drive these tools: {e.detail}"
+                    ) from e
+                log.warning(
+                    "gateway_rejected_tool_call",
+                    model=self.model,
+                    attempt=rejected,
+                    detail=e.detail[:200],
+                )
+                said = f"\nYou wrote: {e.generation}" if e.generation else ""
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Your last message was rejected before it ran: {e.detail}"
+                            f"{said}\nRespond with a tool call, using the tool's exact name "
+                            "with no prefix and every required parameter. Do not describe "
+                            "what you are about to do; call the tool."
+                        ),
+                    }
+                )
+                continue
             latency_ms = int((time.monotonic() - t0) * 1000)
             turns += 1
             total = total.add(turn.usage)
@@ -195,8 +298,31 @@ class OpenAICompatProvider:
                 return RunOutcome(turn.refusal or turn.content or "", turns, total, "refusal")
             if not turn.tool_calls:
                 stop = "max_tokens" if turn.finish_reason == "length" else "end_turn"
+                needs = req.must_call is not None and req.must_call not in called
+                if needs and reminders < MISSING_SUBMIT_REMINDERS:
+                    # Weaker models often do the work and then just stop talking. One
+                    # reminder recovers the run instead of throwing the work away.
+                    reminders += 1
+                    log.info(
+                        "reminding_agent_to_submit",
+                        tool=req.must_call,
+                        reminder=reminders,
+                        turns=turns,
+                    )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"You have not called `{req.must_call}` yet, so your work is "
+                                f"not recorded. Call `{req.must_call}` now with your summary "
+                                "to finish. Do not repeat the work you already did."
+                            ),
+                        }
+                    )
+                    continue
                 return RunOutcome(turn.content or "", turns, total, stop)
             for call in turn.tool_calls:
+                called.add(call.name)
                 text = await self._call_tool(call, by_name, ctx, hooks)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
         return RunOutcome("", turns, total, "max_iterations")
