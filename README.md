@@ -43,11 +43,13 @@ Get an OpenRouter key at <https://openrouter.ai/keys> and set:
 ```bash
 LLM_BASE_URL=https://openrouter.ai/api/v1
 LLM_API_KEY=sk-or-...
-LLM_MODEL=minimax/minimax-m3:free        # free models exist; pick one that supports tools
+LLM_MODEL=openrouter/free                # auto-router over free models; must support tool calling
 ```
 
-Agentic coding is demanding, so a stronger model finishes more runs. `gateway/routing.py`
-holds the per-role model tiers used when a provider distinguishes them.
+Prefer `openrouter/free` over a specific `:free` slug: individual free models get withdrawn
+without notice and then 404 in the middle of a run. Agentic coding is demanding, so a
+stronger paid model finishes more runs. `gateway/routing.py` holds the per-role model tiers
+used when a provider distinguishes them.
 
 ## What the sandbox guarantees
 

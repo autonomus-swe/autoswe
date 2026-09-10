@@ -40,4 +40,8 @@ worker:
 > uv run arq orchestrator.worker.WorkerSettings
 
 test-e2e:
+> uv run pytest -m e2e tests/e2e/test_m1_github.py
+
+# both end-to-end tests; costs two runs of quota and can trip a per-minute rate limit
+test-e2e-all:
 > uv run pytest -m e2e tests/e2e
