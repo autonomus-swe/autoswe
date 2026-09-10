@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from arq.connections import RedisSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from core.errors import AutosweError, ConfigError
 from core.settings import Settings, get_settings
@@ -81,21 +82,24 @@ async def configure_worker(ctx: dict[str, Any]) -> None:
     )
 
 
-class _LazyRedisSettings:
-    """Resolve the Redis DSN when arq reads it, not when this module is imported.
+class _RedisOnlySettings(BaseSettings):
+    """Just the Redis DSN, read without validating anything else.
 
-    Evaluating settings at class-definition time made merely importing this module
-    require a full configuration, so a machine with a .env passed while CI — and any
-    tooling that only wants to import the module — exited with code 2.
+    arq builds its pool from ``WorkerSettings.__dict__`` (see ``arq.worker.get_kwargs``),
+    so ``redis_settings`` has to be a real value at import time — a descriptor is read
+    straight out of the class dict and never resolved. Going through the full ``Settings``
+    here would make importing this module require a complete configuration, which broke
+    CI and any fresh clone. The worker still validates everything properly in
+    ``configure_worker`` before it accepts a job.
     """
 
-    def __get__(self, obj: object, owner: type | None = None) -> RedisSettings:
-        return RedisSettings.from_dsn(get_settings().redis_url)
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    redis_url: str = "redis://localhost:6379/0"
 
 
 class WorkerSettings:
     functions = [run_job]  # noqa: RUF012
-    redis_settings = _LazyRedisSettings()
+    redis_settings = RedisSettings.from_dsn(_RedisOnlySettings().redis_url)
     max_jobs = 2
     job_timeout = 60 * 60
     max_tries = 1  # Phase 2 raises this once checkpoints allow resume
