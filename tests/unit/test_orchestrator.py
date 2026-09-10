@@ -246,9 +246,9 @@ def test_worker_module_imports_without_any_configuration(
         module = importlib.reload(importlib.import_module("orchestrator.worker"))
         assert [f.__name__ for f in module.WorkerSettings.functions] == ["run_job"]
         assert module.WorkerSettings.on_startup.__name__ == "configure_worker"
-        # the DSN resolves on access, not at import: a descriptor, not a plain value
-        assert "redis_settings" not in vars(module.WorkerSettings) or isinstance(
-            vars(module.WorkerSettings)["redis_settings"], module._LazyRedisSettings
-        )
+        # arq reads this straight out of the class dict, so it must be a real value
+        from arq.connections import RedisSettings
+
+        assert isinstance(vars(module.WorkerSettings)["redis_settings"], RedisSettings)
     finally:
         get_settings.cache_clear()
