@@ -11,7 +11,8 @@ from typing import Any
 import pytest
 from pydantic import Field
 
-from contracts import LLMModel, ToolResult, Usage
+from agents.submit import submit_tool
+from contracts import LLMModel, TaskResult, ToolResult, Usage
 from core.errors import ProviderError
 from gateway import pricing
 from gateway.openai_compat_provider import ChatTurn, OpenAICompatProvider, ToolCallReq, usage_from
@@ -231,7 +232,7 @@ def test_pricing_table() -> None:
         cache_write_tokens=100_000,
     )
     assert pricing.cost("claude-opus-5", u) == pytest.approx(5.0 + 2.5 + 0.5 + 0.625)
-    assert pricing.cost("minimax/minimax-m3:free", u) == 0.0
+    assert pricing.cost("some-vendor/some-model:free", u) == 0.0  # any ":free" slug
     assert pricing.cost("unknown/model", u) == 0.0
 
 
@@ -239,3 +240,193 @@ def test_routes_cover_every_role_with_valid_tiers() -> None:
     for role in ("coder", "planner", "review", "pr_writer"):
         assert route_for(role).tier in ANTHROPIC_MODELS
     assert ROUTES["coder"].effort == "xhigh" and ROUTES["pr_writer"].tier == "sonnet"
+
+
+class _FakeCompletions:
+    """Returns each scripted response in turn; a response with no choices is a blip."""
+
+    def __init__(self, script: list[Any]) -> None:
+        self.script = script
+        self.calls = 0
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.calls += 1
+        return self.script.pop(0)
+
+
+class _FakeClient:
+    def __init__(self, script: list[Any]) -> None:
+        self.chat = SimpleNamespace(completions=_FakeCompletions(script))
+
+
+def _resp(choices: list[Any]) -> Any:
+    return SimpleNamespace(choices=choices, usage=None, model="m")
+
+
+def _choice(text: str) -> Any:
+    return SimpleNamespace(
+        message=SimpleNamespace(content=text, tool_calls=None, refusal=None, model_extra={}),
+        finish_reason="stop",
+    )
+
+
+async def test_empty_response_is_retried_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 200 with no choices is an upstream blip; it must not kill a run in progress."""
+    monkeypatch.setattr("gateway.openai_compat_provider.EMPTY_RESPONSE_BACKOFF_S", 0)
+    client = _FakeClient([_resp([]), _resp([]), _resp([_choice("recovered")])])
+    provider = OpenAICompatProvider(
+        model="flaky/model", api_key="k", base_url="http://x", client=client
+    )
+    turn = await provider._complete(messages=[], tools=[], tool_choice=None, max_tokens=10)
+    assert turn.content == "recovered"
+    assert client.chat.completions.calls == 3
+
+
+async def test_empty_response_gives_up_after_the_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("gateway.openai_compat_provider.EMPTY_RESPONSE_BACKOFF_S", 0)
+    from gateway.openai_compat_provider import EMPTY_RESPONSE_RETRIES
+
+    attempts = EMPTY_RESPONSE_RETRIES + 1
+    client = _FakeClient([_resp([]) for _ in range(attempts)])
+    provider = OpenAICompatProvider(
+        model="flaky/model", api_key="k", base_url="http://x", client=client
+    )
+    with pytest.raises(ProviderError, match="no choices"):
+        await provider._complete(messages=[], tools=[], tool_choice=None, max_tokens=10)
+    assert client.chat.completions.calls == attempts
+
+
+async def test_agent_is_reminded_when_it_stops_without_its_required_tool(tmp_path: Path) -> None:
+    """A model that does the work and then just stops must not lose the run."""
+    provider = ScriptedProvider(
+        [
+            turn(calls=[("c1", "git_status", {})]),
+            turn("I implemented it."),  # stops without submitting
+            turn(calls=[("c2", "submit_result", {"ok": True})]),
+            turn("submitted"),
+        ]
+    )
+    tools = [*tools_for("coder"), submit_tool("submit_result", TaskResult, "task_result")]
+    out = await provider.run_tools(
+        Request(role="coder", system="s", must_call="submit_result"),
+        tools,
+        make_ctx(tmp_path),
+        NullHooks(),
+    )
+    assert out.stop_reason == "end_turn" and out.turns == 4
+    nudge = provider.requests[2]["messages"][-1]
+    assert nudge["role"] == "user" and "submit_result" in nudge["content"]
+    assert "not recorded" in nudge["content"]
+
+
+async def test_reminders_are_bounded(tmp_path: Path) -> None:
+    from gateway.openai_compat_provider import MISSING_SUBMIT_REMINDERS
+
+    attempts = MISSING_SUBMIT_REMINDERS + 1
+    provider = ScriptedProvider([turn("still not submitting") for _ in range(attempts)])
+    out = await provider.run_tools(
+        Request(role="coder", system="s", must_call="submit_result"),
+        tools_for("coder"),
+        make_ctx(tmp_path),
+        NullHooks(),
+    )
+    assert out.stop_reason == "end_turn" and out.turns == attempts
+
+
+async def test_no_reminder_when_the_tool_was_already_called(tmp_path: Path) -> None:
+    provider = ScriptedProvider([turn(calls=[("c1", "submit_result", {"ok": True})]), turn("done")])
+    tools = [*tools_for("coder"), submit_tool("submit_result", TaskResult, "task_result")]
+    out = await provider.run_tools(
+        Request(role="coder", system="s", must_call="submit_result"),
+        tools,
+        make_ctx(tmp_path),
+        NullHooks(),
+    )
+    assert out.turns == 2  # no extra round trip
+    assert all(
+        m["role"] != "user" or "not recorded" not in m.get("content", "")
+        for r in provider.requests
+        for m in r["messages"]
+    )
+
+
+class RejectingProvider(OpenAICompatProvider):
+    """Rejects the first `n` calls the way a server-side tool validator does."""
+
+    def __init__(self, rejections: int, script: list[ChatTurn]) -> None:
+        super().__init__(model="strict/gateway", api_key="k", base_url="http://x")
+        self.left = rejections
+        self.script = list(script)
+        self.requests: list[dict[str, Any]] = []
+
+    async def _complete(self, **kwargs: Any) -> ChatTurn:
+        import copy
+
+        from gateway.openai_compat_provider import _InvalidToolCall
+
+        self.requests.append(copy.deepcopy(kwargs))
+        if self.left > 0:
+            self.left -= 1
+            raise _InvalidToolCall(
+                "parameters for tool X did not match schema: missing 'command'",
+                "Now I will edit the file.",
+            )
+        return self.script.pop(0)
+
+
+async def test_gateway_rejected_tool_call_is_corrected_not_fatal(tmp_path: Path) -> None:
+    """Groq answers 400 for a malformed tool call; the model gets told, the run continues."""
+    provider = RejectingProvider(2, [turn("recovered")])
+    out = await provider.run_tools(
+        Request(role="coder", system="s"), tools_for("coder"), make_ctx(tmp_path), NullHooks()
+    )
+    assert out.stop_reason == "end_turn" and out.final_text == "recovered"
+    correction = provider.requests[-1]["messages"][-1]
+    assert correction["role"] == "user"
+    assert "rejected before it ran" in correction["content"]
+    assert "no prefix" in correction["content"]  # the model had hallucinated a namespace
+    assert "You wrote: Now I will edit the file." in correction["content"]
+
+
+async def test_persistent_rejection_gives_up_with_a_clear_message(tmp_path: Path) -> None:
+    from gateway.openai_compat_provider import INVALID_TOOL_CALL_RETRIES
+
+    provider = RejectingProvider(INVALID_TOOL_CALL_RETRIES + 1, [turn("never reached")])
+    with pytest.raises(ProviderError, match="cannot drive these tools"):
+        await provider.run_tools(
+            Request(role="coder", system="s"), tools_for("coder"), make_ctx(tmp_path), NullHooks()
+        )
+
+
+def test_recoverable_generation_errors_are_told_apart_from_real_ones() -> None:
+    from gateway.openai_compat_provider import _invalid_tool_call_detail
+
+    bad_schema = SimpleNamespace(
+        code="tool_use_failed",
+        message="Tool call validation failed: missing properties: 'command'",
+        body={"error": {"message": "missing properties: 'command'", "code": "tool_use_failed"}},
+    )
+    assert _invalid_tool_call_detail(bad_schema) == ("missing properties: 'command'", None)
+
+    # prose where a tool call was due: the gateway hands back what the model wrote
+    prose = SimpleNamespace(
+        code="output_parse_failed",
+        message="Parsing failed.",
+        body={
+            "error": {
+                "message": "The model generated output that could not be parsed.",
+                "code": "output_parse_failed",
+                "failed_generation": "Now need to submit result.",
+            }
+        },
+    )
+    rejected = _invalid_tool_call_detail(prose)
+    assert rejected is not None
+    detail, generation = rejected
+    assert "could not be parsed" in detail and generation == "Now need to submit result."
+
+    for other in (
+        SimpleNamespace(code="rate_limit_exceeded", message="slow down", body=None),
+        SimpleNamespace(code=None, message="model not found", body={"error": {"code": 404}}),
+    ):
+        assert _invalid_tool_call_detail(other) is None
