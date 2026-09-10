@@ -140,3 +140,87 @@ async def test_teardown_never_raises_when_cleanup_fails(tmp_path: Path) -> None:
     deps = FakeDeps()
     await teardown(state(), deps, res)  # type: ignore[arg-type]
     assert deps.bus.released == ["lock:y"]  # the lock is still released
+
+
+async def test_worker_refuses_to_start_without_its_secrets(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A worker missing GITHUB_TOKEN must fail at startup, not halfway through a run."""
+    from core.settings import EXIT_CONFIG, get_settings
+    from orchestrator.worker import configure_worker
+
+    for name, value in (
+        ("DATABASE_URL", "postgresql+asyncpg://u@h/d"),
+        ("REDIS_URL", "redis://h:6379/0"),
+        ("API_KEYS", "unit-test-key"),
+        ("LLM_API_KEY", "sk-or-unit-test"),
+        ("GITHUB_TOKEN", ""),
+    ):
+        monkeypatch.setenv(name, value)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(SystemExit) as exc:
+            await configure_worker({})
+        assert exc.value.code == EXIT_CONFIG
+        assert "GITHUB_TOKEN" in capsys.readouterr().err
+    finally:
+        get_settings.cache_clear()
+
+
+def test_ca_bundle_is_applied_to_requests_and_ssl(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Behind a TLS-inspecting proxy, requests and the stdlib must trust the OS CAs."""
+    import os
+
+    from core.errors import ConfigError
+    from core.settings import load_settings
+    from orchestrator.worker import apply_ca_bundle
+
+    bundle = tmp_path / "ca-certificates.crt"
+    bundle.write_text("-----BEGIN CERTIFICATE-----\n")
+    for var in ("REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    for name, value in (
+        ("DATABASE_URL", "postgresql+asyncpg://u@h/d"),
+        ("REDIS_URL", "redis://h:6379/0"),
+        ("API_KEYS", "unit-test-key"),
+        ("CA_BUNDLE", str(bundle)),
+    ):
+        monkeypatch.setenv(name, value)
+
+    settings = load_settings(env_file=None)
+    apply_ca_bundle(settings)
+    assert os.environ["REQUESTS_CA_BUNDLE"] == str(bundle)
+    assert os.environ["SSL_CERT_FILE"] == str(bundle)
+    assert settings.public_dict()["ca_bundle"] == str(bundle)
+
+    # an operator's own export is never overridden
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", "/operator/choice.pem")
+    apply_ca_bundle(settings)
+    assert os.environ["REQUESTS_CA_BUNDLE"] == "/operator/choice.pem"
+
+    # a path that does not exist is a configuration error, not a silent no-op
+    monkeypatch.setenv("CA_BUNDLE", str(tmp_path / "missing.crt"))
+    with pytest.raises(ConfigError, match="does not exist"):
+        apply_ca_bundle(load_settings(env_file=None))
+
+
+def test_no_ca_bundle_leaves_the_environment_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    from core.settings import load_settings
+    from orchestrator.worker import apply_ca_bundle
+
+    monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+    monkeypatch.delenv("CA_BUNDLE", raising=False)
+    for name, value in (
+        ("DATABASE_URL", "postgresql+asyncpg://u@h/d"),
+        ("REDIS_URL", "redis://h:6379/0"),
+        ("API_KEYS", "unit-test-key"),
+    ):
+        monkeypatch.setenv(name, value)
+    settings = load_settings(env_file=None)
+    apply_ca_bundle(settings)
+    assert "REQUESTS_CA_BUNDLE" not in os.environ
+    assert settings.public_dict()["ca_bundle"] == "certifi default"

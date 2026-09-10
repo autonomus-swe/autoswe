@@ -36,10 +36,16 @@ class Settings(BaseSettings):
     llm_provider: Literal["openai_compat", "anthropic"] = "openai_compat"
     llm_base_url: str = "https://openrouter.ai/api/v1"
     llm_api_key: SecretStr | None = None
-    llm_model: str = "minimax/minimax-m3:free"
+    # OpenRouter's auto-router over currently-free models. Individual ":free" slugs
+    # get withdrawn without notice, which then 404s mid-run; the router does not.
+    llm_model: str = "openrouter/free"
     llm_max_tokens: int = Field(default=16_000, gt=0)
     anthropic_api_key: SecretStr | None = None
     github_token: SecretStr | None = None
+    # Corporate TLS-inspecting proxies sign traffic with a private root CA that lands in
+    # the system trust store but not in certifi's bundle, so git works and Python's
+    # requests does not. Point this at the system bundle to make both agree.
+    ca_bundle: Path | None = None
     worktrees_dir: Path = Path("/var/agent/worktrees")
     repos_dir: Path = Path("/var/agent/repos")
     sandbox_image: str = "agent-sandbox:python-3.12"
@@ -89,6 +95,7 @@ class Settings(BaseSettings):
             "llm_api_key": "set" if self.llm_api_key else "unset",
             "anthropic_api_key": "set" if self.anthropic_api_key else "unset",
             "github_token": "set" if self.github_token else "unset",
+            "ca_bundle": str(self.ca_bundle) if self.ca_bundle else "certifi default",
             "worktrees_dir": str(self.worktrees_dir),
             "repos_dir": str(self.repos_dir),
             "sandbox_image": self.sandbox_image,

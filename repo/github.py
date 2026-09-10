@@ -73,7 +73,17 @@ async def open_pr(
         pr = repo.create_pull(title=title, body=body, head=head, base=base, draft=draft)
         return str(pr.html_url)
 
-    return await asyncio.to_thread(_open)
+    try:
+        return await asyncio.to_thread(_open)
+    except Exception as e:  # a TLS failure here is almost always a proxy CA, not a bug
+        if "CERTIFICATE_VERIFY_FAILED" not in str(e):
+            raise
+        raise RepoError(
+            "TLS verification failed talking to the GitHub API. A TLS-inspecting proxy is "
+            "signing this connection with a root CA that Python does not trust. Set "
+            "CA_BUNDLE in .env to your system bundle (usually "
+            "/etc/ssl/certs/ca-certificates.crt); git already trusts it."
+        ) from e
 
 
 def pr_body(*, goal: str, diff_stat: str, test_summary: str, run_id: str) -> str:
