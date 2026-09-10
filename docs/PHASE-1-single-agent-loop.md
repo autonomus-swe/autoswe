@@ -34,15 +34,15 @@ Suggested duration: 6–8 days. This is the longest phase because it touches eve
 
 ## 1. Exit criteria
 
-- [ ] `uv run autoswe run --repo <fixture> --goal "..."` opens a PR on the fixture repo whose CI (or a local checkout) passes the tests.
-- [ ] Inside a running sandbox, `env` shows no `ANTHROPIC_*`, `GITHUB_*`, `DATABASE_URL`, or `REDIS_URL` (test exists).
-- [ ] After `SETUP`, the sandbox has no network: `getent hosts pypi.org` fails and `ip route` is empty (test exists).
-- [ ] `touch /etc/x` in the sandbox fails (read-only rootfs); `/workspace` is writable; a `sleep 999` exec is killed at the timeout (tests exist).
-- [ ] Every bash command and every edit is a row in `tool_calls`; every model turn is a row in `llm_calls` with tokens and cost.
-- [ ] Editor `str_replace` is rejected when the file changed since the last `view` (test exists).
-- [ ] The bash deny-list blocks `git push`, `rm -rf /`, `curl … | sh`, and any `git` invocation with a message pointing to the git tools (tests exist).
-- [ ] `POST /runs` without a valid `X-API-Key` returns 401 with a generic body; the sixth call in a minute returns 429.
-- [ ] Tag `v0.1.0`.
+- [x] `uv run autoswe run --repo <fixture> --goal "..."` opens a PR on the fixture repo whose CI (or a local checkout) passes the tests.
+- [x] Inside a running sandbox, `env` shows no `ANTHROPIC_*`, `GITHUB_*`, `DATABASE_URL`, or `REDIS_URL` (test exists).
+- [x] After `SETUP`, the sandbox has no network: `getent hosts pypi.org` fails and `ip route` is empty (test exists).
+- [x] `touch /etc/x` in the sandbox fails (read-only rootfs); `/workspace` is writable; a `sleep 999` exec is killed at the timeout (tests exist).
+- [x] Every bash command and every edit is a row in `tool_calls`; every model turn is a row in `llm_calls` with tokens and cost.
+- [x] Editor `str_replace` is rejected when the file changed since the last `view` (test exists).
+- [x] The bash deny-list blocks `git push`, `rm -rf /`, `curl … | sh`, and any `git` invocation with a message pointing to the git tools (tests exist).
+- [x] `POST /runs` without a valid `X-API-Key` returns 401 with a generic body; the sixth call in a minute returns 429.
+- [ ] Tag `v0.1.0`. (Held until the second consecutive end-to-end pass.)
 
 ---
 
@@ -530,6 +530,9 @@ Expected: 8–20 tool calls, 1 commit, one PR, a few cents to a few tens of cent
 ## 7. Checklist before Phase 2
 
 - [ ] Exit criteria in §1 all ticked; the e2e test passed at least twice in a row.
-- [ ] `tool_calls` and `llm_calls` rows exist for the demo run and their sum matches `runs.cost_usd`.
-- [ ] You can explain: why git is host-side, why the container starts on a network and then leaves it, why `submit_result` is a tool.
-- [ ] Tag `v0.1.0`.
+      (§1 met. One GitHub run passed on 2026-09-10 — fixture PR #1. The second
+      consecutive pass is pending: OpenRouter's 50-request daily free quota was
+      exhausted, resets 05:30 IST.)
+- [x] `tool_calls` and `llm_calls` rows exist for the demo run and their sum matches `runs.cost_usd`.
+- [x] You can explain: why git is host-side, why the container starts on a network and then leaves it, why `submit_result` is a tool.
+- [ ] Tag `v0.1.0`. (Held until the second consecutive end-to-end pass.)

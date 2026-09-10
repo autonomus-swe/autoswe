@@ -7,6 +7,13 @@ the phase.
 `MANUAL-TESTING.md` is the companion: same ground, organised by capability rather than as
 a sequence, with more detail per area.
 
+> **Status, 2026-09-10.** Steps 0–7b verified. Step 7c passed once against real GitHub —
+> [fixture PR #1](https://github.com/Vatsalya001/autoswe-fixture-python/pull/1), agent
+> changed `fixture/ops.py` only, `tests/` untouched. A second consecutive pass is pending
+> free-tier quota. Five harness bugs were found and fixed along the way: empty provider
+> responses, a missing terminal tool call, two kinds of gateway-rejected output, and
+> malformed tool arguments poisoning the message history.
+
 **Current setup**
 
 | | |
