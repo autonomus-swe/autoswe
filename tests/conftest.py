@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+import structlog
 
 
 @pytest.fixture(scope="session")
@@ -47,3 +48,15 @@ def host_tmp() -> Iterator[Path]:
         yield d
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _reset_structlog() -> Iterator[None]:
+    """Undo any ``configure_logging`` a test performed.
+
+    structlog binds its logger to the stream live at configure time. Under pytest that is
+    the current test's captured stdout, which is closed at teardown, so the next test to
+    log would raise ``I/O operation on closed file``.
+    """
+    yield
+    structlog.reset_defaults()
