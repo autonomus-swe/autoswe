@@ -81,9 +81,21 @@ async def configure_worker(ctx: dict[str, Any]) -> None:
     )
 
 
+class _LazyRedisSettings:
+    """Resolve the Redis DSN when arq reads it, not when this module is imported.
+
+    Evaluating settings at class-definition time made merely importing this module
+    require a full configuration, so a machine with a .env passed while CI — and any
+    tooling that only wants to import the module — exited with code 2.
+    """
+
+    def __get__(self, obj: object, owner: type | None = None) -> RedisSettings:
+        return RedisSettings.from_dsn(get_settings().redis_url)
+
+
 class WorkerSettings:
     functions = [run_job]  # noqa: RUF012
-    redis_settings = RedisSettings.from_dsn(get_settings().redis_url)
+    redis_settings = _LazyRedisSettings()
     max_jobs = 2
     job_timeout = 60 * 60
     max_tries = 1  # Phase 2 raises this once checkpoints allow resume
