@@ -224,3 +224,31 @@ def test_no_ca_bundle_leaves_the_environment_alone(monkeypatch: pytest.MonkeyPat
     apply_ca_bundle(settings)
     assert "REQUESTS_CA_BUNDLE" not in os.environ
     assert settings.public_dict()["ca_bundle"] == "certifi default"
+
+
+def test_worker_module_imports_without_any_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Importing the worker must not require a configured environment.
+
+    WorkerSettings used to evaluate get_settings() at class-definition time, so the
+    import itself exited with code 2 wherever no .env existed — CI, a fresh clone, or
+    any tool that only wants to read the module.
+    """
+    import importlib
+
+    from core.settings import get_settings
+
+    for var in ("DATABASE_URL", "REDIS_URL", "API_KEYS"):
+        monkeypatch.delenv(var, raising=False)
+    get_settings.cache_clear()
+    try:
+        module = importlib.reload(importlib.import_module("orchestrator.worker"))
+        assert [f.__name__ for f in module.WorkerSettings.functions] == ["run_job"]
+        assert module.WorkerSettings.on_startup.__name__ == "configure_worker"
+        # the DSN resolves on access, not at import: a descriptor, not a plain value
+        assert "redis_settings" not in vars(module.WorkerSettings) or isinstance(
+            vars(module.WorkerSettings)["redis_settings"], module._LazyRedisSettings
+        )
+    finally:
+        get_settings.cache_clear()
