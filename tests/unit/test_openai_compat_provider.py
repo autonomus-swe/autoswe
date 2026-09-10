@@ -430,3 +430,51 @@ def test_recoverable_generation_errors_are_told_apart_from_real_ones() -> None:
         SimpleNamespace(code=None, message="model not found", body={"error": {"code": 404}}),
     ):
         assert _invalid_tool_call_detail(other) is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ('{"command": "ls"}', '{"command": "ls"}'),  # valid object: passed through byte for byte
+        (None, "{}"),
+        ("", "{}"),
+        ('{"path": "a.py", "content": "def f(:', "{}"),  # truncated mid-string
+        ('{"a": 1', "{}"),  # unclosed brace
+        ("not json at all", "{}"),
+        ("[1, 2, 3]", "{}"),  # valid JSON but not an object
+        ('"a string"', "{}"),
+    ],
+)
+def test_tool_call_arguments_in_history_are_always_valid_json_objects(
+    raw: str | None, expected: str
+) -> None:
+    """Malformed arguments must never enter the history we resend.
+
+    Whatever the model emits is echoed on every later turn, so one bad value made every
+    subsequent request rejected with "arguments must be a valid JSON object string" and
+    the run could not recover.
+    """
+    from gateway.openai_compat_provider import _valid_arguments
+
+    assert _valid_arguments(raw) == expected
+    json.loads(_valid_arguments(raw))  # always parseable
+
+
+def test_assistant_message_sanitises_a_malformed_tool_call() -> None:
+    from gateway.openai_compat_provider import _assistant_message
+
+    msg = SimpleNamespace(
+        content=None,
+        tool_calls=[
+            SimpleNamespace(
+                id="c1",
+                type="function",
+                function=SimpleNamespace(name="run_tests", arguments='{"selector": "tests/'),
+            )
+        ],
+        model_extra={},
+    )
+    echoed = _assistant_message(msg)
+    assert echoed["tool_calls"][0]["function"]["arguments"] == "{}"
+    assert echoed["tool_calls"][0]["function"]["name"] == "run_tests"
+    assert echoed["tool_calls"][0]["id"] == "c1"

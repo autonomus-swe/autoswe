@@ -112,6 +112,22 @@ def usage_from(resp: Any, model: str) -> Usage:
     return Usage(**{**usage.model_dump(), "cost_usd": round(cost, 6)})
 
 
+def _valid_arguments(raw: str | None) -> str:
+    """A tool call's ``arguments`` as a JSON object string, always.
+
+    Whatever the model emitted goes into the history we resend on every later turn, so a
+    malformed value poisons the whole conversation: providers reject the entire request
+    ("arguments must be a valid JSON object string") from that turn on and the run can
+    never recover. The model already learns the call was invalid from its tool result, so
+    unparsable arguments are replaced here with an empty object.
+    """
+    try:
+        parsed = json.loads(raw or "{}")
+    except ValueError:
+        return "{}"
+    return raw or "{}" if isinstance(parsed, dict) else "{}"
+
+
 def _assistant_message(msg: Any) -> dict[str, Any]:
     out: dict[str, Any] = {"role": "assistant", "content": getattr(msg, "content", None)}
     calls = getattr(msg, "tool_calls", None) or []
@@ -120,7 +136,10 @@ def _assistant_message(msg: Any) -> dict[str, Any]:
             {
                 "id": tc.id,
                 "type": "function",
-                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": _valid_arguments(tc.function.arguments),
+                },
             }
             for tc in calls
             if getattr(tc, "type", "function") == "function"
