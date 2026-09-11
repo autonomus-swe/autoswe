@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import shutil
+from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
 import pytest
 from sqlalchemy import text
@@ -10,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.pool import NullPool
 
 from core.settings import get_settings
+from repo.gitcmd import git
 from storage.db import make_engine, session
 from storage.models import CORE_TABLES
 from storage.redis import RedisBus
@@ -48,3 +51,28 @@ async def bus(redis_url: str) -> AsyncIterator[RedisBus]:
         yield b
     finally:
         await b.close()
+
+
+FIXTURE_SRC = Path(__file__).resolve().parents[1] / "fixtures" / "fixture_repo"
+
+
+@pytest.fixture
+def origin_repo(host_tmp: Path) -> Iterator[Path]:
+    import asyncio
+
+    src = host_tmp / "origin"
+    src.mkdir()
+    shutil.copytree(
+        FIXTURE_SRC,
+        src,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".venv", ".pytest_cache"),
+    )
+
+    async def init() -> None:
+        await git("init", "-q", "-b", "main", cwd=src)
+        await git("add", "-A", cwd=src)
+        await git("commit", "-q", "-m", "chore: fixture project", cwd=src)
+
+    asyncio.run(init())
+    yield src

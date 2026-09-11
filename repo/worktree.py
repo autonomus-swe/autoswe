@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import UUID
 
 from core.errors import RepoError
+from repo.clone import AGENT_NAMESPACE
 from repo.gitcmd import git
 
 # Untracked-only: a repo that already tracks uv.lock still sees its real changes.
@@ -33,7 +34,8 @@ class Worktree:
 
 
 def branch_for(run_id: UUID | str) -> str:
-    return f"agent/{run_id}"
+    # the namespace is shared with clone.py, which must not prune these branches away
+    return f"{AGENT_NAMESPACE}/{run_id}"
 
 
 def _write_excludes(common_dir: Path) -> None:
