@@ -37,13 +37,19 @@ class CoderAgent(Agent):
     tool_names: ClassVar[list[str]] = ROLE_TOOLS["coder"]
 
     async def run(
-        self, provider: LLMProvider, ctx: RunContext, goal: str, task: TaskSpec, hooks: Hooks
+        self,
+        provider: LLMProvider,
+        ctx: RunContext,
+        goal: str,
+        task: TaskSpec,
+        hooks: Hooks,
+        files: dict[str, str] | None = None,
     ) -> tuple[TaskResult, RunOutcome]:
         submit = submit_tool("submit_result", TaskResult, SUBMIT_KEY)
         outcome = await self.run_tools(
             provider,
             ctx,
-            task_message(goal, task),
+            task_message(goal, task, files),
             hooks,
             extra_tools=[submit],
             must_call=submit.name,

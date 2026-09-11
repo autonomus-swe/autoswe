@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from agents.analyzer import AnalyzerAgent
 from agents.coder import CoderAgent
-from contracts import RepoFacts, TaskSpec, TestReport
-from core.errors import SandboxError
+from agents.decomposer import DecomposerAgent
+from agents.planner import PlannerAgent
+from contracts import RepoFacts, TaskGraph, TaskGraphSpec, TaskSpec, TestReport
+from core.errors import AgentError, SandboxError
 from gateway.routing import route_for
 from observability.logging import bind_run, get_logger
 from orchestrator.deps import Deps
@@ -23,6 +27,7 @@ from repo import worktree as wt
 from repo.clone import ensure_bare_clone, repo_key, resolve_sha
 from repo.gitcmd import git
 from repo.github import open_pr, pr_body, push_branch
+from repo.repomap import render_map
 from repo.worktree import Worktree
 from sandbox.base import Sandbox
 from storage import repo as db
@@ -33,6 +38,8 @@ from tools.tests import RunTestsTool
 log = get_logger(__name__)
 
 LOCK_TTL_S = 60
+INBOX_POLL_S = 15
+AWAITING_INPUT_TIMEOUT_S = 24 * 3600
 LOCK_RENEW_S = 20
 INSTALL_TIMEOUT_S = 900
 
@@ -88,8 +95,12 @@ def install_command(worktree: Path, facts: RepoFacts | None = None) -> str:
     return f"{deps} && uv pip install {HARNESS_PACKAGES}"
 
 
+MAX_CODER_FILES = 6
+MAX_CODER_FILE_LINES = 300
+
+
 def synthetic_task(goal: str) -> TaskSpec:
-    """v1 has no planner: the goal itself is the single task."""
+    """The whole goal as one task. Used only when a run has no task graph."""
     return TaskSpec(
         id="t1",
         title=goal[:80],
@@ -138,8 +149,7 @@ async def setup_node(state: RunState, deps: Deps, res: RunResources) -> RunState
     if await sandbox.has_network():  # the Coder must never start with network access
         raise SandboxError("sandbox still has network access after disconnect")
 
-    state.task = synthetic_task(state.goal)
-    await _emit(deps, state.run_id, "phase_changed", {"phase": Phase.CODE.value})
+    await _emit(deps, state.run_id, "phase_changed", {"phase": Phase.ANALYZE.value})
     return state
 
 
@@ -158,18 +168,194 @@ def _run_context(state: RunState, res: RunResources, step_id: UUID, role: str) -
     )
 
 
-async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
-    assert state.task is not None
+async def analyze_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
+    """Survey the repository. Fills state.repo and the test command every later phase uses."""
+    assert res.worktree is not None
+    facts = state.facts or repo_profile.collect(res.worktree.path)
+    state.facts = facts
+    repo_map = render_map(res.worktree.path)
+
+    step_id, hooks, ctx = await _begin(state, deps, res, "analyzer", Phase.ANALYZE)
+    error: str | None = None
+    profile = None
+    try:
+        profile, _outcome = await AnalyzerAgent().run(
+            deps.provider, ctx, state.goal, facts, repo_map, hooks
+        )
+        state.repo = profile
+        state.test_command = profile.test_command
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        await _end(state, deps, step_id, hooks, profile, error)
+    await _emit(deps, state.run_id, "phase_changed", {"phase": Phase.PLAN.value})
+    return state
+
+
+async def plan_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
+    """Produce the implementation plan. Open questions park the run for a human."""
+    assert res.worktree is not None and state.repo is not None
+    repo_map = render_map(res.worktree.path)
+    step_id, hooks, ctx = await _begin(state, deps, res, "planner", Phase.PLAN)
+    error: str | None = None
+    plan = None
+    try:
+        plan, _outcome = await PlannerAgent().run(
+            deps.provider,
+            ctx,
+            state.goal,
+            state.repo,
+            repo_map,
+            hooks,
+            answers=state.answers,
+            unattended=state.unattended,
+        )
+        state.plan = plan
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        await _end(state, deps, step_id, hooks, plan, error, extra_input={"answers": state.answers})
+    return state
+
+
+async def decompose_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
+    """Turn the plan into a validated task graph."""
+    assert res.worktree is not None and state.repo is not None and state.plan is not None
+    repo_map = render_map(res.worktree.path)
+    step_id, hooks, _ctx = await _begin(state, deps, res, "decomposer", Phase.DECOMPOSE)
+    error: str | None = None
+    graph = None
+    try:
+        graph = await DecomposerAgent().run(
+            deps.provider, state.goal, state.plan, state.repo, repo_map
+        )
+        state.tasks = graph
+        async with session(deps.engine) as s:
+            await db.upsert_tasks(s, state.run_id, graph)
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        await _end(state, deps, step_id, hooks, graph, error)
+    await _emit(
+        deps,
+        state.run_id,
+        "phase_changed",
+        {"phase": Phase.CODE.value, "tasks": len(graph.tasks) if graph else 0},
+    )
+    return state
+
+
+async def awaiting_input_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
+    """Park until a human answers, the run is cancelled, or the wait times out."""
+    questions = state.plan.open_questions if state.plan else []
+    joined = " ".join(questions)
+    async with session(deps.engine) as s:
+        await db.set_run_phase(s, state.run_id, Phase.AWAITING_INPUT.value, "awaiting_input")
+    await _emit(
+        deps,
+        state.run_id,
+        "awaiting_input",
+        {"kind": "open_questions", "questions": questions},
+    )
+
+    started = time.monotonic()
+    while True:
+        message = await deps.bus.pop_inbox(state.run_id, timeout_s=INBOX_POLL_S)
+        if message and message.get("type") == "answer":
+            state.answers.append((joined, str(message.get("text", ""))))
+            state.waiting_s += time.monotonic() - started
+            await _emit(deps, state.run_id, "log", {"message": "answer received"})
+            return state
+        if await deps.bus.is_cancelled(state.run_id):
+            state.cancelled = True
+            state.waiting_s += time.monotonic() - started
+            return state
+        if res.lock_key and res.lock_owner:  # keep holding the repo while we wait
+            await deps.bus.renew_lock(res.lock_key, res.lock_owner, LOCK_TTL_S)
+        if time.monotonic() - started > AWAITING_INPUT_TIMEOUT_S:
+            state.waiting_s += time.monotonic() - started
+            state.error = "no answer within the waiting period"
+            state.phase = Phase.FAILED
+            return state
+
+
+async def _begin(
+    state: RunState, deps: Deps, res: RunResources, agent: str, phase: Phase
+) -> tuple[UUID, OrchestratorHooks, RunContext]:
+    """Open a step, its hooks and a run context. Shared by the single-shot agents."""
     async with session(deps.engine) as s:
         step_id = await db.start_step(
             s,
             run_id=state.run_id,
-            task_id=state.task.id,
+            task_id=None,
+            agent=agent,
+            phase=phase.value,
+            input={"goal": state.goal},
+        )
+    bind_run(state.run_id, step_id=step_id)
+    await _emit(deps, state.run_id, "agent_started", {"agent": agent})
+    route = route_for(agent)
+    hooks = OrchestratorHooks(
+        run_id=state.run_id,
+        step_id=step_id,
+        engine=deps.engine,
+        bus=deps.bus,
+        provider_name=deps.provider.provider_name,
+        model=deps.provider.model,
+        effort=route.effort,
+    )
+    return step_id, hooks, _run_context(state, res, step_id, agent)
+
+
+async def _end(
+    state: RunState,
+    deps: Deps,
+    step_id: UUID,
+    hooks: OrchestratorHooks,
+    output: Any,
+    error: str | None,
+    extra_input: dict[str, Any] | None = None,
+) -> None:
+    state.usage = state.usage.add(hooks.usage)
+    payload = output.model_dump(mode="json") if hasattr(output, "model_dump") else None
+    async with session(deps.engine) as s:
+        await db.finish_step(s, step_id, output=payload, error=error, usage=hooks.usage)
+        await db.set_run_cost(s, state.run_id, state.usage.cost_usd)
+    if extra_input:
+        async with session(deps.engine) as s:
+            await db.save_artifact(s, state.run_id, "step_input", None, extra_input)
+    await _emit(deps, state.run_id, "agent_finished", {"error": error})
+
+
+async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
+    """One task from the graph, with a fresh context and no sight of earlier transcripts."""
+    if state.tasks is None:  # a run with no plan still has work to do
+        state.tasks = TaskGraph.from_spec(TaskGraphSpec(tasks=[synthetic_task(state.goal)]))
+    task_obj = state.tasks.next_ready()
+    if task_obj is None:
+        raise AgentError("no task is ready to run")
+    task = task_obj.spec
+    task_obj.status = "in_progress"
+    state.current_task_id = task.id
+    state.attempts[task.id] = state.attempts.get(task.id, 0)
+
+    async with session(deps.engine) as s:
+        step_id = await db.start_step(
+            s,
+            run_id=state.run_id,
+            task_id=task.id,
             agent="coder",
             phase=Phase.CODE.value,
-            input={"goal": state.goal, "task": state.task.model_dump(mode="json")},
+            input={"goal": state.goal, "task": task.model_dump(mode="json")},
+            attempt=state.attempts[task.id],
         )
-    bind_run(state.run_id, task_id=state.task.id, step_id=step_id)
+        await db.upsert_tasks(s, state.run_id, state.tasks)
+    bind_run(state.run_id, task_id=task.id, step_id=step_id)
+    await _emit(deps, state.run_id, "agent_started", {"agent": "coder", "task_id": task.id})
+
     route = route_for("coder")
     hooks = OrchestratorHooks(
         run_id=state.run_id,
@@ -182,9 +368,12 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     )
     ctx = _run_context(state, res, step_id, "coder")
     error: str | None = None
+    result = None
     try:
-        result, outcome = await CoderAgent().run(deps.provider, ctx, state.goal, state.task, hooks)
-        state.task_result = result
+        result, outcome = await CoderAgent().run(
+            deps.provider, ctx, state.goal, task, hooks, files=_task_files(res, task)
+        )
+        state.task_results[task.id] = result
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
         raise
@@ -194,14 +383,34 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
             await db.finish_step(
                 s,
                 step_id,
-                output=state.task_result.model_dump(mode="json") if state.task_result else None,
+                output=result.model_dump(mode="json") if result else None,
                 error=error,
                 usage=hooks.usage,
             )
             await db.set_run_cost(s, state.run_id, state.usage.cost_usd)
-    log.info("coder_done", turns=outcome.turns, tool_calls=hooks.tool_calls)
-    await _emit(deps, state.run_id, "phase_changed", {"phase": Phase.TEST.value})
+    log.info("coder_done", task_id=task.id, turns=outcome.turns, tool_calls=hooks.tool_calls)
+    await _emit(deps, state.run_id, "agent_finished", {"agent": "coder", "task_id": task.id})
     return state
+
+
+def _task_files(res: RunResources, task: TaskSpec) -> dict[str, str]:
+    """The files the decomposer named, capped. The Coder has read_file for the rest."""
+    if res.worktree is None:
+        return {}
+    out: dict[str, str] = {}
+    for name in task.files[:MAX_CODER_FILES]:
+        path = res.worktree.path / name
+        if not path.is_file():
+            continue
+        lines = path.read_text(errors="replace").splitlines()
+        if len(lines) > MAX_CODER_FILE_LINES:
+            out[name] = (
+                "\n".join(lines[:MAX_CODER_FILE_LINES])
+                + f"\n… {len(lines) - MAX_CODER_FILE_LINES} more lines; use read_file"
+            )
+        else:
+            out[name] = "\n".join(lines)
+    return out
 
 
 async def test_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
@@ -211,9 +420,19 @@ async def test_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
             s, run_id=state.run_id, task_id=None, agent="tester", phase=Phase.TEST.value
         )
     ctx = _run_context(state, res, step_id, "tester")
-    result = await RunTestsTool()(ctx, selector="")
+    task = state.task
+    selector = task.test_selector if task else ""
+    result = await RunTestsTool()(ctx, selector=selector)
     report = TestReport.model_validate(result.artifact)
+    if report.passed and selector:
+        # the task's own tests pass; now prove the rest of the suite still does
+        result = await RunTestsTool()(ctx, selector="")
+        report = TestReport.model_validate(result.artifact)
     state.last_test_report = report
+    if report.passed and state.tasks is not None and state.current_task_id is not None:
+        state.tasks.by_id(state.current_task_id).status = "done"
+        async with session(deps.engine) as s:
+            await db.upsert_tasks(s, state.run_id, state.tasks)
     async with session(deps.engine) as s:
         await db.insert_tool_call(
             s,
@@ -275,6 +494,10 @@ async def pr_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
 
 NODES: dict[Phase, Node] = {
     Phase.SETUP: setup_node,
+    Phase.ANALYZE: analyze_node,
+    Phase.PLAN: plan_node,
+    Phase.DECOMPOSE: decompose_node,
+    Phase.AWAITING_INPUT: awaiting_input_node,
     Phase.CODE: code_node,
     Phase.TEST: test_node,
     Phase.PR: pr_node,
