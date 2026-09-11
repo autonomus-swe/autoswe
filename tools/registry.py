@@ -5,7 +5,9 @@ from __future__ import annotations
 from tools.base import BaseTool
 from tools.bash import BashTool
 from tools.editor import EditorTool
+from tools.fs import ReadFileTool
 from tools.git import GitCommitTool, GitDiffTool, GitStatusTool
+from tools.search import SearchCodeTool
 from tools.tests import RunTestsTool
 
 REGISTRY: dict[str, BaseTool] = {
@@ -14,6 +16,8 @@ REGISTRY: dict[str, BaseTool] = {
         BashTool(),
         EditorTool(),
         RunTestsTool(),
+        ReadFileTool(),
+        SearchCodeTool(),
         GitStatusTool(),
         GitDiffTool(),
         GitCommitTool(),
@@ -24,6 +28,8 @@ ROLE_TOOLS: dict[str, list[str]] = {
     "coder": [
         "bash",
         "str_replace_based_edit_tool",
+        "read_file",
+        "search_code",
         "run_tests",
         "git_status",
         "git_diff",
@@ -32,17 +38,19 @@ ROLE_TOOLS: dict[str, list[str]] = {
     "debugger": [
         "bash",
         "str_replace_based_edit_tool",
+        "read_file",
+        "search_code",
         "run_tests",
         "git_status",
         "git_diff",
         "git_commit",
     ],
-    "analyzer": ["git_status", "git_diff"],
-    "planner": ["git_status", "git_diff"],
-    "review": ["git_status", "git_diff"],
-    "review_pre": ["git_status", "git_diff"],
+    "analyzer": ["read_file", "search_code", "git_status", "git_diff"],
+    "planner": ["read_file", "search_code", "git_status", "git_diff"],
+    "review": ["read_file", "search_code", "git_status", "git_diff"],
+    "review_pre": ["read_file", "search_code", "git_status", "git_diff"],
     "decomposer": [],
-    "pr_writer": ["git_status", "git_diff"],
+    "pr_writer": ["read_file", "search_code", "git_status", "git_diff"],
 }
 
 READ_ONLY_ROLES = frozenset({"analyzer", "planner", "review", "review_pre", "pr_writer"})
