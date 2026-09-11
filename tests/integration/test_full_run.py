@@ -8,9 +8,8 @@ tests/e2e swap in a real model.
 from __future__ import annotations
 
 import json
-import shutil
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -190,28 +189,6 @@ class StubGitHub:
     def create_pull(self, **kw: Any) -> Any:
         self.created.append(kw)
         return type("PR", (), {"html_url": "https://github.com/acme/demo/pull/7"})()
-
-
-@pytest.fixture
-def origin_repo(host_tmp: Path) -> Iterator[Path]:
-    import asyncio
-
-    src = host_tmp / "origin"
-    src.mkdir()
-    shutil.copytree(
-        FIXTURE_SRC,
-        src,
-        dirs_exist_ok=True,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".venv", ".pytest_cache"),
-    )
-
-    async def init() -> None:
-        await git("init", "-q", "-b", "main", cwd=src)
-        await git("add", "-A", cwd=src)
-        await git("commit", "-q", "-m", "chore: fixture project", cwd=src)
-
-    asyncio.run(init())
-    yield src
 
 
 @pytest.fixture

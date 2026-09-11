@@ -27,6 +27,35 @@ async def make_origin(tmp_path: Path) -> Path:
     return src
 
 
+async def test_refreshing_the_clone_never_prunes_a_run_in_flight(tmp_path: Path) -> None:
+    """A resumed run's branch is not on origin yet.
+
+    An unqualified ``--prune`` deleted it, which orphaned the worktree on an unborn
+    branch and lost every commit the run had made. Branches deleted upstream must still
+    be pruned, so this pins both halves.
+    """
+    src = await make_origin(tmp_path)
+    repos = tmp_path / "repos"
+    bare = await ensure_bare_clone(str(src), repos)
+
+    wt = await worktree.create(bare, tmp_path / "wts", "run-1", "main")
+    (wt.path / "work.txt").write_text("work in progress\n")
+    await git("add", "-A", cwd=wt.path)
+    await git("commit", "-q", "-m", "feat: partial work", cwd=wt.path)
+    committed = (await git("rev-parse", "HEAD", cwd=wt.path)).strip()
+
+    await git("branch", "doomed", cwd=src)  # exists upstream, then goes away
+    await ensure_bare_clone(str(src), repos)
+    assert "doomed" in await git("branch", "--list", "doomed", cwd=bare)
+
+    await git("branch", "-D", "doomed", cwd=src)
+    await ensure_bare_clone(str(src), repos)  # the refresh a resume performs
+
+    assert (await git("branch", "--list", "doomed", cwd=bare)).strip() == "", "still prunes"
+    assert (await git("rev-parse", wt.branch, cwd=bare)).strip() == committed
+    assert (await git("rev-parse", "--abbrev-ref", "HEAD", cwd=wt.path)).strip() == wt.branch
+
+
 async def test_bare_clone_then_fetch_and_worktree_roundtrip(tmp_path: Path) -> None:
     src = await make_origin(tmp_path)
     repos = tmp_path / "repos"
