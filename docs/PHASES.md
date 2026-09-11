@@ -127,7 +127,7 @@ Phases 5 and 6 have internal steps that can be reordered (for example, MCP serve
 Copy this into the project's main issue and tick as you go.
 
 - [x] Phase 0 — foundations (`v0.0.1`, tagged 2026-09-07)
-- [~] Phase 1 — single-agent loop (functionally complete; `v0.1.0` held for a second e2e pass)
+- [x] Phase 1 — single-agent loop (`v0.1.0`, 2026-09-11)
 - [ ] Phase 2 — plan and state (`v0.2.0`)
 - [ ] Phase 3 — verification loop (`v0.3.0`)
 - [ ] Phase 4 — review, security, PR (`v0.4.0`)

@@ -42,7 +42,7 @@ Suggested duration: 6–8 days. This is the longest phase because it touches eve
 - [x] Editor `str_replace` is rejected when the file changed since the last `view` (test exists).
 - [x] The bash deny-list blocks `git push`, `rm -rf /`, `curl … | sh`, and any `git` invocation with a message pointing to the git tools (tests exist).
 - [x] `POST /runs` without a valid `X-API-Key` returns 401 with a generic body; the sixth call in a minute returns 429.
-- [ ] Tag `v0.1.0`. (Held until the second consecutive end-to-end pass.)
+- [x] Tag `v0.1.0`.
 
 ---
 
@@ -529,10 +529,9 @@ Expected: 8–20 tool calls, 1 commit, one PR, a few cents to a few tens of cent
 
 ## 7. Checklist before Phase 2
 
-- [ ] Exit criteria in §1 all ticked; the e2e test passed at least twice in a row.
-      (§1 met. One GitHub run passed on 2026-09-10 — fixture PR #1. The second
-      consecutive pass is pending: OpenRouter's 50-request daily free quota was
-      exhausted, resets 05:30 IST.)
+- [x] Exit criteria in §1 all ticked; the e2e test passed at least twice in a row.
+      (Fixture PR #1 on 2026-09-10 and PR #2 on 2026-09-11, both `done`, both changing
+      only `fixture/ops.py` with `tests/` untouched.)
 - [x] `tool_calls` and `llm_calls` rows exist for the demo run and their sum matches `runs.cost_usd`.
 - [x] You can explain: why git is host-side, why the container starts on a network and then leaves it, why `submit_result` is a tool.
-- [ ] Tag `v0.1.0`. (Held until the second consecutive end-to-end pass.)
+- [x] Tag `v0.1.0`.
