@@ -11,13 +11,14 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from agents.coder import CoderAgent
-from contracts import TaskSpec, TestReport
+from contracts import RepoFacts, TaskSpec, TestReport
 from core.errors import SandboxError
 from gateway.routing import route_for
 from observability.logging import bind_run, get_logger
 from orchestrator.deps import Deps
 from orchestrator.hooks import OrchestratorHooks
 from orchestrator.state import Phase, RunState
+from repo import profile as repo_profile
 from repo import worktree as wt
 from repo.clone import ensure_bare_clone, repo_key, resolve_sha
 from repo.gitcmd import git
@@ -69,9 +70,16 @@ async def _renew_forever(deps: Deps, key: str, owner: str) -> None:
 HARNESS_PACKAGES = "pytest pytest-json-report pytest-timeout"
 
 
-def install_command(worktree: Path) -> str:
-    """The dependency install for this repo. Always ends by adding the test harness."""
-    if (worktree / "pyproject.toml").is_file():
+def install_command(worktree: Path, facts: RepoFacts | None = None) -> str:
+    """The dependency install for this repo, always ending with the test harness.
+
+    Takes the command from the detected RepoFacts when there are any; the fallback keeps
+    a repository with no recognised manifest working.
+    """
+    detected = facts.install_command if facts else None
+    if detected:
+        deps = f"({detected})"
+    elif (worktree / "pyproject.toml").is_file():
         deps = "(uv sync --all-extras || uv sync)"
     elif (worktree / "requirements.txt").is_file():
         deps = "uv venv && uv pip install -r requirements.txt"
@@ -111,8 +119,11 @@ async def setup_node(state: RunState, deps: Deps, res: RunResources) -> RunState
     res.sandbox = sandbox
     await sandbox.start()
 
+    # deterministic facts first: SETUP uses the detected install command, and ANALYZE
+    # gets them as context rather than re-deriving what a file read can settle
+    state.facts = repo_profile.collect(res.worktree.path)
     await sandbox.connect_install_network()
-    install = install_command(res.worktree.path)
+    install = install_command(res.worktree.path, state.facts)
     result = await sandbox.exec(install, timeout_s=INSTALL_TIMEOUT_S)
     if not result.ok:
         # Not fatal on its own: the repo may vendor its dependencies. TEST will say so

@@ -6,7 +6,7 @@ from contracts.debug import DebugHypothesis
 from contracts.events import Event, EventType
 from contracts.plan import ImplementationPlan, Task, TaskGraph, TaskGraphSpec, TaskSpec, TaskStatus
 from contracts.pr import PullRequestDescription
-from contracts.repo import RepoProfile
+from contracts.repo import RepoFacts, RepoProfile
 from contracts.review import ReviewCandidates, ReviewFinding, ReviewReport, Severity
 from contracts.security import SecurityChecklist, SecurityFinding, SecurityReport, SecuritySeverity
 from contracts.task_result import TaskResult
@@ -24,6 +24,7 @@ __all__ = [
     "ImplementationPlan",
     "LLMModel",
     "PullRequestDescription",
+    "RepoFacts",
     "RepoProfile",
     "ReviewCandidates",
     "ReviewFinding",
