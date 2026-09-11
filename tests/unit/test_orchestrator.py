@@ -83,6 +83,21 @@ def test_status_mapping() -> None:
     assert Phase.DONE in {Phase.DONE, Phase.FAILED}
 
 
+def test_install_command_prefers_the_detected_facts(tmp_path: Path) -> None:
+    """SETUP must use what detection found, not re-derive it from file existence."""
+    from contracts import RepoFacts
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    facts = RepoFacts(install_command="poetry install", package_manager="poetry")
+    cmd = install_command(tmp_path, facts)
+    assert cmd.startswith("(poetry install)")
+    assert cmd.endswith("uv pip install " + HARNESS_PACKAGES)
+
+    # no facts, or facts without a command, falls back to inspecting the tree
+    assert install_command(tmp_path, RepoFacts()).startswith("(uv sync")
+    assert install_command(tmp_path, None).startswith("(uv sync")
+
+
 def test_install_command_matches_the_manifest_and_always_adds_the_harness(
     tmp_path: Path,
 ) -> None:

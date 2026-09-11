@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from uuid import UUID
 
-from contracts import Budget, StateModel, TaskResult, TaskSpec, TestReport, Usage
+from contracts import Budget, RepoFacts, StateModel, TaskResult, TaskSpec, TestReport, Usage
 
 DEFAULT_TEST_COMMAND = "uv run --no-sync pytest -q"
 
@@ -44,6 +44,7 @@ class RunState(StateModel):
     work_branch: str
     phase: Phase = Phase.SETUP
     base_sha: str | None = None
+    facts: RepoFacts | None = None
     test_command: str = DEFAULT_TEST_COMMAND
     task: TaskSpec | None = None  # v1: one synthetic task built from the goal
     task_result: TaskResult | None = None
