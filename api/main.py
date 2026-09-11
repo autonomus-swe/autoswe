@@ -5,10 +5,12 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from api.routes import control, events, health, runs
 from core.settings import Settings, get_settings
@@ -63,6 +65,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse(
             status_code=500, content={"detail": "internal error", "request_id": rid}
         )
+
+    # the run console: plain HTML, CSS and JavaScript, no build step
+    static_dir = Path(__file__).parent / "static"
+    app.mount("/ui", StaticFiles(directory=static_dir), name="ui")
+
+    @app.get("/", include_in_schema=False)
+    async def console() -> FileResponse:
+        return FileResponse(static_dir / "index.html")
 
     app.include_router(health.router)
     app.include_router(runs.router)

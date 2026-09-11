@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>autoswe</title>
+<!-- no webfont on purpose: the console must render offline and behind a proxy, and the
+     stacks in app.css fall back to the platform UI and mono faces -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='4' fill='%230e1213'/><circle cx='8' cy='8' r='3' fill='%2338bdae'/></svg>">
+<link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">autoswe<span>agent runs</span></div>
+  <div class="bar-actions">
+    <input id="key" class="key" type="password" placeholder="X-API-Key" autocomplete="off" spellcheck="false">
+    <button id="new-run" class="btn btn-primary" type="button">New run</button>
+  </div>
+</header>
+
+<main class="shell">
+  <aside class="rail">
+    <div class="rail-head">
+      <span>Runs</span>
+      <button id="refresh" class="btn btn-quiet" type="button" title="Refresh">↻</button>
+    </div>
+    <ul id="runs" class="runs"><li class="empty">Enter your API key to load runs.</li></ul>
+  </aside>
+
+  <section id="detail" class="detail">
+    <div class="placeholder">
+      <h1>Watch an agent work</h1>
+      <p>Pick a run on the left, or start a new one. Phases, tasks, every tool call and
+         every model turn stream in live.</p>
+    </div>
+  </section>
+</main>
+
+<dialog id="new-run-dialog" class="dialog">
+  <form method="dialog" id="new-run-form">
+    <h2>New run</h2>
+    <label>Repository
+      <input name="repo_url" type="url" required placeholder="https://github.com/owner/name">
+    </label>
+    <label>Goal
+      <textarea name="goal" required rows="4" minlength="10"
+        placeholder="Implement subtract(a, b) and slugify(text) in fixture/ops.py so that tests/test_ops.py passes. Do not change the tests."></textarea>
+    </label>
+    <label>Base branch
+      <input name="base_branch" value="main" required>
+    </label>
+    <p class="dialog-error" id="new-run-error" hidden></p>
+    <div class="dialog-actions">
+      <button value="cancel" class="btn btn-quiet" type="submit" formnovalidate>Cancel</button>
+      <button value="start" class="btn btn-primary" type="submit">Start</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/ui/app.js"></script>
+</body>
+</html>

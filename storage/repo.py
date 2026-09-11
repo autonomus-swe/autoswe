@@ -56,6 +56,20 @@ async def create_run(
     return run_id
 
 
+async def list_runs(s: AsyncSession, limit: int = 50) -> list[RunRow]:
+    """Most recent runs first."""
+    res = await s.execute(select(RunRow).order_by(RunRow.created_at.desc()).limit(limit))
+    return list(res.scalars())
+
+
+async def list_steps(s: AsyncSession, run_id: uuid.UUID) -> list[StepRow]:
+    """Every agent invocation of a run, in order."""
+    res = await s.execute(
+        select(StepRow).where(StepRow.run_id == run_id).order_by(StepRow.started_at)
+    )
+    return list(res.scalars())
+
+
 async def get_run(s: AsyncSession, run_id: uuid.UUID) -> RunRow | None:
     return await s.get(RunRow, run_id)
 
