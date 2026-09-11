@@ -79,12 +79,16 @@ def call(cid: str, name: str, args: dict[str, Any]) -> ChatTurn:
     )
 
 
-class ScriptedCoder(OpenAICompatProvider):
-    """Plays a competent coder: look, edit, test, commit, submit."""
+class ScriptedAgents(OpenAICompatProvider):
+    """Plays every agent in the loop, dispatching on which tools it is offered.
+
+    Sequencing by position breaks the moment a phase is added; dispatching on the
+    submit tool in the request keeps the fake honest about what it is standing in for.
+    """
 
     def __init__(self) -> None:
-        super().__init__(model="scripted/coder", api_key=None, base_url="http://scripted")
-        self.script = [
+        super().__init__(model="scripted/agents", api_key=None, base_url="http://scripted")
+        self.coder_script = [
             call("1", "str_replace_based_edit_tool", {"command": "view", "path": "."}),
             call("2", "str_replace_based_edit_tool", {"command": "view", "path": "fixture/ops.py"}),
             call(
@@ -114,10 +118,63 @@ class ScriptedCoder(OpenAICompatProvider):
             ),
         ]
         self.seen_tools: list[str] = []
+        self.roles: list[str] = []
 
     async def _complete(self, **kw: Any) -> ChatTurn:
-        self.seen_tools = [t["function"]["name"] for t in kw.get("tools", [])]
-        return self.script.pop(0)
+        offered = {t["function"]["name"] for t in kw.get("tools", [])}
+        self.seen_tools = sorted(offered)
+        for tool, role in (("submit_profile", "analyzer"), ("submit_plan", "planner")):
+            if tool not in offered:
+                continue
+            if role in self.roles:  # submitted already: end the turn, as a real model would
+                return self._done()
+            self.roles.append(role)
+            return call(role[0], tool, PROFILE if role == "analyzer" else PLAN)
+        if "submit_result" in offered:
+            if "coder" not in self.roles:
+                self.roles.append("coder")
+            return self.coder_script.pop(0)
+        return self._done()
+
+    @staticmethod
+    def _done() -> ChatTurn:
+        return ChatTurn("done", [], "stop", Usage(), {"role": "assistant", "content": "done"})
+
+    async def parse(self, req: Any, output: type[Any]) -> tuple[Any, Usage]:
+        self.roles.append("decomposer")
+        return output.model_validate(TASK_GRAPH), Usage(input_tokens=200, output_tokens=40)
+
+
+PROFILE = {
+    "languages": ["python"],
+    "framework": None,
+    "package_manager": "uv",
+    "test_command": "uv run --no-sync pytest -q",
+    "lint_command": None,
+    "conventions": ["tests live under tests/"],
+    "entry_points": ["fixture/ops.py"],
+}
+PLAN = {
+    "approach": "Implement the two missing functions.",
+    "affected_files": ["fixture/ops.py"],
+    "new_files": [],
+    "risks": [],
+    "test_strategy": "uv run --no-sync pytest -q tests/test_ops.py",
+    "open_questions": [],
+}
+TASK_GRAPH = {
+    "tasks": [
+        {
+            "id": "t1",
+            "title": "Implement subtract and slugify",
+            "description": "Add both functions to fixture/ops.py",
+            "depends_on": [],
+            "files": ["fixture/ops.py"],
+            "acceptance_criteria": ["tests/test_ops.py passes"],
+            "test_selector": "tests/test_ops.py",
+        }
+    ]
+}
 
 
 class StubGitHub:
@@ -160,7 +217,7 @@ def origin_repo(host_tmp: Path) -> Iterator[Path]:
 @pytest.fixture
 async def deps(
     migrated_pg_url: str, redis_url: str, host_tmp: Path
-) -> AsyncIterator[tuple[Deps, ScriptedCoder, StubGitHub]]:
+) -> AsyncIterator[tuple[Deps, ScriptedAgents, StubGitHub]]:
     settings: Settings = load_settings(env_file=None).model_copy(
         update={
             "database_url": migrated_pg_url,
@@ -170,7 +227,7 @@ async def deps(
             "sandbox_image": IMAGE,
         }
     )
-    provider, github = ScriptedCoder(), StubGitHub()
+    provider, github = ScriptedAgents(), StubGitHub()
     engine: AsyncEngine = make_engine(migrated_pg_url, poolclass=NullPool)
     bus = RedisBus(redis_url)
     await bus.r.flushdb()
@@ -193,7 +250,7 @@ async def deps(
 
 @requires_docker
 async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
-    deps: tuple[Deps, ScriptedCoder, StubGitHub], origin_repo: Path
+    deps: tuple[Deps, ScriptedAgents, StubGitHub], origin_repo: Path
 ) -> None:
     d, provider, github = deps
     async with session(d.engine) as s:
@@ -223,15 +280,11 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
     assert final.pr_url == "https://github.com/acme/demo/pull/7"
 
     # the coder was offered exactly its role's tools plus submit_result
-    assert set(provider.seen_tools) == {
-        "bash",
-        "str_replace_based_edit_tool",
-        "run_tests",
-        "git_status",
-        "git_diff",
-        "git_commit",
-        "submit_result",
-    }
+    # every agent in the loop ran, in order, each offered its own tool set
+    assert provider.roles == ["analyzer", "planner", "decomposer", "coder"]
+    assert {"bash", "run_tests", "git_commit", "read_file", "search_code"} <= set(
+        provider.seen_tools
+    )
 
     # the branch reached the origin with the right content and untouched tests
     assert state.work_branch in await git("branch", "--list", state.work_branch, cwd=origin_repo)
@@ -253,9 +306,11 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
         llm_turns = len(await db.list_llm_calls(s, run_id))
     assert row is not None and row.status == "done" and row.pr_url == final.pr_url
     assert row.started_at is not None and row.finished_at is not None
-    # the audit trail replays the run in the exact order it happened
+    # the audit trail replays the whole run in the order it happened, every agent included
     assert tool_names == [
-        "str_replace_based_edit_tool",
+        "submit_profile",  # analyzer
+        "submit_plan",  # planner
+        "str_replace_based_edit_tool",  # coder from here
         "str_replace_based_edit_tool",
         "str_replace_based_edit_tool",
         "run_tests",
@@ -264,9 +319,14 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
         "submit_result",
         "run_tests",  # the deterministic TEST phase after the coder finished
     ]
-    assert llm_turns == 8
+    assert llm_turns >= 8
     assert artifact is not None and artifact.content["passed"] is True
-    assert events == ["phase_changed", "phase_changed", "test_report", "pr_opened"]
+    # the stream tells the story of the run: each agent starting and finishing, the
+    # phase changes between them, the test report, and the pull request at the end
+    assert events[0] == "phase_changed"
+    assert events[-1] in ("pr_opened", "run_finished")
+    assert events.count("agent_started") == events.count("agent_finished") >= 4
+    assert "test_report" in events and "pr_opened" in events
 
     # teardown really released everything
     assert not (Path(d.worktrees_dir()) / str(run_id)).exists()
@@ -275,11 +335,11 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
 
 @requires_docker
 async def test_failing_tests_end_the_run_without_a_pr(
-    deps: tuple[Deps, ScriptedCoder, StubGitHub], origin_repo: Path
+    deps: tuple[Deps, ScriptedAgents, StubGitHub], origin_repo: Path
 ) -> None:
     """The coder submits without fixing anything: TEST fails, so no branch is pushed."""
     d, provider, github = deps
-    provider.script = [
+    provider.coder_script = [
         call(
             "1",
             "submit_result",
@@ -322,7 +382,7 @@ async def test_failing_tests_end_the_run_without_a_pr(
 
 @requires_docker
 async def test_a_second_run_is_blocked_by_the_repo_lock(
-    deps: tuple[Deps, ScriptedCoder, StubGitHub], origin_repo: Path
+    deps: tuple[Deps, ScriptedAgents, StubGitHub], origin_repo: Path
 ) -> None:
     d, _provider, _github = deps
     key = f"lock:repo:{repo_key(str(origin_repo))}:main"

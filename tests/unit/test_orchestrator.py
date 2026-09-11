@@ -9,7 +9,15 @@ from typing import Any
 
 import pytest
 
-from contracts import TaskResult, TestReport
+from contracts import (
+    ImplementationPlan,
+    RepoProfile,
+    TaskGraph,
+    TaskGraphSpec,
+    TaskResult,
+    TaskSpec,
+    TestReport,
+)
 from orchestrator.nodes import (
     HARNESS_PACKAGES,
     RunResources,
@@ -55,21 +63,81 @@ def report(passed: bool) -> TestReport:
     )
 
 
+PLAN_OK = ImplementationPlan(
+    approach="a",
+    affected_files=[],
+    new_files=[],
+    risks=[],
+    test_strategy="pytest",
+    open_questions=[],
+)
+PLAN_ASKS = PLAN_OK.model_copy(update={"open_questions": ["cookies or JWT?"]})
+PROFILE = RepoProfile(
+    languages=["python"],
+    framework=None,
+    package_manager="uv",
+    test_command="pytest -q",
+    lint_command=None,
+    conventions=[],
+    entry_points=[],
+)
+
+
+def spec(tid: str, depends: list[str] | None = None) -> TaskSpec:
+    return TaskSpec(
+        id=tid,
+        title=tid,
+        description="d",
+        depends_on=depends or [],
+        files=[],
+        acceptance_criteria=["ok"],
+        test_selector="tests/test_x.py",
+    )
+
+
+def graph(*ids: str) -> TaskGraph:
+    return TaskGraph.from_spec(TaskGraphSpec(tasks=[spec(i) for i in ids]))
+
+
 @pytest.mark.parametrize(
     ("current", "kw", "expected"),
     [
-        (Phase.SETUP, {}, Phase.CODE),
-        (Phase.CODE, {"task_result": RESULT}, Phase.TEST),
-        (Phase.CODE, {}, Phase.FAILED),
-        (Phase.TEST, {"last_test_report": report(True)}, Phase.PR),
+        (Phase.SETUP, {}, Phase.ANALYZE),
+        (Phase.ANALYZE, {"repo": PROFILE}, Phase.PLAN),
+        (Phase.ANALYZE, {}, Phase.FAILED),
+        (Phase.PLAN, {"plan": PLAN_OK}, Phase.DECOMPOSE),
+        (Phase.PLAN, {"plan": PLAN_ASKS}, Phase.AWAITING_INPUT),
+        (Phase.PLAN, {}, Phase.FAILED),
+        (Phase.AWAITING_INPUT, {}, Phase.PLAN),
+        (Phase.DECOMPOSE, {"tasks": graph("t1")}, Phase.CODE),
+        (Phase.DECOMPOSE, {}, Phase.FAILED),
+        (
+            Phase.CODE,
+            {"tasks": graph("t1"), "current_task_id": "t1", "task_results": {"t1": RESULT}},
+            Phase.TEST,
+        ),
+        (Phase.CODE, {"tasks": graph("t1"), "current_task_id": "t1"}, Phase.FAILED),
         (Phase.TEST, {"last_test_report": report(False)}, Phase.FAILED),
         (Phase.TEST, {}, Phase.FAILED),
-        (Phase.PR, {"pr_url": "https://github.com/acme/demo/pull/1"}, Phase.DONE),
+        (Phase.PR, {"pr_url": "https://example/pull/1"}, Phase.DONE),
         (Phase.PR, {}, Phase.FAILED),
     ],
 )
 def test_transition_table(current: Phase, kw: dict[str, Any], expected: Phase) -> None:
     assert transition(state(phase=current, **kw)) == expected
+
+
+def test_test_phase_returns_to_code_while_tasks_remain_then_goes_to_pr() -> None:
+    """The multi-task loop: CODE and TEST alternate until the graph is exhausted."""
+    tasks = graph("t1", "t2", "t3")
+    s = state(phase=Phase.TEST, tasks=tasks, last_test_report=report(True))
+
+    for task_id in ("t1", "t2"):
+        tasks.by_id(task_id).status = "done"
+        assert transition(s) == Phase.CODE, f"after {task_id} there is still work"
+
+    tasks.by_id("t3").status = "done"
+    assert transition(s) == Phase.PR
 
 
 def test_transition_rejects_phases_without_a_node() -> None:
