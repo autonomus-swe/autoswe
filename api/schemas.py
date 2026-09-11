@@ -78,3 +78,81 @@ class RunSummary(BaseModel):
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
+
+
+class TaskView(BaseModel):
+    """A task as the UI shows it."""
+
+    id: str
+    title: str
+    status: str
+    depends_on: list[str]
+    files: list[str]
+    acceptance_criteria: list[str]
+    test_selector: str
+    attempts: int
+
+    @classmethod
+    def from_row(cls, row: Any) -> TaskView:
+        return cls(
+            id=row.id,
+            title=row.title,
+            status=row.status,
+            depends_on=list(row.depends_on or []),
+            files=list(row.files or []),
+            acceptance_criteria=list(row.acceptance_criteria or []),
+            test_selector=row.test_selector or "",
+            attempts=row.attempts,
+        )
+
+
+class StepView(BaseModel):
+    id: UUID
+    agent: str
+    phase: str
+    task_id: str | None
+    attempt: int
+    error: str | None
+    started_at: datetime
+    finished_at: datetime | None
+
+
+class ToolCallView(BaseModel):
+    seq: int
+    name: str
+    exit_code: int | None
+    duration_ms: int
+    input: dict[str, Any]
+    output_preview: str | None
+
+
+class LLMCallView(BaseModel):
+    seq: int
+    model: str
+    effort: str | None
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float
+    latency_ms: int
+    stop_reason: str | None
+
+
+class EventView(BaseModel):
+    """A recorded event. Carries the time it happened, which an SSE frame cannot."""
+
+    id: int
+    type: str
+    payload: dict[str, Any]
+    ts: datetime
+
+
+class RunDetail(BaseModel):
+    """Everything the UI needs for one run in a single request."""
+
+    run: RunSummary
+    tasks: list[TaskView]
+    steps: list[StepView]
+    events: list[EventView]
+    tool_calls: list[ToolCallView]
+    llm_calls: list[LLMCallView]
+    totals: dict[str, float]

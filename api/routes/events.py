@@ -11,7 +11,7 @@ import orjson
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sse_starlette.sse import EventSourceResponse
 
-from api.auth import require_api_key
+from api.auth import require_api_key_or_query
 from observability.logging import get_logger
 from storage import repo as db
 from storage.db import session
@@ -38,7 +38,7 @@ async def stream_events(
     run_id: UUID,
     request: Request,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
-    _key: str = Depends(require_api_key),
+    _key: str = Depends(require_api_key_or_query),
 ) -> EventSourceResponse:
     """Live events, or the whole history if the run has already finished.
 

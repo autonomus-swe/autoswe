@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from typing import Any
+from uuid import UUID
 
 import httpx
 import pytest
@@ -101,14 +102,111 @@ async def test_invalid_bodies_are_rejected(
     assert res.status_code == 422
 
 
+MISSING = f"{'0' * 8}-0000-0000-0000-{'0' * 12}"
+
+
+async def test_list_runs_is_newest_first(api: tuple[httpx.AsyncClient, FakeArq]) -> None:
+    client, _ = api
+    goals = ["the first goal", "the second goal", "the third goal"]
+    made = []
+    for goal in goals:
+        res = await client.post(
+            "/runs",
+            json={"repo_url": "https://github.com/acme/demo", "goal": goal},
+            headers={"X-API-Key": KEY},
+        )
+        assert res.status_code == 202, res.text
+        made.append(res.json()["run_id"])
+
+    res = await client.get("/runs?limit=3", headers={"X-API-Key": KEY})
+    assert res.status_code == 200
+    listed = res.json()
+    assert [r["run_id"] for r in listed] == list(reversed(made))
+    assert [r["goal"] for r in listed] == list(reversed(goals))
+    # the rail needs an age to tell runs with the same goal apart
+    assert all(r["created_at"] for r in listed)
+
+
+async def test_list_runs_needs_a_key_and_clamps_the_limit(
+    api: tuple[httpx.AsyncClient, FakeArq],
+) -> None:
+    client, _ = api
+    assert (await client.get("/runs")).status_code == 401
+    for limit in (0, -5, 10_000):
+        res = await client.get(f"/runs?limit={limit}", headers={"X-API-Key": KEY})
+        assert res.status_code == 200, res.text
+
+
+async def test_run_detail_carries_everything_the_console_draws(
+    api: tuple[httpx.AsyncClient, FakeArq],
+) -> None:
+    client, _ = api
+    body = {"repo_url": "https://github.com/acme/demo", "goal": "Implement subtract(a, b)"}
+    run_id = (await client.post("/runs", json=body, headers={"X-API-Key": KEY})).json()["run_id"]
+
+    res = await client.get(f"/runs/{run_id}/detail", headers={"X-API-Key": KEY})
+    assert res.status_code == 200, res.text
+    detail = res.json()
+    assert detail["run"]["run_id"] == run_id
+    # a fresh run has nothing yet, and every list must still be present and empty
+    assert detail["tasks"] == detail["steps"] == detail["events"] == []
+    assert detail["tool_calls"] == detail["llm_calls"] == []
+    assert detail["totals"] == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_usd": 0,
+        "tool_calls": 0,
+        "llm_calls": 0,
+    }
+
+
+async def test_run_detail_replays_events_with_the_time_they_happened(
+    api: tuple[httpx.AsyncClient, FakeArq], engine: AsyncEngine
+) -> None:
+    """An SSE frame carries no timestamp, so the console reads them from here."""
+    from storage import repo as db
+    from storage.db import session
+
+    client, _ = api
+    body = {"repo_url": "https://github.com/acme/demo", "goal": "Implement subtract(a, b)"}
+    run_id = (await client.post("/runs", json=body, headers={"X-API-Key": KEY})).json()["run_id"]
+
+    async with session(engine) as s:
+        await db.insert_event(s, UUID(run_id), "phase_changed", {"phase": "analyze"})
+        await db.insert_event(s, UUID(run_id), "awaiting_input", {"questions": ["which?"]})
+
+    events = (await client.get(f"/runs/{run_id}/detail", headers={"X-API-Key": KEY})).json()[
+        "events"
+    ]
+    assert [e["type"] for e in events] == ["phase_changed", "awaiting_input"]
+    assert events[1]["payload"] == {"questions": ["which?"]}
+    assert events[0]["id"] < events[1]["id"]
+    assert all(e["ts"] for e in events)
+
+
+async def test_detail_of_a_missing_run_is_404(api: tuple[httpx.AsyncClient, FakeArq]) -> None:
+    client, _ = api
+    res = await client.get(f"/runs/{MISSING}/detail", headers={"X-API-Key": KEY})
+    assert res.status_code == 404 and res.json() == {"detail": "run not found"}
+
+
 async def test_rate_limit_after_the_burst(api: tuple[httpx.AsyncClient, FakeArq]) -> None:
+    """The write bucket is small: starting runs costs money."""
     client, _ = api
     codes = [
-        (
-            await client.get(
-                f"/runs/{'0' * 8}-0000-0000-0000-{'0' * 12}", headers={"X-API-Key": KEY}
-            )
-        ).status_code
+        (await client.post(f"/runs/{MISSING}/cancel", headers={"X-API-Key": KEY})).status_code
         for _ in range(6)
     ]
     assert codes[:5] == [404] * 5 and codes[5] == 429
+
+
+async def test_reads_do_not_spend_the_write_budget(api: tuple[httpx.AsyncClient, FakeArq]) -> None:
+    """A console re-reads a run on every phase change; that must never block starting one."""
+    client, _ = api
+    for _ in range(20):
+        res = await client.get(f"/runs/{MISSING}", headers={"X-API-Key": KEY})
+        assert res.status_code == 404, res.text
+    # the write bucket is untouched, so a real write still gets through
+    assert (
+        await client.post(f"/runs/{MISSING}/cancel", headers={"X-API-Key": KEY})
+    ).status_code == 404
