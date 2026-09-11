@@ -50,6 +50,7 @@ ROLE_TOOLS: dict[str, list[str]] = {
     "review": ["read_file", "search_code", "git_status", "git_diff"],
     "review_pre": ["read_file", "search_code", "git_status", "git_diff"],
     "decomposer": [],
+    "tester": [],
     "pr_writer": ["read_file", "search_code", "git_status", "git_diff"],
 }
 
