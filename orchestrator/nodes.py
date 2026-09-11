@@ -20,6 +20,7 @@ from core.errors import AgentError, SandboxError
 from gateway.routing import route_for
 from observability.logging import bind_run, get_logger
 from orchestrator.deps import Deps
+from orchestrator.events import emit
 from orchestrator.hooks import OrchestratorHooks
 from orchestrator.state import Phase, RunState
 from repo import profile as repo_profile
@@ -60,10 +61,7 @@ Node = Callable[[RunState, Deps, RunResources], Awaitable[RunState]]
 
 
 async def _emit(deps: Deps, run_id: UUID, type: str, payload: dict[str, Any]) -> None:
-    async with session(deps.engine) as s:
-        await db.insert_event(s, run_id, type, payload)
-    with contextlib.suppress(Exception):  # a dead bus must not fail the run
-        await deps.bus.emit(run_id, type, payload)
+    await emit(deps.bus, deps.engine, run_id, type, payload)
 
 
 async def _renew_forever(deps: Deps, key: str, owner: str) -> None:

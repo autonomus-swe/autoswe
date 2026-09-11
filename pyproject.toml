@@ -78,7 +78,8 @@ strict = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 no_implicit_optional = true
-exclude = ["storage/migrations/", "tests/fixtures/"]
+# never type-check installed packages: their source is not ours to fix
+exclude = ["storage/migrations/", "tests/fixtures/", "\\.venv/", "venv/"]
 
 [[tool.mypy.overrides]]
 module = ["testcontainers.*", "asyncpg.*", "docker.*", "arq.*"]
@@ -101,3 +102,9 @@ filterwarnings = [
   # (emitted at import time from the library's own modules); nothing in this repo uses it.
   "ignore:The @wait_container_is_ready decorator is deprecated:DeprecationWarning:testcontainers",
 ]
+
+[[tool.mypy.overrides]]
+# urllib3 ships py.typed, so mypy type-checks its source and trips over syntax it does
+# not support. Their code is not ours to fix; skip it.
+module = ["urllib3.*"]
+follow_imports = "skip"
