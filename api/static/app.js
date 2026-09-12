@@ -217,8 +217,9 @@ function renderTask(t) {
 
 function renderToolCall(c) {
   // the editor tool carries both, and "view" alone says nothing about what was viewed
+  // a search carries both a pattern and a path; the pattern is what was being looked for
   const i = c.input ?? {};
-  const summary = [i.command, i.path ?? i.selector ?? i.pattern ?? i.message]
+  const summary = [i.command, i.pattern ?? i.path ?? i.selector ?? i.message]
     .filter(Boolean).join(" ") || Object.values(i).filter((v) => typeof v === "string")[0] || "";
   return `<tr>
     <td class="num">${c.seq}</td>
