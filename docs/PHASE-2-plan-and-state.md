@@ -51,12 +51,27 @@ multi-task coding run:
   token, but that is a *rate*, not free access. Every call is metered against a small
   monthly included-credit pool; once it is gone every model returns `402`, including the
   zero-rate provider and including when the provider is pinned (`model:provider`). A free
-  account has no way past it.
-- **OpenRouter free tier** — works, but the request-per-day cap is worth roughly three
-  runs. Enough for the pause test, not for a multi-task loop.
+  account has no way past it. Do not be misled by `is_free` or a `$0` price in
+  `GET /v1/models`; neither reflects whether a call will be served.
+- **OpenRouter free tier** — two separate limits, and they fail the same way:
+  `free-models-per-min` at 20, and `free-models-per-day` at **50**. The per-minute one
+  is now waited out (`gateway/openai_compat_provider.py`, verified absorbing 12 of them
+  in one run). The daily 50 is the real wall: a multi-task run spends it, and the reset
+  is hours away, which is not something a test can wait for — so the retry clamps and
+  gives up rather than parking the suite. Roughly three runs a day. `$10` of credit
+  raises it to 1000/day, which would be enough.
+
+What this means in practice: run **one** e2e test on a fresh day's quota rather than the
+pair. The pause test is the cheap one (it only needs ANALYZE and PLAN).
 
 The scripted-provider integration tests cover the same wiring without spend, so this is
 an unverified-against-a-real-model gap rather than an untested one.
+
+One finding worth keeping even though the run did not complete: given the goal
+`"Add authentication."` with `unattended=False`, the Planner did **not** pause — it
+planned and went straight to coding task `t2`. §6 warns about a planner that asks too
+many questions; the opposite is also a failure, and this is the prompt to look at first
+when the pause test next runs.
 
 ---
 
