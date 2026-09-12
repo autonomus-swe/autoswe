@@ -32,6 +32,10 @@ jobs:
         with: { enable-cache: true }
       - run: uv python install 3.12
       - run: uv sync --all-extras
+      # Without this image every sandbox test — resume after SIGKILL, cancel, the full
+      # loop — skips instead of running, and the tier goes green while proving nothing.
+      - run: make sandbox-image
+      - run: docker image inspect agent-sandbox:python-3.12 --format 'sandbox image {{.Id}}'
       - run: make test-int
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"

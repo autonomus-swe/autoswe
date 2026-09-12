@@ -305,9 +305,21 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
     # the stream tells the story of the run: each agent starting and finishing, the
     # phase changes between them, the test report, and the pull request at the end
     assert events[0] == "phase_changed"
-    assert events[-1] in ("pr_opened", "run_finished")
+    assert events[-1] == "run_finished"
     assert events.count("agent_started") == events.count("agent_finished") >= 4
-    assert "test_report" in events and "pr_opened" in events
+    # every type a viewer relies on is on the stream, not just the ones easy to assert
+    assert {
+        "phase_changed",
+        "agent_started",
+        "agent_finished",
+        "tool_call",
+        "test_report",
+        "pr_opened",
+        "run_finished",
+    } <= set(events), sorted(set(events))
+    # every tool call an agent made is on the stream. The deterministic TEST phase adds a
+    # tool_calls row of its own but announces itself as test_report, hence the one fewer.
+    assert events.count("tool_call") == len(tool_names) - 1
 
     # teardown really released everything
     assert not (Path(d.worktrees_dir()) / str(run_id)).exists()

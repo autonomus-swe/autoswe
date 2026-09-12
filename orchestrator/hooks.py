@@ -9,6 +9,7 @@ from contracts import ToolResult, Usage
 from core.errors import RunCancelled
 from gateway import budget
 from observability.logging import get_logger
+from orchestrator.events import emit
 from storage import repo
 from storage.db import session
 from storage.redis import RedisBus
@@ -67,12 +68,16 @@ class OrchestratorHooks:
                 exit_code=1 if result.is_error else 0,
                 duration_ms=duration_ms,
             )
-        if self.bus is not None:
-            await self.bus.emit(
-                self.run_id,
-                "tool_call",
-                {"name": name, "is_error": result.is_error, "duration_ms": duration_ms},
-            )
+        # through events.emit, not bus.emit: the table is what a replay reads, and a
+        # viewer attaching part-way through a live run gets its history from there too.
+        # Emitting only to Redis dropped every tool call out of both.
+        await emit(
+            self.bus,
+            self.engine,
+            self.run_id,
+            "tool_call",
+            {"name": name, "is_error": result.is_error, "duration_ms": duration_ms},
+        )
         return result
 
     async def on_message(self, message: Any, usage: Usage, latency_ms: int) -> None:
