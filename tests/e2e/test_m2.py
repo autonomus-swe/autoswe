@@ -18,10 +18,15 @@ from storage.db import session
 
 pytestmark = pytest.mark.e2e
 
+# Deliberately three tiny pieces of work. The criterion is that a goal decomposing into
+# three or more tasks finishes with a commit per task — it is about the multi-task loop,
+# not about how hard each task is. A large goal also measures how good the model is at
+# coding, which on a free tier means the test fails for a reason it is not asking about,
+# and each retry costs requests from an allowance worth about three runs a day.
 MULTI_TASK_GOAL = (
-    "Add a Stats class in fixture/stats.py with mean(), median() and mode(); a CLI entry "
-    "point fixture/__main__.py that reads numbers from stdin and prints all three; and "
-    "tests for each in tests/test_stats.py. Do not change the existing tests."
+    "Add three functions to fixture/ops.py: double(n) returning n * 2, triple(n) "
+    "returning n * 3, and negate(n) returning -n. Add a test for each in "
+    "tests/test_extra.py. Do not change any existing file other than fixture/ops.py."
 )
 AMBIGUOUS_GOAL = "Add authentication."
 ANSWER = "JWT with HS256, secret from env JWT_SECRET, access tokens only, no refresh tokens."
