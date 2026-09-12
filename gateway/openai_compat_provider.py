@@ -42,6 +42,12 @@ _RECOVERABLE_MARKERS = (
     "output_parse_failed",
     "could not be parsed",
 )
+# Free tiers meter per minute, not per run. The SDK's own retries all land inside the
+# same window and fail together, so a whole agent run dies on a limit that clears in
+# seconds. Wait for the window the provider names, then carry on.
+RATE_LIMIT_RETRIES = 6
+RATE_LIMIT_MAX_WAIT_S = 90.0
+RATE_LIMIT_FALLBACK_WAIT_S = 20.0
 
 
 class _InvalidToolCall(Exception):
@@ -70,6 +76,50 @@ def _invalid_tool_call_detail(err: Any) -> tuple[str, str | None] | None:
         if inner.get("failed_generation"):
             generation = str(inner["failed_generation"])[:600]
     return detail[:600], generation
+
+
+def _retry_after_s(err: Any, now_s: float) -> float | None:
+    """How long to wait out a rate limit, or None when this is not one.
+
+    Providers disagree on where the hint goes: ``Retry-After`` in seconds, an
+    ``X-RateLimit-Reset`` epoch (OpenRouter sends milliseconds, in the body rather than
+    on the response), or nothing at all. Take whichever is there and clamp it, so a
+    malformed or far-future value cannot park a run for hours.
+    """
+    if getattr(err, "status_code", None) != 429 and type(err).__name__ != "RateLimitError":
+        return None
+
+    def clamp(value: float) -> float:
+        return max(1.0, min(value, RATE_LIMIT_MAX_WAIT_S))
+
+    headers = getattr(getattr(err, "response", None), "headers", None) or {}
+    body = getattr(err, "body", None)
+    inner = body.get("error") if isinstance(body, dict) else None
+    meta = inner.get("metadata") if isinstance(inner, dict) else None
+    body_headers = meta.get("headers") if isinstance(meta, dict) else None
+    sources: list[Any] = [headers, body_headers if isinstance(body_headers, dict) else {}]
+
+    for source in sources:
+        raw = source.get("Retry-After") or source.get("retry-after")
+        if raw is not None:
+            try:
+                return clamp(float(raw))
+            except (TypeError, ValueError):
+                pass
+    for source in sources:
+        raw = source.get("X-RateLimit-Reset") or source.get("x-ratelimit-reset")
+        if raw is None:
+            continue
+        try:
+            reset = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if reset > 1e11:  # milliseconds, not seconds
+            reset /= 1000.0
+        delta = reset - now_s
+        # a reset already in the past means the window just turned over
+        return clamp(delta) if delta > 0 else 1.0
+    return RATE_LIMIT_FALLBACK_WAIT_S
 
 
 @dataclass
@@ -221,13 +271,27 @@ class OpenAICompatProvider:
             kwargs["extra_body"] = self._extra_body
 
         resp = None
-        for attempt in range(EMPTY_RESPONSE_RETRIES + 1):
+        rate_limited = 0
+        attempt = 0
+        while attempt <= EMPTY_RESPONSE_RETRIES:
             try:
                 resp = await self.client.chat.completions.create(**kwargs)
             except APIError as e:
                 rejected = _invalid_tool_call_detail(e)
                 if rejected is not None:
                     raise _InvalidToolCall(*rejected) from e
+                wait_s = _retry_after_s(e, time.time())
+                if wait_s is not None and rate_limited < RATE_LIMIT_RETRIES:
+                    rate_limited += 1
+                    log.warning(
+                        "provider_rate_limited",
+                        model=self.model,
+                        wait_s=round(wait_s, 1),
+                        attempt=rate_limited,
+                        retries=RATE_LIMIT_RETRIES,
+                    )
+                    await asyncio.sleep(wait_s)
+                    continue  # the window, not the response, was the problem
                 raise ProviderError(f"{type(e).__name__}: {getattr(e, 'message', e)}") from e
             if resp.choices:
                 break
@@ -239,6 +303,7 @@ class OpenAICompatProvider:
                     retries=EMPTY_RESPONSE_RETRIES,
                 )
                 await asyncio.sleep(EMPTY_RESPONSE_BACKOFF_S * (attempt + 1))
+            attempt += 1  # only an empty answer counts against this budget
         if resp is None or not resp.choices:
             raise ProviderError(
                 f"provider returned no choices {EMPTY_RESPONSE_RETRIES + 1} times "

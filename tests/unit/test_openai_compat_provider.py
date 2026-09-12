@@ -15,7 +15,15 @@ from agents.submit import submit_tool
 from contracts import LLMModel, TaskResult, ToolResult, Usage
 from core.errors import ProviderError
 from gateway import pricing
-from gateway.openai_compat_provider import ChatTurn, OpenAICompatProvider, ToolCallReq, usage_from
+from gateway.openai_compat_provider import (
+    RATE_LIMIT_FALLBACK_WAIT_S,
+    RATE_LIMIT_MAX_WAIT_S,
+    ChatTurn,
+    OpenAICompatProvider,
+    ToolCallReq,
+    _retry_after_s,
+    usage_from,
+)
 from gateway.provider import NullHooks, Request
 from gateway.routing import ANTHROPIC_MODELS, ROUTES, route_for
 from tests.fakes import FakeSandbox, make_ctx, ok
@@ -478,3 +486,64 @@ def test_assistant_message_sanitises_a_malformed_tool_call() -> None:
     assert echoed["tool_calls"][0]["function"]["arguments"] == "{}"
     assert echoed["tool_calls"][0]["function"]["name"] == "run_tests"
     assert echoed["tool_calls"][0]["id"] == "c1"
+
+
+# ---- rate limits -------------------------------------------------------------------
+# A free tier meters per minute, not per run. The wait has to be read from whichever
+# place the provider chose to put it, or an agent run dies on a limit clearing in seconds.
+
+
+def _limit_err(*, body: Any = None, headers: dict[str, str] | None = None) -> Any:
+    """Stands in for openai.RateLimitError, which is matched by name and status."""
+    kind = type("RateLimitError", (SimpleNamespace,), {})
+    return kind(status_code=429, body=body, response=SimpleNamespace(headers=headers or {}))
+
+
+def test_retry_after_ignores_anything_that_is_not_a_rate_limit() -> None:
+    assert _retry_after_s(SimpleNamespace(status_code=500, body=None), 1000.0) is None
+    assert _retry_after_s(SimpleNamespace(status_code=400, body={"error": {}}), 1000.0) is None
+
+
+def test_retry_after_reads_the_body_the_openrouter_free_tier_actually_sends() -> None:
+    """The reset is epoch milliseconds, nested in the body, not on the response."""
+    err = _limit_err(
+        body={
+            "error": {
+                "message": "Rate limit exceeded: free-models-per-min. ",
+                "code": 429,
+                "metadata": {
+                    "headers": {
+                        "X-RateLimit-Limit": "20",
+                        "X-RateLimit-Remaining": "0",
+                        "X-RateLimit-Reset": "1789203360000",
+                    },
+                    "limit_source": "openrouter_free_tier_per_minute",
+                },
+            }
+        }
+    )
+    assert _retry_after_s(err, 1789203335.0) == pytest.approx(25.0)
+
+
+def test_retry_after_prefers_a_plain_retry_after_header() -> None:
+    err = _limit_err(
+        headers={"Retry-After": "7"},
+        body={"error": {"metadata": {"headers": {"X-RateLimit-Reset": "1789203360000"}}}},
+    )
+    assert _retry_after_s(err, 0.0) == pytest.approx(7.0)
+
+
+def test_retry_after_clamps_a_hostile_or_stale_reset() -> None:
+    far = _limit_err(
+        body={"error": {"metadata": {"headers": {"X-RateLimit-Reset": "99999999999"}}}}
+    )
+    assert _retry_after_s(far, 0.0) == RATE_LIMIT_MAX_WAIT_S, "never park a run for hours"
+    past = _limit_err(body={"error": {"metadata": {"headers": {"X-RateLimit-Reset": "10"}}}})
+    assert _retry_after_s(past, 1000.0) == 1.0, "the window already turned over"
+    assert _retry_after_s(_limit_err(headers={"Retry-After": "soon"}), 0.0) == (
+        RATE_LIMIT_FALLBACK_WAIT_S
+    )
+
+
+def test_retry_after_falls_back_when_the_provider_says_nothing() -> None:
+    assert _retry_after_s(_limit_err(), 0.0) == RATE_LIMIT_FALLBACK_WAIT_S
