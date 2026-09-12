@@ -44,6 +44,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: gitleaks/gitleaks-action@v2
+      # The gitleaks CLI is Apache-2.0 and needs no key. Only the Action wrapper demands
+      # a paid licence for organisation-owned repos, which failed every run on main since
+      # the repo moved into the org — red for a billing reason, not a finding, which is
+      # the fastest way to teach everyone to ignore CI. Pinned to the version
+      # .pre-commit-config.yaml uses, so local and CI agree on the rules.
+      - name: gitleaks
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: 8.24.3
+        run: |
+          set -euo pipefail
+          curl -sSfL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks --version
+          /tmp/gitleaks git --config .gitleaks.toml --redact --verbose .
