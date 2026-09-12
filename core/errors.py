@@ -31,3 +31,7 @@ class ProviderError(AutosweError):
 
 class AgentError(AutosweError):
     """An agent finished without producing its required structured result."""
+
+
+class RunCancelled(AutosweError):
+    """A human asked the run to stop. Not a failure: the job must not be retried."""
