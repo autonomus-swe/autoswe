@@ -284,6 +284,11 @@ async def _begin(
     state: RunState, deps: Deps, res: RunResources, agent: str, phase: Phase
 ) -> tuple[UUID, OrchestratorHooks, RunContext]:
     """Open a step, its hooks and a run context. Shared by the single-shot agents."""
+    step_input: dict[str, Any] = {"goal": state.goal}
+    if state.answers:
+        # a re-plan after a pause is driven by what the human said; the audit trail has
+        # to show it, or the step looks identical to the one that asked the question
+        step_input["answers"] = [{"questions": q, "answer": a} for q, a in state.answers]
     async with session(deps.engine) as s:
         step_id = await db.start_step(
             s,
@@ -291,7 +296,7 @@ async def _begin(
             task_id=None,
             agent=agent,
             phase=phase.value,
-            input={"goal": state.goal},
+            input=step_input,
         )
     bind_run(state.run_id, step_id=step_id)
     await _emit(deps, state.run_id, "agent_started", {"agent": agent})

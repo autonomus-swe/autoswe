@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from contracts import ToolResult, Usage
+from core.errors import RunCancelled
 from gateway import budget
 from observability.logging import get_logger
 from storage import repo
@@ -42,6 +43,11 @@ class OrchestratorHooks:
         self.tool_calls = 0
 
     async def before_tool(self, name: str, input: dict[str, Any]) -> str | None:
+        # A cancel must land within one tool call, not one node: a coder loop can run for
+        # minutes. The provider calls this outside its try/except, so raising stops the
+        # loop instead of being turned into another tool error the model would retry.
+        if self.bus is not None and await self.bus.is_cancelled(self.run_id):
+            raise RunCancelled("cancelled before running " + name)
         tool = REGISTRY.get(name)
         if tool is not None and tool.requires_approval:
             return "approval is required but no approver is configured in this phase"

@@ -7,9 +7,11 @@ tests/e2e swap in a real model.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.pool import NullPool
 
 from contracts import Budget, Usage
+from contracts.plan import ImplementationPlan, TaskGraph
+from contracts.repo import RepoProfile
 from core.settings import Settings, load_settings
 from gateway.openai_compat_provider import ChatTurn, OpenAICompatProvider, ToolCallReq
 from orchestrator.deps import Deps, docker_sandbox_factory
@@ -384,3 +388,121 @@ async def test_a_second_run_is_blocked_by_the_repo_lock(
     with pytest.raises(RuntimeError, match="another run holds"):
         await run(state, d)
     assert await d.bus.lock_owner(key) == "someone-else"  # teardown did not steal it
+
+
+@requires_docker
+async def test_the_plan_and_task_graph_land_where_phase_3_will_read_them(
+    deps: tuple[Deps, ScriptedAgents, StubGitHub], origin_repo: Path
+) -> None:
+    """Phase 3 reads steps.output and the tasks table, not the in-memory state."""
+    d, _, _ = deps
+    async with session(d.engine) as s:
+        run_id = await db.create_run(
+            s,
+            repo_url=str(origin_repo),
+            base_branch="main",
+            goal=GOAL,
+            budget=Budget(max_usd=1.0),
+            provider="scripted",
+        )
+    final = await run(
+        RunState(
+            run_id=run_id,
+            goal=GOAL,
+            repo_url=str(origin_repo),
+            base_branch="main",
+            work_branch=f"agent/{run_id}",
+        ),
+        d,
+    )
+    assert final.phase is Phase.DONE, final.error
+
+    async with session(d.engine) as s:
+        steps = await db.list_steps(s, run_id)
+        tasks = await db.list_tasks(s, run_id)
+
+    by_agent = {st.agent: st for st in steps}
+    # each single-shot agent stored a result that still validates against its contract
+    RepoProfile.model_validate(by_agent["analyzer"].output)
+    plan = ImplementationPlan.model_validate(by_agent["planner"].output)
+    assert plan.test_strategy and plan.affected_files == PLAN["affected_files"]
+    # the decomposer stores the runtime graph, so per-task status is part of the record
+    graph = TaskGraph.model_validate(by_agent["decomposer"].output)
+    assert [t.spec.id for t in graph.tasks] == [t["id"] for t in TASK_GRAPH["tasks"]]
+
+    # and the graph was projected into the tasks table the API and UI read
+    assert [t.id for t in tasks] == [t["id"] for t in TASK_GRAPH["tasks"]]
+    assert all(t.status == "done" for t in tasks), [(t.id, t.status) for t in tasks]
+    assert tasks[0].test_selector == TASK_GRAPH["tasks"][0]["test_selector"]
+    assert tasks[0].acceptance_criteria == TASK_GRAPH["tasks"][0]["acceptance_criteria"]
+
+
+class StallsThenLoops(ScriptedAgents):
+    """A coder that never submits, so the run stays inside one node's tool loop."""
+
+    async def _complete(self, **kw: Any) -> ChatTurn:
+        offered = {t["function"]["name"] for t in kw.get("tools", [])}
+        if "submit_result" in offered:
+            return call("x", "str_replace_based_edit_tool", {"command": "view", "path": "."})
+        return await super()._complete(**kw)
+
+
+@requires_docker
+async def test_cancel_stops_a_run_inside_a_tool_loop_and_removes_the_container(
+    deps: tuple[Deps, ScriptedAgents, StubGitHub], origin_repo: Path
+) -> None:
+    """A node boundary is not good enough: a coder loop can run for minutes."""
+    import docker
+
+    d, _, _ = deps
+    d = replace(d, provider=StallsThenLoops())
+    async with session(d.engine) as s:
+        run_id = await db.create_run(
+            s,
+            repo_url=str(origin_repo),
+            base_branch="main",
+            goal=GOAL,
+            budget=Budget(max_usd=1.0),
+            provider="scripted",
+        )
+    state = RunState(
+        run_id=run_id,
+        goal=GOAL,
+        repo_url=str(origin_repo),
+        base_branch="main",
+        work_branch=f"agent/{run_id}",
+    )
+
+    task = asyncio.create_task(run(state, d))
+    try:
+        # let it get past SETUP and into the coder's loop, then pull the plug
+        for _ in range(240):
+            await asyncio.sleep(0.5)
+            async with session(d.engine) as s:
+                row = await db.get_run(s, run_id)
+            if row is not None and row.phase == Phase.CODE.value:
+                break
+        else:
+            pytest.fail("run never reached CODE")
+        await d.bus.set_cancel(run_id)
+        final = await asyncio.wait_for(task, timeout=120)
+    finally:
+        if not task.done():
+            task.cancel()
+
+    assert final.cancelled and final.phase is Phase.FAILED
+    async with session(d.engine) as s:
+        row = await db.get_run(s, run_id)
+    assert row is not None, "the run row vanished"
+    assert row.status == "cancelled", row.status
+
+    # the stream says so, and the sandbox is gone rather than left running
+    async with session(d.engine) as s:
+        events = [e.type for e in await db.list_events(s, run_id)]
+    assert events[-1] == "run_finished"
+    client = docker.from_env()
+    assert not client.containers.list(all=True, filters={"name": f"run-{run_id}"})
+    assert not d.settings.keep_failed_sandbox, "the removal above assumes the default"
+    # the worktree is kept on purpose: nothing was pushed, so the work is still
+    # recoverable. teardown only removes it once the branch is safely on the remote.
+    assert (Path(d.worktrees_dir()) / str(run_id)).exists()

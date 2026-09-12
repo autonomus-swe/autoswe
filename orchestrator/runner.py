@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from core.errors import RunCancelled
 from observability.logging import bind_run, clear_run, get_logger
 from observability.tracing import trace_span
 from orchestrator.checkpoint import save
@@ -55,6 +56,14 @@ async def run(state: RunState, deps: Deps, res: RunResources | None = None) -> R
             await _finished(deps, state, status)
         elif state.phase is Phase.DONE:
             await _finished(deps, state, "done")
+    except RunCancelled as e:
+        # a human asked for this, so it is not a failure and must not be retried
+        state.cancelled = True
+        state.phase, state.error = Phase.FAILED, str(e) or "cancelled"
+        log.info("run_cancelled", reason=state.error)
+        async with session(deps.engine) as s:
+            await db.finish_run(s, state.run_id, status="cancelled", error=state.error)
+        await _finished(deps, state, "cancelled")
     except Exception as e:
         state.phase, state.error = Phase.FAILED, f"{type(e).__name__}: {e}"
         log.error("run_failed", error=state.error)
