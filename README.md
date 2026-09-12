@@ -1,9 +1,16 @@
-# autoswe — Phase 1 (single-agent loop)
+# autoswe — Phase 2 (plan and state)
 
-An autonomous software engineering agent. Give it a repository and a goal; it clones the
-repository, edits it inside a locked-down container, runs the tests, commits, pushes
-`agent/<run-id>` and opens a pull request. Every command it runs and every model turn is a
-row in Postgres.
+An autonomous software engineering agent. Give it a repository and a goal; it profiles
+the repository, plans, splits the work into a task graph, then edits inside a locked-down
+container, runs the tests, commits, pushes `agent/<run-id>` and opens a pull request. It
+checkpoints after every step, so a crashed worker resumes instead of starting over, and
+it can stop to ask a question when the goal is ambiguous. Every command it runs and every
+model turn is a row in Postgres.
+
+There is a console at **<http://127.0.0.1:8000/>** once the API is up: a list of runs and,
+for any one of them, its phases, tasks, live event stream, every tool call and model turn,
+and the controls to answer or cancel it. **[TESTING.md](TESTING.md) gets you looking at it
+with real data in five minutes, without an API key or any quota.**
 
 The design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the build plan is in
 [docs/PHASES.md](docs/PHASES.md).
@@ -79,10 +86,17 @@ operations are host-side tools the agent has to call.
 ## Testing
 
 ```bash
-make test        # unit: fast, no containers
-make test-int    # integration: real Postgres, Redis and Docker; no API key, no spend
-make test-e2e    # end to end with a real model; needs LLM_API_KEY, skips without it
+make sandbox-image   # once — without it every Docker-backed test silently skips
+make test            # unit: fast, no containers
+make test-int        # integration: real Postgres, Redis and Docker; no API key, no spend
+make test-e2e        # end to end with a real model; needs LLM_API_KEY, skips without it
 ```
 
-[MANUAL-TESTING.md](MANUAL-TESTING.md) is a hands-on tour of every capability with the
-expected output beside each command.
+`make test-int` should report **53 passed** and no skips. `25 passed, 12 skipped` means
+the sandbox image is missing and the tests that matter most are not running.
+
+- **[TESTING.md](TESTING.md)** — start here. Five minutes to a console with data in it,
+  then the thorough pass, then what the free model tiers actually allow and the known gaps.
+- [MANUAL-TESTING.md](MANUAL-TESTING.md) — a tour of every capability with the expected
+  output beside each command.
+- [PHASE-1-CHECKLIST.md](PHASE-1-CHECKLIST.md) — the Phase 1 exit-criteria runbook.
