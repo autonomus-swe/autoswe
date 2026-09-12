@@ -33,14 +33,30 @@ Suggested duration: 5–7 days.
 
 ## 1. Exit criteria
 
-- [ ] On the fixture repo, `ANALYZE` produces a `RepoProfile` with the right test command without any hard-coded default (test exists).
-- [ ] `PLAN` and `DECOMPOSE` produce validated `ImplementationPlan` and `TaskGraph` objects stored in `steps.output` and `tasks`.
-- [ ] `checkpoints` has one row per node executed; `SIGKILL` the worker after `PLAN`, restart, and the run finishes with exactly one `planner` step (test exists).
-- [ ] `GET /runs/{id}/events` streams `phase_changed`, `agent_started`, `tool_call`, `tool_result`, `test_report`, `run_finished`; reconnecting with `Last-Event-ID` replays only what was missed (test exists).
-- [ ] A goal that forces open questions pauses the run in `AWAITING_INPUT`; `POST /answer` resumes it and the answer appears in the plan step's input (test exists).
-- [ ] `POST /cancel` stops a running run within one node boundary or one tool call, whichever is first; the container is removed.
-- [ ] A goal that decomposes into three or more tasks completes with one commit per task.
+- [x] On the fixture repo, `ANALYZE` produces a `RepoProfile` with the right test command without any hard-coded default (test exists). — `tests/unit/test_profile.py`, including `test_empty_repo_detects_nothing_rather_than_guessing`.
+- [x] `PLAN` and `DECOMPOSE` produce validated `ImplementationPlan` and `TaskGraph` objects stored in `steps.output` and `tasks`. — `test_full_run.py::test_the_plan_and_task_graph_land_where_phase_3_will_read_them`. Note the decomposer stores the runtime `TaskGraph` (per-task status included), not the bare `TaskGraphSpec`.
+- [x] `checkpoints` has one row per node executed; `SIGKILL` the worker after `PLAN`, restart, and the run finishes with exactly one `planner` step (test exists). — `tests/integration/test_resume.py`. Real `SIGKILL` to a real child process; an in-process exception proves nothing because `runner.run` catches it, marks the run failed and tears the sandbox down.
+- [x] `GET /runs/{id}/events` streams `phase_changed`, `agent_started`, `tool_call`, `tool_result`, `test_report`, `run_finished`; reconnecting with `Last-Event-ID` replays only what was missed (test exists). — `test_events_and_control.py` for replay and the cursor, `test_full_run.py` for the event set. One deviation: there is no separate `tool_result` event. A single `tool_call` event carries `is_error` and `duration_ms`, so the outcome is on the stream without doubling its volume.
+- [x] A goal that forces open questions pauses the run in `AWAITING_INPUT`; `POST /answer` resumes it and the answer appears in the plan step's input (test exists). — `test_events_and_control.py::test_answer_is_delivered_only_while_the_run_waits` for the endpoint (including the 409 when the run is not waiting); `tests/e2e/test_m2.py` for the whole pause → answer → re-plan chain. `_begin` records the answers in `steps.input`, which is what makes the re-plan auditable.
+- [x] `POST /cancel` stops a running run within one node boundary or one tool call, whichever is first; the container is removed. — `test_full_run.py::test_cancel_stops_a_run_inside_a_tool_loop_and_removes_the_container`. The tool-call half needed implementing: `before_tool` raises `RunCancelled`, the runner records status `cancelled` and does not re-raise, so arq will not retry a job a human asked to stop. The worktree is kept on purpose — nothing was pushed, so the work is still recoverable.
+- [ ] A goal that decomposes into three or more tasks completes with one commit per task. — test written (`tests/e2e/test_m2.py::test_m2_decomposes_into_several_tasks_and_commits_each`) but **not yet passed against a real model**. See "Provider note" below.
 - [ ] Tag `v0.2.0`.
+
+### Provider note (why an e2e box is unticked)
+
+The e2e tests need a real model with tool calling. Neither free option covers a
+multi-task coding run:
+
+- **Hugging Face Inference Providers** — the router advertises models at `$0/$0` per
+  token, but that is a *rate*, not free access. Every call is metered against a small
+  monthly included-credit pool; once it is gone every model returns `402`, including the
+  zero-rate provider and including when the provider is pinned (`model:provider`). A free
+  account has no way past it.
+- **OpenRouter free tier** — works, but the request-per-day cap is worth roughly three
+  runs. Enough for the pause test, not for a multi-task loop.
+
+The scripted-provider integration tests cover the same wiring without spend, so this is
+an unverified-against-a-real-model gap rather than an untested one.
 
 ---
 
@@ -318,7 +334,7 @@ uv run autoswe answer <id> "JWT with HS256, secret from env JWT_SECRET, access t
 
 ## 7. Checklist before Phase 3
 
-- [ ] Exit criteria in §1 all ticked; the SIGKILL test is in CI (`integration`).
-- [ ] `RunState` has `attempts`, `waiting_s`, and `last_test_report` populated — Phase 3 reads them.
-- [ ] You can explain the idempotency rule per node and where resume re-attaches the container.
+- [x] Exit criteria in §1 all ticked; the SIGKILL test is in CI (`integration`). — All but the multi-task e2e; see the provider note in §1. CI now builds the sandbox image before the integration tier, because without it every sandbox test skipped and the job went green while proving nothing.
+- [x] `RunState` has `attempts`, `waiting_s`, and `last_test_report` populated — Phase 3 reads them. — `attempts` per task in `code_node`, `waiting_s` accumulated on every exit from `awaiting_input_node`, `last_test_report` set by `test_node`.
+- [x] You can explain the idempotency rule per node and where resume re-attaches the container. — A checkpoint is written after every node, so a crash re-runs at most one. `resume.reattach` takes the repo lock, reuses the worktree directory when it is still there, then throws away the old container and starts a fresh one: a container from a dead attempt cannot be trusted, but the worktree is on disk and holds the run's commits.
 - [ ] Tag `v0.2.0`.
