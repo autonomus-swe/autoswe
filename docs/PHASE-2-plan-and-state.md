@@ -47,12 +47,27 @@ Suggested duration: 5–7 days.
 The e2e tests need a real model with tool calling. Neither free option covers a
 multi-task coding run:
 
-- **Hugging Face Inference Providers** — the router advertises models at `$0/$0` per
-  token, but that is a *rate*, not free access. Every call is metered against a small
-  monthly included-credit pool; once it is gone every model returns `402`, including the
-  zero-rate provider and including when the provider is pinned (`model:provider`). A free
-  account has no way past it. Do not be misled by `is_free` or a `$0` price in
-  `GET /v1/models`; neither reflects whether a call will be served.
+- **Hugging Face Inference Providers — cannot run this agent at all.** Not "out of quota
+  today": a free account cannot make a single tool-calling request. The router advertises
+  models at `$0/$0`, but that is a *rate*, not free access, and the gate is a pre-flight
+  estimate against a small monthly credit pool. Measured on `Qwen/Qwen3.8-27B:ovhcloud`,
+  the zero-rate provider, pinned:
+
+  | request | result |
+  |---|---|
+  | tiny prompt, `max_tokens=400` | `200` |
+  | tiny prompt, `max_tokens=4000` | `200` |
+  | tiny prompt, `max_tokens=16000` | `402` |
+  | tiny prompt **+ one tool definition** | `402` |
+  | large prompt, `max_tokens=400` | `402` |
+
+  One tool definition is enough to trip it, and every agent turn carries a tool set and a
+  repo map. Pinning the zero-rate provider does not help, because the estimate charges the
+  pool regardless. Do not be misled by `is_free` or a `$0` price in `GET /v1/models`;
+  neither reflects whether a call will be served. Checked again on 2026-09-13 after the
+  pool had partly replenished — small calls succeeded, every agent-shaped call did not.
+- **GitHub Models** — retired. Both endpoints answer `410
+  github_models_retirement_brownout` as of 2026-09-13.
 - **OpenRouter free tier** — two separate limits, and they fail the same way:
   `free-models-per-min` at 20, and `free-models-per-day` at **50**. The per-minute one
   is now waited out (`gateway/openai_compat_provider.py`, verified absorbing 12 of them
@@ -61,8 +76,15 @@ multi-task coding run:
   gives up rather than parking the suite. Roughly three runs a day. `$10` of credit
   raises it to 1000/day, which would be enough.
 
-What this means in practice: run **one** e2e test on a fresh day's quota rather than the
-pair. The pause test is the cheap one (it only needs ANALYZE and PLAN).
+What this means in practice: OpenRouter is the only free option that works, so run
+**one** e2e test on a fresh day's quota rather than the pair, before anything else spends
+it. The pause test is the cheaper one — it only needs ANALYZE and PLAN.
+
+`MULTI_TASK_GOAL` is deliberately three tiny functions. The criterion is that a goal
+decomposing into three or more tasks finishes with a commit per task; it is about the
+multi-task loop, not about how hard each task is. A large goal also measures how good the
+model is at coding, which on a free tier means the test fails for a reason it is not
+asking about — and every retry spends requests from an allowance worth about three runs.
 
 The scripted-provider integration tests cover the same wiring without spend, so this is
 an unverified-against-a-real-model gap rather than an untested one.

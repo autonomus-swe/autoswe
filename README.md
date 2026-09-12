@@ -54,7 +54,14 @@ LLM_MODEL=openrouter/free                # auto-router over free models; must su
 ```
 
 Prefer `openrouter/free` over a specific `:free` slug: individual free models get withdrawn
-without notice and then 404 in the middle of a run. Agentic coding is demanding, so a
+without notice and then 404 in the middle of a run.
+
+Two free options that look viable and are not, both measured: **Hugging Face Inference
+Providers** cannot serve a single tool-calling request on a free account — the gate is a
+pre-flight cost estimate and one tool definition trips it, even on a `$0/$0` provider,
+pinned — and **GitHub Models** is retired. `docs/PHASE-2-plan-and-state.md` §1 has the
+numbers. OpenRouter's free tier allows 20 requests a minute and 50 a day; the gateway
+waits out the per-minute one, but 50 a day is about three runs. Agentic coding is demanding, so a
 stronger paid model finishes more runs. `gateway/routing.py` holds the per-role model tiers
 used when a provider distinguishes them.
 
@@ -92,8 +99,9 @@ make test-int        # integration: real Postgres, Redis and Docker; no API key,
 make test-e2e        # end to end with a real model; needs LLM_API_KEY, skips without it
 ```
 
-`make test-int` should report **53 passed** and no skips. `25 passed, 12 skipped` means
-the sandbox image is missing and the tests that matter most are not running.
+`make test-int` should report **54 passed** and no skips. A much lower count with
+`skipped` in it means the sandbox image is missing and the tests that matter most are
+not running.
 
 - **[TESTING.md](TESTING.md)** — start here. Five minutes to a console with data in it,
   then the thorough pass, then what the free model tiers actually allow and the known gaps.

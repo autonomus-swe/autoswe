@@ -149,7 +149,7 @@ reconnects from its cursor if the stream drops.
 ```bash
 make sandbox-image     # once; the Docker-backed tests skip without it
 uv run pytest -m "unit or integration"
-# 273 passed, 4 deselected
+# 274 passed, 4 deselected
 ```
 
 `make sandbox-image` matters more than it looks. Without
@@ -159,10 +159,10 @@ really running them:
 
 ```bash
 uv run pytest -m integration 2>&1 | tail -1
-# 53 passed, 224 deselected     <- 53, and no "skipped"
+# 54 passed, 224 deselected     <- 54, and no "skipped"
 ```
 
-If you see `25 passed, 12 skipped`, the image is missing.
+If the count is much lower and you see `skipped`, the image is missing.
 
 Tiers, if you want them separately:
 
@@ -249,7 +249,8 @@ Measured, not quoted from a pricing page:
 | | |
 |---|---|
 | **OpenRouter free** | 20 requests/**minute** and **50 requests/day**. Roughly three agent runs. |
-| **Hugging Face** | `$0/$0` models exist but that is a *rate*, not free access — every call meters against a small monthly credit pool, and once it is gone everything returns `402`. Not viable. |
+| **Hugging Face** | **Cannot run this agent at all.** A free account cannot make one tool-calling request: the gate is a pre-flight cost estimate, and a single tool definition trips it even with a tiny prompt on the zero-rate provider, pinned. See `docs/PHASE-2-plan-and-state.md` §1 for the measurements. |
+| **GitHub Models** | Retired — `410 github_models_retirement_brownout`. |
 
 The per-minute limit is handled: the gateway reads how long the window has left and
 waits it out, verified absorbing twelve of them in one run. The **daily 50 is the wall**,
