@@ -449,6 +449,107 @@ async def test_the_plan_and_task_graph_land_where_phase_3_will_read_them(
     assert tasks[0].acceptance_criteria == TASK_GRAPH["tasks"][0]["acceptance_criteria"]
 
 
+class AsksOnceThenPlans(ScriptedAgents):
+    """The Planner raises an open question the first time, and plans properly the second.
+
+    The tool loop calls ``_complete`` repeatedly inside a single planner run, so counting
+    calls submits twice and the second answer quietly overwrites the first. Dispatch on
+    what the conversation already shows instead, as the parent class does.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.plans = 0
+
+    async def _complete(self, **kw: Any) -> ChatTurn:
+        offered = {t["function"]["name"] for t in kw.get("tools", [])}
+        if "submit_plan" not in offered:
+            return await super()._complete(**kw)
+        # A tool result in the history means this run has already submitted, so stop as a
+        # real model would. `call()` leaves tool_calls out of raw_message, so looking for
+        # the submission itself finds nothing and the run submits twice — the second,
+        # question-free plan silently replacing the first.
+        if any(m.get("role") == "tool" for m in kw.get("messages", [])):
+            return self._done()
+        self.plans += 1
+        if self.plans == 1:
+            self.roles.append("planner")
+            return call("p1", "submit_plan", {**PLAN, "open_questions": ["Which scheme?"]})
+        return call(f"p{self.plans}", "submit_plan", PLAN)
+
+
+@requires_docker
+async def test_an_open_question_pauses_the_run_and_the_answer_is_on_the_record(
+    deps: tuple[Deps, ScriptedAgents, StubGitHub], origin_repo: Path
+) -> None:
+    """The re-plan has to show what the human said, or it looks like the first one.
+
+    Without this the audit trail cannot distinguish the plan that asked the question from
+    the plan that acted on the answer.
+    """
+    answer = "JWT with HS256, secret from env JWT_SECRET."
+    d, _, _ = deps
+    d = replace(d, provider=AsksOnceThenPlans())
+    async with session(d.engine) as s:
+        run_id = await db.create_run(
+            s,
+            repo_url=str(origin_repo),
+            base_branch="main",
+            goal=GOAL,
+            budget=Budget(max_usd=1.0),
+            provider="scripted",
+        )
+    state = RunState(
+        run_id=run_id,
+        goal=GOAL,
+        repo_url=str(origin_repo),
+        base_branch="main",
+        work_branch=f"agent/{run_id}",
+    )
+
+    task = asyncio.create_task(run(state, d))
+    try:
+        for _ in range(240):
+            await asyncio.sleep(0.5)
+            async with session(d.engine) as s:
+                row = await db.get_run(s, run_id)
+            if row is not None and row.status == "awaiting_input":
+                break
+            if task.done():
+                done = await task  # surface whatever went wrong instead of timing out
+                pytest.fail(
+                    f"the run finished without pausing: phase={done.phase}, "
+                    f"open_questions={done.plan.open_questions if done.plan else None}"
+                )
+        else:
+            pytest.fail("run never reached awaiting_input")
+
+        async with session(d.engine) as s:
+            events = await db.list_events(s, run_id)
+        asked = [e for e in events if e.type == "awaiting_input"]
+        assert asked and asked[-1].payload["questions"] == ["Which scheme?"]
+
+        await d.bus.push_inbox(run_id, {"type": "answer", "text": answer})
+        final = await asyncio.wait_for(task, timeout=600)
+    finally:
+        if not task.done():
+            task.cancel()
+
+    assert final.phase is Phase.DONE, final.error
+    assert final.answers == [("Which scheme?", answer)]
+    assert final.waiting_s > 0, "time parked on a human is not agent time"
+
+    async with session(d.engine) as s:
+        steps = await db.list_steps(s, run_id)
+    planners = [st for st in steps if st.agent == "planner"]
+    assert len(planners) == 2, [st.agent for st in steps]
+    # the first plan asked and could not have known the answer; the second is driven by it
+    assert "answers" not in (planners[0].input or {})
+    assert (planners[1].input or {})["answers"] == [
+        {"questions": "Which scheme?", "answer": answer}
+    ]
+
+
 class StallsThenLoops(ScriptedAgents):
     """A coder that never submits, so the run stays inside one node's tool loop."""
 
