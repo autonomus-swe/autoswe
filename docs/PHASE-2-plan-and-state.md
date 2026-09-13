@@ -39,7 +39,7 @@ Suggested duration: 5–7 days.
 - [x] `GET /runs/{id}/events` streams `phase_changed`, `agent_started`, `tool_call`, `tool_result`, `test_report`, `run_finished`; reconnecting with `Last-Event-ID` replays only what was missed (test exists). — `test_events_and_control.py` for replay and the cursor, `test_full_run.py` for the event set. One deviation: there is no separate `tool_result` event. A single `tool_call` event carries `is_error` and `duration_ms`, so the outcome is on the stream without doubling its volume.
 - [x] A goal that forces open questions pauses the run in `AWAITING_INPUT`; `POST /answer` resumes it and the answer appears in the plan step's input (test exists). — `test_full_run.py::test_an_open_question_pauses_the_run_and_the_answer_is_on_the_record` covers the whole chain with the scripted provider: the run parks, the answer resumes it, and the second `planner` step's `input` carries it while the first does not. `test_events_and_control.py::test_answer_is_delivered_only_while_the_run_waits` covers the endpoint, including the 409 when the run is not waiting.
 - [x] `POST /cancel` stops a running run within one node boundary or one tool call, whichever is first; the container is removed. — `test_full_run.py::test_cancel_stops_a_run_inside_a_tool_loop_and_removes_the_container`. The tool-call half needed implementing: `before_tool` raises `RunCancelled`, the runner records status `cancelled` and does not re-raise, so arq will not retry a job a human asked to stop. The worktree is kept on purpose — nothing was pushed, so the work is still recoverable.
-- [ ] A goal that decomposes into three or more tasks completes with one commit per task. — test written (`tests/e2e/test_m2.py::test_m2_decomposes_into_several_tasks_and_commits_each`) but **not yet passed against a real model**. See "Provider note" below.
+- [ ] A goal that decomposes into three or more tasks completes with one commit per task. — **the loop itself is proven against a real model; the criterion is not ticked because no run has finished.** On 2026-09-13 with `poolside/laguna-s-2.1:free` the run went SETUP → ANALYZE → PLAN → DECOMPOSE → CODE → TEST with every agent working, and ended `failed` because the first task's tests did not pass. Phase 2 has no debug loop by design, so that ends the run. The goal now hands the agent the failing tests instead of asking it to write them, which is the Phase 1 fixture idiom and removes the model's test-writing from what this criterion measures. See "Provider note".
 - [ ] Tag `v0.2.0`.
 
 ### Provider note (why an e2e box is unticked)
@@ -80,11 +80,28 @@ What this means in practice: OpenRouter is the only free option that works, so r
 **one** e2e test on a fresh day's quota rather than the pair, before anything else spends
 it. The pause test is the cheaper one — it only needs ANALYZE and PLAN.
 
-`MULTI_TASK_GOAL` is deliberately three tiny functions. The criterion is that a goal
-decomposing into three or more tasks finishes with a commit per task; it is about the
-multi-task loop, not about how hard each task is. A large goal also measures how good the
-model is at coding, which on a free tier means the test fails for a reason it is not
-asking about — and every retry spends requests from an allowance worth about three runs.
+**Which free model.** `openrouter/free` is an auto-router and cannot drive the Analyzer:
+it explored for eleven of its twelve allowed turns and never submitted a profile. Probing
+the free tool-capable models with one call each — a profiling task, an explore tool and a
+submit tool — `poolside/laguna-s-2.1:free` called submit immediately where
+`nvidia/nemotron-3-ultra-550b-a55b:free` and `cohere/north-mini-code:free` started
+exploring. That probe costs four requests and is worth it before spending a whole run.
+
+That first failure also exposed a real harness flaw rather than only a weak model: the
+"you still have to submit" reminder shared the iteration budget, so it landed on the
+final turn and the run died at `max_iterations` holding work it had already done.
+Reminding with no headroom is the same as not reminding. A reminder now buys a turn
+(`gateway/openai_compat_provider.py`), bounded at `max_iterations +
+MISSING_SUBMIT_REMINDERS`.
+
+**Why the goal hands over the tests.** `MULTI_TASK_GOAL` names five one-line functions and
+the test files that import them, and `tests/e2e/test_m2.py` commits the failing
+`tests/test_extra.py` before the run starts. The criterion is about the multi-task
+CODE/TEST loop; asking the agent to write its own tests measures something else, and that
+is exactly what ended the run that otherwise worked. It is the same fixture idiom Phase 1
+uses: give the tests, make the agent implement, forbid touching them. The file is written
+by the test rather than added to `tests/fixtures/fixture_repo`, because the TEST phase runs
+the whole suite after each task and the scripted integration coder could not satisfy it.
 
 The scripted-provider integration tests cover the same wiring without spend, so this is
 an unverified-against-a-real-model gap rather than an untested one.

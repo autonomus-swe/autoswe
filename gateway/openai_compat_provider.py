@@ -338,7 +338,11 @@ class OpenAICompatProvider:
         called: set[str] = set()
         reminders = 0
         rejected = 0
-        while turns < req.max_iterations:
+        # A reminder has to buy a turn, not spend the last one. Sharing the budget means a
+        # model that explores to the cap gets told to submit and then has no turn left to
+        # do it in, which is the same as never reminding it. Still bounded: the ceiling is
+        # max_iterations + MISSING_SUBMIT_REMINDERS.
+        while turns < req.max_iterations + reminders:
             t0 = time.monotonic()
             try:
                 turn = await self._complete(
