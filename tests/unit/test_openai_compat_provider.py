@@ -341,6 +341,45 @@ async def test_reminders_are_bounded(tmp_path: Path) -> None:
     assert out.stop_reason == "end_turn" and out.turns == attempts
 
 
+async def test_a_reminder_buys_a_turn_rather_than_spending_the_last_one(tmp_path: Path) -> None:
+    """A model that explores right up to the cap must still get a turn to submit in.
+
+    Sharing one budget meant the reminder landed on the final iteration and the run died
+    at max_iterations holding work it had already done — seen for real on the analyzer,
+    which explored for eleven turns of twelve and was reminded on the eleventh.
+    """
+    tools = [*tools_for("coder"), submit_tool("submit_result", TaskResult, "task_result")]
+    explored = [turn(calls=[("c1", "git_status", {})]) for _ in range(2)]
+    submission = turn(
+        calls=[
+            (
+                "c9",
+                "submit_result",
+                {
+                    "summary": "done at last",
+                    "files_touched": ["a.py"],
+                    "how_to_test": "pytest",
+                    "notes_for_reviewer": [],
+                },
+            )
+        ]
+    )
+    provider = ScriptedProvider([*explored, turn("I am finished"), submission, turn("ok")])
+    ctx = make_ctx(tmp_path)
+    out = await provider.run_tools(
+        Request(role="coder", system="s", must_call="submit_result", max_iterations=3),
+        tools,
+        ctx,
+        NullHooks(),
+    )
+    # three iterations were allowed; the reminder on the third earns a fourth to act in
+    assert out.turns == 4, out.stop_reason
+    nudge = provider.requests[3]["messages"][-1]
+    assert nudge["role"] == "user" and "submit_result" in nudge["content"]
+    # what the agents actually check is the submission, not how the loop stopped
+    assert isinstance(ctx.submitted.get("task_result"), TaskResult)
+
+
 async def test_no_reminder_when_the_tool_was_already_called(tmp_path: Path) -> None:
     provider = ScriptedProvider([turn(calls=[("c1", "submit_result", {"ok": True})]), turn("done")])
     tools = [*tools_for("coder"), submit_tool("submit_result", TaskResult, "task_result")]
