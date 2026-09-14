@@ -30,7 +30,14 @@ pytestmark = pytest.mark.e2e
 #
 # The suite is run whole after each task, so the goal has to name every function the
 # tests import, not just the new ones.
-EXTRA_TESTS = """from fixture.ops import double, negate, triple
+#
+# The work is spread over three modules on purpose. With every function in one file the
+# Decomposer produced a single task — correctly, since it was one unit of work — and a
+# two-task graph cannot exercise a criterion about three. The criterion presupposes a
+# goal that splits three ways, so the goal has to supply three separable pieces, and the
+# Decomposer groups by file.
+EXTRA_TESTS = {
+    "tests/test_mathx.py": """from fixture.mathx import double, negate, triple
 
 
 def test_double():
@@ -46,13 +53,29 @@ def test_triple():
 def test_negate():
     assert negate(4) == -4
     assert negate(-7) == 7
-"""
+""",
+    "tests/test_textx.py": """from fixture.textx import initials, shout
+
+
+def test_shout():
+    assert shout("hello") == "HELLO!"
+
+
+def test_initials():
+    assert initials("ada lovelace") == "AL"
+""",
+}
 
 MULTI_TASK_GOAL = (
-    "fixture/ops.py is missing functions that the test suite imports. Implement them so "
-    "the whole suite passes: subtract(a, b) and slugify(text) for tests/test_ops.py, and "
-    "double(n), triple(n) and negate(n) for tests/test_extra.py. Every one is a one-line "
-    "function. Do not change any file under tests/."
+    "The test suite imports three modules' worth of code that does not exist yet. "
+    "Implement all of it so the whole suite passes:\n"
+    "1. fixture/ops.py is missing subtract(a, b) and slugify(text), imported by "
+    "tests/test_ops.py.\n"
+    "2. fixture/mathx.py does not exist; it needs double(n), triple(n) and negate(n), "
+    "imported by tests/test_mathx.py.\n"
+    "3. fixture/textx.py does not exist; it needs shout(text) and initials(name), "
+    "imported by tests/test_textx.py.\n"
+    "Every function is a one-liner. Do not change any file under tests/."
 )
 AMBIGUOUS_GOAL = "Add authentication."
 ANSWER = "JWT with HS256, secret from env JWT_SECRET, access tokens only, no refresh tokens."
@@ -97,9 +120,10 @@ async def _add_extra_tests(origin: Path) -> None:
     the whole suite after each task, so a test file the scripted integration coder cannot
     satisfy would break those tests too.
     """
-    (origin / "tests" / "test_extra.py").write_text(EXTRA_TESTS)
+    for path, body in EXTRA_TESTS.items():
+        (origin / path).write_text(body)
     await git("add", "-A", cwd=origin)
-    await git("commit", "-q", "-m", "test: cover double, triple and negate", cwd=origin)
+    await git("commit", "-q", "-m", "test: cover the mathx and textx modules", cwd=origin)
 
 
 async def test_m2_decomposes_into_several_tasks_and_commits_each(
@@ -144,7 +168,8 @@ async def test_m2_decomposes_into_several_tasks_and_commits_each(
     diff = await git("diff", "main", final.work_branch, "--", "tests/", cwd=origin_repo)
     assert diff.strip() == "", f"the agent must not modify the tests it was given:\n{diff}"
     changed = await git("diff", "--name-only", "main", final.work_branch, cwd=origin_repo)
-    assert "fixture/ops.py" in changed, changed
+    for expected in ("fixture/ops.py", "fixture/mathx.py", "fixture/textx.py"):
+        assert expected in changed, f"{expected} was never written:\n{changed}"
 
     report = final.last_test_report
     assert report is not None and report.passed
