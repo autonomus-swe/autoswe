@@ -64,6 +64,10 @@ def inbox_key(run_id: uuid.UUID | str) -> str:
     return f"run:{run_id}:inbox"
 
 
+def pending_key(run_id: uuid.UUID | str) -> str:
+    return f"run:{run_id}:pending"
+
+
 def cancel_key(run_id: uuid.UUID | str) -> str:
     return f"run:{run_id}:cancel"
 
@@ -146,6 +150,20 @@ class RedisBus:
     async def take_token(self, bucket: str, capacity: int, refill_per_s: float) -> bool:
         now_ms = int(time.time() * 1000)
         return bool(await self._take(keys=[bucket], args=[capacity, refill_per_s, now_ms]))
+
+    # ---- pending approval ----------------------------------------------------
+    # The API process validates an approval against this and never sees RunState, so the
+    # id of the call being waited on has to live somewhere both processes can reach.
+
+    async def set_pending(self, run_id: uuid.UUID | str, tool_call_id: str) -> None:
+        await self.r.set(pending_key(run_id), tool_call_id, ex=24 * 3600)
+
+    async def get_pending(self, run_id: uuid.UUID | str) -> str | None:
+        val = await self.r.get(pending_key(run_id))
+        return str(val) if val is not None else None
+
+    async def clear_pending(self, run_id: uuid.UUID | str) -> None:
+        await self.r.delete(pending_key(run_id))
 
     # ---- cancel flag ---------------------------------------------------------
 

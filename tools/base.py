@@ -25,6 +25,10 @@ class RunContext:
     bus: RedisBus | None = None
     view_hashes: dict[str, str] = field(default_factory=dict)  # editor staleness (path -> sha256)
     submitted: dict[str, Any] = field(default_factory=dict)  # payloads from submit_* tools
+    # Answers a human gave to `ask_user`, keyed by question. `before_tool` can only
+    # refuse a call, never hand one a value, so an approved answer is left here for
+    # the tool to collect.
+    answers: dict[str, str] = field(default_factory=dict)
 
 
 @runtime_checkable

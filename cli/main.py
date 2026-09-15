@@ -1,5 +1,5 @@
 """CLI entrypoint. Phase 1 adds ``run`` and ``status``; Phase 2 adds ``watch``,
-``answer`` and ``cancel``."""
+``answer`` and ``cancel``; Phase 3 adds ``approve`` and ``reject``."""
 
 from __future__ import annotations
 
@@ -183,6 +183,38 @@ def answer(
     with _client(api, key) as client:
         _check(client.post(f"/runs/{run_id}/answer", json={"text": text}))
     typer.echo("accepted")
+
+
+@app.command()
+def approve(
+    run_id: Annotated[str, typer.Argument(help="Run id printed by `autoswe run`.")],
+    tool_call_id: Annotated[str, typer.Argument(help="From the awaiting_input event.")],
+    api: Annotated[str, typer.Option(help="Control-plane base URL.")] = DEFAULT_API,
+    key: Annotated[str | None, typer.Option(help="API key (or AUTOSWE_API_KEY).")] = None,
+) -> None:
+    """Let a tool call the run is parked on proceed."""
+    with _client(api, key) as client:
+        _check(client.post(f"/runs/{run_id}/approve", json={"tool_call_id": tool_call_id}))
+    typer.echo("approved")
+
+
+@app.command()
+def reject(
+    run_id: Annotated[str, typer.Argument(help="Run id printed by `autoswe run`.")],
+    tool_call_id: Annotated[str, typer.Argument(help="From the awaiting_input event.")],
+    reason: Annotated[str, typer.Argument(help="Why. The model is told, so be specific.")],
+    api: Annotated[str, typer.Option(help="Control-plane base URL.")] = DEFAULT_API,
+    key: Annotated[str | None, typer.Option(help="API key (or AUTOSWE_API_KEY).")] = None,
+) -> None:
+    """Refuse the call. The reason comes back to the model as the tool's result."""
+    with _client(api, key) as client:
+        _check(
+            client.post(
+                f"/runs/{run_id}/reject",
+                json={"tool_call_id": tool_call_id, "reason": reason},
+            )
+        )
+    typer.echo("rejected")
 
 
 @app.command()
