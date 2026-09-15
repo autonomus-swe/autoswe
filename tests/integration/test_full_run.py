@@ -509,11 +509,15 @@ async def test_an_open_question_pauses_the_run_and_the_answer_is_on_the_record(
 
     task = asyncio.create_task(run(state, d))
     try:
+        # Wait for the event, not the run's status. awaiting_input_node sets the status
+        # first and emits afterwards, so polling the status and then reading events is a
+        # race that only shows up when the machine is loaded enough to widen the gap.
+        asked: list[Any] = []
         for _ in range(240):
             await asyncio.sleep(0.5)
             async with session(d.engine) as s:
-                row = await db.get_run(s, run_id)
-            if row is not None and row.status == "awaiting_input":
+                asked = [e for e in await db.list_events(s, run_id) if e.type == "awaiting_input"]
+            if asked:
                 break
             if task.done():
                 done = await task  # surface whatever went wrong instead of timing out
@@ -522,12 +526,14 @@ async def test_an_open_question_pauses_the_run_and_the_answer_is_on_the_record(
                     f"open_questions={done.plan.open_questions if done.plan else None}"
                 )
         else:
-            pytest.fail("run never reached awaiting_input")
+            pytest.fail("run never announced an open question")
 
+        assert asked[-1].payload["questions"] == ["Which scheme?"]
         async with session(d.engine) as s:
-            events = await db.list_events(s, run_id)
-        asked = [e for e in events if e.type == "awaiting_input"]
-        assert asked and asked[-1].payload["questions"] == ["Which scheme?"]
+            parked = await db.get_run(s, run_id)
+        assert parked is not None and parked.status == "awaiting_input", (
+            "the status is set before the event, so by now it must agree"
+        )
 
         await d.bus.push_inbox(run_id, {"type": "answer", "text": answer})
         final = await asyncio.wait_for(task, timeout=600)

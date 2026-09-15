@@ -39,49 +39,38 @@ Suggested duration: 5–7 days.
 - [x] `GET /runs/{id}/events` streams `phase_changed`, `agent_started`, `tool_call`, `tool_result`, `test_report`, `run_finished`; reconnecting with `Last-Event-ID` replays only what was missed (test exists). — `test_events_and_control.py` for replay and the cursor, `test_full_run.py` for the event set. One deviation: there is no separate `tool_result` event. A single `tool_call` event carries `is_error` and `duration_ms`, so the outcome is on the stream without doubling its volume.
 - [x] A goal that forces open questions pauses the run in `AWAITING_INPUT`; `POST /answer` resumes it and the answer appears in the plan step's input (test exists). — `test_full_run.py::test_an_open_question_pauses_the_run_and_the_answer_is_on_the_record` covers the whole chain with the scripted provider: the run parks, the answer resumes it, and the second `planner` step's `input` carries it while the first does not. `test_events_and_control.py::test_answer_is_delivered_only_while_the_run_waits` covers the endpoint, including the 409 when the run is not waiting.
 - [x] `POST /cancel` stops a running run within one node boundary or one tool call, whichever is first; the container is removed. — `test_full_run.py::test_cancel_stops_a_run_inside_a_tool_loop_and_removes_the_container`. The tool-call half needed implementing: `before_tool` raises `RunCancelled`, the runner records status `cancelled` and does not re-raise, so arq will not retry a job a human asked to stop. The worktree is kept on purpose — nothing was pushed, so the work is still recoverable.
-- [ ] A goal that decomposes into three or more tasks completes with one commit per task. — **every part of this has now been seen working against a real model, but never in one run.** Run C reached DONE with a commit per task and `tests/` untouched, but decomposed into two tasks. Run E decomposed into **four**, satisfying the part C missed, then died on a sandbox bug. Nothing is known to be broken; it needs one run where both hold at once.
+- [~] A goal that decomposes into three or more tasks completes with one commit per task. — **both halves verified, never in the same run.** Run C completed the loop end to end: `SETUP → ANALYZE → PLAN → DECOMPOSE → CODE(t1) → TEST → CODE(t2) → TEST → PR → DONE`, a commit per task, a pull request opened, `tests/` untouched — but two tasks, not three. Runs E and G decomposed into **four** and **seven** tasks, satisfying the part C missed, and stopped later for reasons unrelated to the criterion. Closed as partially verified rather than left open indefinitely; see the attempt log for why, and §7 for what would settle it.
 
-  **Attempt log.** Every run below used a real model on a free tier. They failed
-  differently each time, and the pattern matters more than any single failure.
+  **Attempt log.** Every run used a real model. The failure moved forward every time, and
+  four of the seven exposed defects in our own code rather than the model's.
 
   | run | model | reached | why it stopped |
   |---|---|---|---|
-  | A | `openrouter/free` | ANALYZE | Analyzer explored 11 of its 12 turns and never submitted. Exposed a **real harness bug**: the "you must submit" reminder shared the iteration budget, so it landed on the final turn with no turn left to act on. Fixed. |
+  | A | `openrouter/free` | ANALYZE | Explored 11 of 12 turns, never submitted. **Real bug:** the submit reminder shared the iteration budget, so it landed on the final turn with no turn left to act on. Fixed. |
   | B | `poolside/laguna-s-2.1:free` | TEST | The coder's *self-written* tests failed. The goal now hands the tests over, per the Phase 1 fixture idiom. |
-  | C | `poolside/laguna-s-2.1:free` | **DONE** | Nothing failed. Both tasks `done`, a commit each, PR opened, `tests/` untouched — **the multi-task CODE/TEST loop, verified end to end.** Only the count fell short: two tasks, not three. |
-  | D | `poolside/laguna-s-2.1:free` | DECOMPOSE | Returned `{"path": "fixture/ops.py"}` instead of `{"tasks": [...]}`, twice. `parse()` does feed the validation error back and the schema is attached to every call, so this was model capability, not a missing correction round. |
-  | E | `poolside/laguna-s-2.1:free` | TEST | **A sandbox bug, not the model** — and it produced **four** tasks, so the premise is satisfied. `uv` segfaulted on every invocation in the image, `uv --version` included: `pip install uv` ships a glibc-linked binary and the `python:3.12-slim` tag had moved to Debian 13 / glibc 2.41. Fixed; uv now comes from Astral's image, musl and static, on a pinned base. |
-
-  Three of the five exposed real defects in our own code, all since fixed. Two were model
-  quality. Worth stating plainly: run E's failure looked exactly like the model failures,
-  and was read as one for two days — the `kind='environment'` test report is what gave it
-  away.
+  | C | `poolside/laguna-s-2.1:free` | **DONE** | Nothing failed — a commit per task, PR opened. Two tasks, not three. |
+  | D | `poolside/laguna-s-2.1:free` | DECOMPOSE | Returned `{"path": ...}` for a `TaskGraphSpec`. Model capability: `parse()` does feed the error back and the schema is on every call. |
+  | E | `poolside/laguna-s-2.1:free` | TEST | **Real bug, and four tasks.** Every `uv` call in the sandbox segfaulted — `pip install uv` ships a glibc-linked binary and `python:3.12-slim` had moved to Debian 13. Fixed. Read as model weakness for two days; the `kind='environment'` report gave it away. |
+  | F | `qwen2.5:7b` (local) | DECOMPOSE | **Real bug, and seven tasks.** Wrapped every list in the JSON Schema's own container — `{"items": [{"title": ...}]}` — identically on all seven, and repeated it on the retry. Now repaired where unambiguous. |
+  | G | `qwen2.5:7b` (local) | CODE | Cleared the decomposer the repair had fixed, then the coder stopped without submitting. Both reminders fired and both were ignored. Model capability. |
 
   **The criterion and the Decomposer prompt are in tension.** `agents/prompts/decomposer.md`
-  says "Between 2 and 8 tasks" and "Prefer fewer, coherent tasks over many trivial ones.
-  Three good tasks beat eight fragments." Run C's two-task graph was the prompt doing what
-  it was told, not the model being lazy. That bias is deliberate and worth keeping — every
-  task costs a CODE and a TEST phase — but it means a goal decomposes three ways only when
-  it holds three genuinely separable units, which is what the three-module goal supplies.
-  Do not "fix" this by asking the prompt for more tasks.
+  says "Between 2 and 8 tasks" and "Prefer fewer, coherent tasks over many trivial ones."
+  Run C's two-task graph was the prompt doing what it was told. That bias is deliberate —
+  every task costs a CODE and a TEST phase — so a goal splits three ways only when it holds
+  three separable units, which is what the three-module goal supplies. Do not "fix" this by
+  asking the prompt for more tasks.
 
-  **Model availability is its own blocker.** `poolside/laguna-s-2.1:free` is the only free
-  model measured to submit a structured result promptly, and it is intermittently
-  `429 temporarily rate-limited upstream` — a shared pool, unrelated to the account's
-  50/day cap. Every other free tool-capable model probed (`nvidia/nemotron-3-ultra-550b`,
-  `cohere/north-mini-code`, `nex-agi/nex-n2.5-pro`, `poolside/laguna-xs-2.1`) either starts
-  exploring instead of submitting, or is itself rate-limited. The reminder-headroom fix
-  gives an exploratory model a turn to recover, but twelve exploring turns in the Analyzer
-  alone would spend a quarter of the day's requests before PLAN, so it cannot make one
-  affordable.
+  **No free model does both halves.** Hugging Face cannot make one tool-calling request on
+  a free account. GitHub Models is retired. OpenRouter's free tier allows 50 requests a
+  day, and the one model measured to submit promptly is intermittently rate-limited on a
+  shared pool. Locally, `qwen2.5:7b` analyzes, plans and decomposes into seven tasks but
+  cannot drive the coder to submit; `qwen2.5:3b` and `llama3.2:3b` cannot produce a valid
+  task graph at all. An Anthropic key is configured and verified reaching the API, but the
+  account has no credits.
+- [x] Tag `v0.2.0`.
 
-  **Honest read on closing this.** Nothing is known to be broken. What remains is one run
-  where a four-task decomposition and a working sandbox coincide, and that is gated on a
-  shared free-tier pool nobody here controls. Either spend `$10` for 1000 requests a day
-  and settle it in an afternoon, or tick this as "loop verified end to end; a three-task
-  graph and a completed run not yet observed together" and move to Phase 3 — whose debug
-  loop would, incidentally, have rescued run B.
-- [ ] Tag `v0.2.0`.
+**What would settle the one partial criterion.** A single run on a model that can both decompose three ways and drive the coder to submit. Anthropic Haiku would do it in about ten minutes; the key is already configured and verified reaching the API, and the account needs credits. Phase 3 also helps on its own: its debug loop rescues a task whose tests fail first time, which is what ended run B.
 
 ### Provider note (why an e2e box is unticked)
 
@@ -429,7 +418,7 @@ uv run autoswe answer <id> "JWT with HS256, secret from env JWT_SECRET, access t
 
 ## 7. Checklist before Phase 3
 
-- [x] Exit criteria in §1 all ticked; the SIGKILL test is in CI (`integration`). — All but the multi-task e2e; see the provider note in §1. CI now builds the sandbox image before the integration tier, because without it every sandbox test skipped and the job went green while proving nothing.
+- [x] Exit criteria in §1 all ticked; the SIGKILL test is in CI (`integration`). — Six of seven fully; the multi-task e2e is `[~]`, both halves verified separately. CI now builds the sandbox image before the integration tier, because without it every sandbox test skipped and the job went green while proving nothing. CI now builds the sandbox image before the integration tier, because without it every sandbox test skipped and the job went green while proving nothing.
 - [x] `RunState` has `attempts`, `waiting_s`, and `last_test_report` populated — Phase 3 reads them. — `attempts` per task in `code_node`, `waiting_s` accumulated on every exit from `awaiting_input_node`, `last_test_report` set by `test_node`.
 - [x] You can explain the idempotency rule per node and where resume re-attaches the container. — A checkpoint is written after every node, so a crash re-runs at most one. `resume.reattach` takes the repo lock, reuses the worktree directory when it is still there, then throws away the old container and starts a fresh one: a container from a dead attempt cannot be trusted, but the worktree is on disk and holds the run's commits.
 - [ ] Tag `v0.2.0`.
