@@ -30,6 +30,7 @@ from contracts import (
 from core.errors import AgentError, SandboxError
 from gateway.routing import route_for
 from observability.logging import bind_run, get_logger
+from orchestrator.approvals import ApprovalGate
 from orchestrator.deps import Deps
 from orchestrator.events import emit
 from orchestrator.hooks import OrchestratorHooks
@@ -161,6 +162,26 @@ async def setup_node(state: RunState, deps: Deps, res: RunResources) -> RunState
 
     await _emit(deps, state.run_id, "phase_changed", {"phase": Phase.ANALYZE.value})
     return state
+
+
+def _approval_gate(state: RunState, deps: Deps, res: RunResources) -> ApprovalGate:
+    """The gate for this run, wired to keep the lock alive and the wait out of the budget."""
+
+    async def renew() -> None:
+        if res.lock_key and res.lock_owner:
+            await deps.bus.renew_lock(res.lock_key, res.lock_owner, LOCK_TTL_S)
+
+    def on_wait(seconds: float) -> None:
+        state.waiting_s += seconds
+
+    return ApprovalGate(
+        run_id=state.run_id,
+        engine=deps.engine,
+        bus=deps.bus,
+        unattended=state.unattended,
+        on_wait=on_wait,
+        renew=renew,
+    )
 
 
 def _run_context(state: RunState, res: RunResources, step_id: UUID, role: str) -> RunContext:
@@ -326,6 +347,8 @@ async def _begin(
         effort=route.effort,
         role=agent,
         submitted=ctx.submitted,
+        approvals=_approval_gate(state, deps, res),
+        answers=ctx.answers,
     )
     return step_id, hooks, ctx
 
@@ -394,6 +417,8 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
         effort=route.effort,
         role="coder",
         submitted=ctx.submitted,
+        approvals=_approval_gate(state, deps, res),
+        answers=ctx.answers,
     )
     error: str | None = None
     result = None
@@ -499,6 +524,8 @@ async def debug_node(state: RunState, deps: Deps, res: RunResources) -> RunState
         effort=route.effort,
         role="debugger",
         submitted=ctx.submitted,
+        approvals=_approval_gate(state, deps, res),
+        answers=ctx.answers,
     )
     error: str | None = None
     hypothesis = None

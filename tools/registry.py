@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tools.ask_user import AskUserTool
 from tools.base import BaseTool
 from tools.bash import BashTool
 from tools.editor import EditorTool
@@ -21,6 +22,7 @@ REGISTRY: dict[str, BaseTool] = {
         GitStatusTool(),
         GitDiffTool(),
         GitCommitTool(),
+        AskUserTool(),
     )
 }
 
@@ -34,6 +36,9 @@ ROLE_TOOLS: dict[str, list[str]] = {
         "git_status",
         "git_diff",
         "git_commit",
+        # last on purpose: a question costs a human's attention, so it is the
+        # tool of last resort, and tool order nudges what a model reaches for.
+        "ask_user",
     ],
     "debugger": [
         "bash",
@@ -44,6 +49,9 @@ ROLE_TOOLS: dict[str, list[str]] = {
         "git_status",
         "git_diff",
         "git_commit",
+        # last on purpose: a question costs a human's attention, so it is the
+        # tool of last resort, and tool order nudges what a model reaches for.
+        "ask_user",
     ],
     "analyzer": ["read_file", "search_code", "git_status", "git_diff"],
     "planner": ["read_file", "search_code", "git_status", "git_diff"],

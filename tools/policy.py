@@ -50,3 +50,27 @@ def confine(path: str, root: Path) -> Path:
     if any(part in FORBIDDEN_PARTS for part in rel_parts):
         raise PolicyViolation(f"path is inside a protected directory: {path}")
     return candidate
+
+
+# Commands a human should see before they run. Unlike DENY these are legitimate — the
+# agent may genuinely need a dependency — but they change the environment or destroy
+# work, so somebody decides. DENY runs first, so anything forbidden never reaches here.
+ASK: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\brm\s+(-\w*r\w*|--recursive)"), "recursive delete inside the workspace"),
+    (
+        re.compile(r"\b(uv|pip|pip3|npm|pnpm|yarn|go|cargo)\s+(add|install|get)\b"),
+        "adding a dependency",
+    ),
+    (re.compile(r"\buv\s+pip\s+install\b"), "adding a dependency"),
+    (re.compile(r"\balembic\s+downgrade\b"), "a database downgrade"),
+    (re.compile(r"\bdocker\b"), "controlling the container runtime"),
+    (re.compile(r"\b(curl|wget)\s"), "reaching the network"),
+]
+
+
+def needs_approval(cmd: str) -> str | None:
+    """Why this command needs a human, or None when it does not."""
+    for pattern, why in ASK:
+        if pattern.search(cmd):
+            return why
+    return None

@@ -78,6 +78,11 @@ async def set_run_phase(s: AsyncSession, run_id: uuid.UUID, phase: str, status: 
     await s.execute(update(RunRow).where(RunRow.id == run_id).values(phase=phase, status=status))
 
 
+async def set_run_status(s: AsyncSession, run_id: uuid.UUID, status: str) -> None:
+    """Status only. An approval pauses a run without moving it to another phase."""
+    await s.execute(update(RunRow).where(RunRow.id == run_id).values(status=status))
+
+
 async def mark_run_started(s: AsyncSession, run_id: uuid.UUID) -> None:
     await s.execute(
         update(RunRow)

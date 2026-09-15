@@ -775,3 +775,29 @@ Ship numbers, not adjectives.
 > Built an autonomous software-engineering agent that analyzes repositories, plans implementations, modifies code, executes tests, debugs failures, and produces verified Git commits using a multi-agent execution loop — Python, FastAPI, PostgreSQL, Redis, Docker sandboxing, Claude Opus 5 with structured outputs and prompt caching, an open-source model fallback via vLLM, and MCP interoperability. Resolved X % of SWE-bench Lite at $Y per task with a bounded debug loop and checkpointed, resumable runs.
 
 Fill in X and Y from §14. Interviewers will ask about the transition function, the sandbox, and the debug budget — all three are yours to explain line by line.
+
+## Two shapes of interrupt
+
+A run can be waiting on a human in two different ways, and they are not the same state.
+
+**An open question** happens *between* nodes. The Planner produced open questions, or an
+escalation needs a decision, and nothing is half-finished. The run's `phase` is literally
+`AWAITING_INPUT`, and `transition` sends it to `resume_phase` when the answer arrives.
+
+**A tool approval** happens *inside* an agent's tool loop, with a turn on the stack and a
+tool call waiting for a result. There is no phase for that, because the run has not
+finished `CODE` or `DEBUG` — so the run's **status** becomes `awaiting_input` while its
+`phase` stays where it was. `GET /runs/{id}` shows both fields, which is how a viewer
+tells the two apart.
+
+The practical consequences:
+
+- An approval is answered with `POST /runs/{id}/approve` or `/reject`, quoting the
+  `tool_call_id` from the `awaiting_input` event. An open question is answered with
+  `/answer` and no id.
+- The id of the call being waited on lives in Redis (`run:{id}:pending`), because the API
+  process validates a decision against it and never sees `RunState`.
+- Either way, the seconds spent parked are added to `waiting_s` and subtracted from the
+  wall-clock budget. A human's thinking time is not the agent's.
+- An unattended run auto-rejects approvals rather than hanging, and tells the model why,
+  so it can work around the refusal.

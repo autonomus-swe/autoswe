@@ -10,10 +10,12 @@ from contracts import ToolResult, Usage
 from core.errors import RunCancelled
 from gateway import budget
 from observability.logging import get_logger
+from orchestrator.approvals import ApprovalGate
 from orchestrator.events import emit
 from storage import repo
 from storage.db import session
 from storage.redis import RedisBus
+from tools import policy
 from tools.registry import REGISTRY
 
 log = get_logger(__name__)
@@ -37,6 +39,11 @@ class OrchestratorHooks:
         # The agent's own `ctx.submitted`, by reference rather than by copy: the gate has
         # to see a submission the moment the tool records it, mid-loop.
         submitted: dict[str, Any] | None = None,
+        # Set for runs that have somebody to ask. Without it, approvals are refused.
+        approvals: ApprovalGate | None = None,
+        # `ctx.answers`, again by reference: an approved `ask_user` leaves its answer here
+        # because `before_tool` can refuse a call but cannot hand one a value.
+        answers: dict[str, str] | None = None,
     ) -> None:
         self.run_id = run_id
         self.step_id = step_id
@@ -47,6 +54,9 @@ class OrchestratorHooks:
         self.effort = effort
         self.role = role
         self.submitted = submitted if submitted is not None else {}
+        self.approvals = approvals
+        self.answers = answers if answers is not None else {}
+        self.calls = 0  # only used to mint a stable id per call for the approval channel
         self.usage = Usage()
         self.tool_calls = 0
 
@@ -75,7 +85,31 @@ class OrchestratorHooks:
             )
 
         if tool is not None and tool.requires_approval:
-            return "approval is required but no approver is configured in this phase"
+            return await self._ask(name, input, kind="question")
+
+        # The ASK list is about what a command *does*, not which tool ran it: adding a
+        # dependency or deleting a tree is the same decision however it is spelled.
+        if name == "bash":
+            why = policy.needs_approval(str(input.get("command") or ""))
+            if why is not None:
+                return await self._ask(name, input, kind="command", why=why)
+        return None
+
+    async def _ask(
+        self, name: str, input: dict[str, Any], *, kind: str, why: str = ""
+    ) -> str | None:
+        """Pause for a human. Returns None to allow the call, or the refusal to report."""
+        if self.approvals is None:
+            return "approval is required and no approver is configured for this run"
+        self.calls += 1
+        tool_call_id = f"{self.step_id}:{self.calls}"
+        decision = await self.approvals.wait(kind, name, tool_call_id, input)
+        if not decision.approved:
+            # The model is told why, in its own tool result, so it can work around a
+            # refusal instead of retrying the same call.
+            return f"a human declined: {decision.reason}" + (f" ({why})" if why else "")
+        if decision.answer:
+            self.answers[str(input.get("question") or "").strip()] = decision.answer
         return None
 
     async def after_tool(
