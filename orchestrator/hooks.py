@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+from agents.debugger import HYPOTHESIS_KEY
 from contracts import ToolResult, Usage
 from core.errors import RunCancelled
 from gateway import budget
@@ -32,6 +33,10 @@ class OrchestratorHooks:
         provider_name: str,
         model: str,
         effort: str | None,
+        role: str = "",
+        # The agent's own `ctx.submitted`, by reference rather than by copy: the gate has
+        # to see a submission the moment the tool records it, mid-loop.
+        submitted: dict[str, Any] | None = None,
     ) -> None:
         self.run_id = run_id
         self.step_id = step_id
@@ -40,6 +45,8 @@ class OrchestratorHooks:
         self.provider_name = provider_name
         self.model = model
         self.effort = effort
+        self.role = role
+        self.submitted = submitted if submitted is not None else {}
         self.usage = Usage()
         self.tool_calls = 0
 
@@ -50,6 +57,23 @@ class OrchestratorHooks:
         if self.bus is not None and await self.bus.is_cancelled(self.run_id):
             raise RunCancelled("cancelled before running " + name)
         tool = REGISTRY.get(name)
+
+        # The Debugger states a hypothesis before it touches anything. A hypothesis
+        # written after the edit describes the edit; written before, it is a claim the
+        # next test run confirms or refutes, which is the whole value of the step. The
+        # gate lives here because this is the only place every tool call passes through.
+        if (
+            self.role == "debugger"
+            and HYPOTHESIS_KEY not in self.submitted
+            and tool is not None
+            and tool.mutating
+        ):
+            return (
+                f"call submit_hypothesis first — {name} changes things, and a diagnosis "
+                "written afterwards is not a diagnosis. Read with read_file and "
+                "search_code, then submit your hypothesis."
+            )
+
         if tool is not None and tool.requires_approval:
             return "approval is required but no approver is configured in this phase"
         return None

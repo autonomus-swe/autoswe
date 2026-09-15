@@ -11,11 +11,22 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
+
 from agents.analyzer import AnalyzerAgent
 from agents.coder import CoderAgent
+from agents.debugger import DebuggerAgent
 from agents.decomposer import DecomposerAgent
 from agents.planner import PlannerAgent
-from contracts import RepoFacts, TaskGraph, TaskGraphSpec, TaskSpec, TestReport
+from contracts import (
+    DebugHypothesis,
+    RepoFacts,
+    Task,
+    TaskGraph,
+    TaskGraphSpec,
+    TaskSpec,
+    TestReport,
+)
 from core.errors import AgentError, SandboxError
 from gateway.routing import route_for
 from observability.logging import bind_run, get_logger
@@ -23,6 +34,7 @@ from orchestrator.deps import Deps
 from orchestrator.events import emit
 from orchestrator.hooks import OrchestratorHooks
 from orchestrator.state import Phase, RunState
+from orchestrator.transition import MAX_DEBUG_ATTEMPTS
 from repo import profile as repo_profile
 from repo import worktree as wt
 from repo.clone import ensure_bare_clone, repo_key, resolve_sha
@@ -301,6 +313,9 @@ async def _begin(
     bind_run(state.run_id, step_id=step_id)
     await _emit(deps, state.run_id, "agent_started", {"agent": agent})
     route = route_for(agent)
+    # The context comes first: the hooks hold its `submitted` dict by reference so a gate
+    # can see a submission the moment a tool records it, mid-loop.
+    ctx = _run_context(state, res, step_id, agent)
     hooks = OrchestratorHooks(
         run_id=state.run_id,
         step_id=step_id,
@@ -309,8 +324,10 @@ async def _begin(
         provider_name=deps.provider.provider_name,
         model=deps.provider.model,
         effort=route.effort,
+        role=agent,
+        submitted=ctx.submitted,
     )
-    return step_id, hooks, _run_context(state, res, step_id, agent)
+    return step_id, hooks, ctx
 
 
 async def _end(
@@ -344,6 +361,12 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     task_obj.status = "in_progress"
     state.current_task_id = task.id
     state.attempts[task.id] = state.attempts.get(task.id, 0)
+    # Recorded before the Coder touches anything: a replan after three failed attempts
+    # rewinds to here, so it plans against a clean base rather than three half-fixes.
+    if task_obj.task_start_sha is None and res.worktree is not None:
+        with contextlib.suppress(Exception):
+            head = await git("rev-parse", "HEAD", cwd=res.worktree.path)
+            task_obj.task_start_sha = head.strip()
 
     async with session(deps.engine) as s:
         step_id = await db.start_step(
@@ -360,6 +383,7 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     await _emit(deps, state.run_id, "agent_started", {"agent": "coder", "task_id": task.id})
 
     route = route_for("coder")
+    ctx = _run_context(state, res, step_id, "coder")
     hooks = OrchestratorHooks(
         run_id=state.run_id,
         step_id=step_id,
@@ -368,15 +392,24 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
         provider_name=deps.provider.provider_name,
         model=deps.provider.model,
         effort=route.effort,
+        role="coder",
+        submitted=ctx.submitted,
     )
-    ctx = _run_context(state, res, step_id, "coder")
     error: str | None = None
     result = None
+    outcome = None
     try:
         result, outcome = await CoderAgent().run(
             deps.provider, ctx, state.goal, task, hooks, files=_task_files(res, task)
         )
         state.task_results[task.id] = result
+    except AgentError as e:
+        # A Coder that did the work and then stopped without submitting has not killed
+        # the run. Leaving task_results unset sends `transition` to ESCALATE with
+        # `coder_no_result`, which spends one attempt and tries again — the behaviour the
+        # escalation table asks for, and a failure mode real weak models produce often.
+        error = f"{type(e).__name__}: {e}"
+        log.warning("coder_no_result", task_id=task.id, error=error)
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
         raise
@@ -391,7 +424,13 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
                 usage=hooks.usage,
             )
             await db.set_run_cost(s, state.run_id, state.usage.cost_usd)
-    log.info("coder_done", task_id=task.id, turns=outcome.turns, tool_calls=hooks.tool_calls)
+    log.info(
+        "coder_done",
+        task_id=task.id,
+        turns=outcome.turns if outcome else 0,
+        tool_calls=hooks.tool_calls,
+        submitted=result is not None,
+    )
     await _emit(deps, state.run_id, "agent_finished", {"agent": "coder", "task_id": task.id})
     return state
 
@@ -414,6 +453,251 @@ def _task_files(res: RunResources, task: TaskSpec) -> dict[str, str]:
         else:
             out[name] = "\n".join(lines)
     return out
+
+
+async def debug_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
+    """One debug attempt: a hypothesis, then a fix, on the task that just failed.
+
+    The attempt counter goes up here rather than in `transition`, because an attempt is
+    something that happened, not something that was decided. A Debugger that crashes
+    still consumed an attempt.
+    """
+    assert state.tasks is not None and state.last_test_report is not None
+    task_obj = state.tasks.by_id(state.current_task_id or "")
+    task = task_obj.spec
+    state.attempts[task.id] = state.attempts.get(task.id, 0) + 1
+    task_obj.attempts = state.attempts[task.id]
+
+    async with session(deps.engine) as s:
+        step_id = await db.start_step(
+            s,
+            run_id=state.run_id,
+            task_id=task.id,
+            agent="debugger",
+            phase=Phase.DEBUG.value,
+            input={
+                "goal": state.goal,
+                "task": task.model_dump(mode="json"),
+                "report_signature": state.last_test_report.signature,
+                "strategy": state.strategy,
+            },
+            attempt=state.attempts[task.id],
+        )
+        await db.upsert_tasks(s, state.run_id, state.tasks)
+    bind_run(state.run_id, task_id=task.id, step_id=step_id)
+    await _emit(deps, state.run_id, "agent_started", {"agent": "debugger", "task_id": task.id})
+
+    route = route_for("debugger")
+    ctx = _run_context(state, res, step_id, "debugger")
+    hooks = OrchestratorHooks(
+        run_id=state.run_id,
+        step_id=step_id,
+        engine=deps.engine,
+        bus=deps.bus,
+        provider_name=deps.provider.provider_name,
+        model=deps.provider.model,
+        effort=route.effort,
+        role="debugger",
+        submitted=ctx.submitted,
+    )
+    error: str | None = None
+    hypothesis = None
+    result = None
+    try:
+        hypothesis, result, _outcome = await DebuggerAgent().run(
+            deps.provider,
+            ctx,
+            state.goal,
+            task,
+            state.last_test_report,
+            hooks,
+            previous=await _previous_hypotheses(deps, state.run_id, task.id),
+            alternative=state.strategy == "alternative",
+            human_hint=task_obj.human_hint,
+            context=state.test_context,
+        )
+        if result is not None:
+            state.task_results[task.id] = result
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        state.usage = state.usage.add(hooks.usage)
+        async with session(deps.engine) as s:
+            # The hypothesis is the record of this attempt, so it is stored whether or
+            # not the fix worked; the next TEST decides that.
+            await db.finish_step(
+                s,
+                step_id,
+                output=_debug_output(hypothesis, result),
+                error=error,
+                usage=hooks.usage,
+            )
+            await db.set_run_cost(s, state.run_id, state.usage.cost_usd)
+    if hypothesis is not None:
+        await _emit(
+            deps,
+            state.run_id,
+            "debug_hypothesis",
+            {
+                "task_id": task.id,
+                "attempt": state.attempts[task.id],
+                "failure_class": hypothesis.failure_class,
+                "root_cause": hypothesis.root_cause[:400],
+                "confidence": hypothesis.confidence,
+            },
+        )
+    log.info(
+        "debug_attempt_done",
+        task_id=task.id,
+        attempt=state.attempts[task.id],
+        submitted_result=result is not None,
+    )
+    return state
+
+
+def _debug_output(hypothesis: Any, result: Any) -> dict[str, Any]:
+    return {
+        "hypothesis": hypothesis.model_dump(mode="json") if hypothesis else None,
+        "task_result": result.model_dump(mode="json") if result else None,
+    }
+
+
+async def _previous_hypotheses(deps: Deps, run_id: UUID, task_id: str) -> list[DebugHypothesis]:
+    """Every hypothesis already tried on this task, oldest first.
+
+    Read from the steps table rather than carried on the state: a resumed run must know
+    what its previous attempts believed, and a checkpoint is not the place for a growing
+    transcript.
+    """
+    async with session(deps.engine) as s:
+        steps = await db.list_steps(s, run_id)
+    out: list[DebugHypothesis] = []
+    for step in steps:
+        if step.agent != "debugger" or step.task_id != task_id:
+            continue
+        payload = (step.output or {}).get("hypothesis")
+        if payload:
+            with contextlib.suppress(ValidationError):
+                out.append(DebugHypothesis.model_validate(payload))
+    return out
+
+
+async def escalate_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
+    """Decide what a stuck run does next, and set `resume_phase` for the transition.
+
+    This node is the reason a failing loop stops instead of spinning: every path out of
+    it either makes a different attempt possible or ends the run. It never retries
+    blindly — the same attempt again is what the attempt cap already ruled out.
+    """
+    reason = state.escalation_reason or "unknown"
+    task_obj = (
+        state.tasks.by_id(state.current_task_id) if state.tasks and state.current_task_id else None
+    )
+    await _emit(
+        deps,
+        state.run_id,
+        "escalated",
+        {"reason": reason, "task_id": state.current_task_id, "attempts": dict(state.attempts)},
+    )
+    log.info("escalate", reason=reason, task_id=state.current_task_id)
+
+    # A budget is not a problem the run can solve by trying differently.
+    if reason.startswith("budget_"):
+        return await _fail(state, deps, f"{reason}: the run ran out of its allowance")
+
+    # The Coder produced nothing. That is one failed attempt, not a verdict on the task.
+    if reason == "coder_no_result" and task_obj is not None:
+        state.attempts[task_obj.id] = state.attempts.get(task_obj.id, 0) + 1
+        if state.attempts[task_obj.id] < MAX_DEBUG_ATTEMPTS:
+            task_obj.status = "pending"
+            state.resume_phase = Phase.CODE
+            return state
+        reason = "debug_attempts_exhausted"
+
+    if reason != "debug_attempts_exhausted" or task_obj is None:
+        return await _fail(state, deps, f"escalated with no way forward: {reason}")
+
+    # First exhaustion: rewind and split. Three attempts have left the worktree carrying
+    # three half-fixes, so a replan starting from that is planning against noise.
+    if not task_obj.replanned:
+        await _rewind_task(state, res, task_obj)
+        replaced = await _replan_task(state, deps, res, task_obj)
+        if replaced:
+            state.resume_phase = Phase.CODE
+            return state
+        log.warning("replan_produced_nothing", task_id=task_obj.id)
+
+    # Already replanned. A human is the only remaining source of new information.
+    if state.unattended:
+        return await _fail(
+            state, deps, f"task {task_obj.id} failed {MAX_DEBUG_ATTEMPTS} times after a replan"
+        )
+
+    state.resume_phase = Phase.AWAITING_INPUT
+    return state
+
+
+async def _fail(state: RunState, deps: Deps, error: str) -> RunState:
+    state.resume_phase = Phase.FAILED
+    state.error = error
+    return state
+
+
+async def _rewind_task(state: RunState, res: RunResources, task_obj: Any) -> None:
+    """Discard the failed attempts' edits, back to where the task started.
+
+    Excludes .venv: it is installed once in SETUP and reinstalling it would cost minutes
+    for no benefit, since nothing the agent did put it there.
+    """
+    if res.worktree is None or not task_obj.task_start_sha:
+        return
+    with contextlib.suppress(Exception):
+        await git("reset", "--hard", task_obj.task_start_sha, cwd=res.worktree.path)
+        await git("clean", "-fd", "-e", ".venv", "-e", ".autoswe", cwd=res.worktree.path)
+        log.info("task_rewound", task_id=task_obj.id, sha=task_obj.task_start_sha[:8])
+
+
+async def _replan_task(state: RunState, deps: Deps, res: RunResources, task_obj: Any) -> bool:
+    """Split a task that failed its attempts into smaller ones. True when it changed."""
+    assert state.tasks is not None
+    hypotheses = await _previous_hypotheses(deps, state.run_id, task_obj.id)
+    step_id, hooks, _ctx = await _begin(state, deps, res, "decomposer", Phase.ESCALATE)
+    error: str | None = None
+    graph = None
+    try:
+        graph = await DecomposerAgent().replan(
+            deps.provider, state.goal, task_obj.spec, state.last_test_report, hypotheses
+        )
+    except Exception as e:  # a failed replan is not a crash: the human path is still open
+        error = f"{type(e).__name__}: {e}"
+        log.warning("replan_failed", task_id=task_obj.id, error=error)
+    finally:
+        await _end(state, deps, step_id, hooks, graph, error)
+    if graph is None or not graph.tasks:
+        return False
+
+    # The new tasks stand in for the old one, keeping its place in the ordering so
+    # anything that depended on it still depends on all of its parts.
+    replacements = [Task(spec=spec) for spec in graph.tasks]
+    for r in replacements:
+        r.replanned = True
+    index = next(i for i, t in enumerate(state.tasks.tasks) if t.id == task_obj.id)
+    new_ids = [r.id for r in replacements]
+    state.tasks.tasks[index : index + 1] = replacements
+    for t in state.tasks.tasks:
+        if task_obj.id in t.spec.depends_on:
+            t.spec.depends_on = [d for d in t.spec.depends_on if d != task_obj.id] + new_ids
+    for r in replacements:
+        state.attempts[r.id] = 0
+    state.attempts.pop(task_obj.id, None)
+    state.current_task_id = None
+    state.previous_failure_signature = None
+    state.strategy = None
+    async with session(deps.engine) as s:
+        await db.upsert_tasks(s, state.run_id, state.tasks)
+    log.info("task_replanned", task_id=task_obj.id, into=new_ids)
+    return True
 
 
 async def test_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
@@ -502,6 +786,8 @@ NODES: dict[Phase, Node] = {
     Phase.DECOMPOSE: decompose_node,
     Phase.AWAITING_INPUT: awaiting_input_node,
     Phase.CODE: code_node,
+    Phase.DEBUG: debug_node,
+    Phase.ESCALATE: escalate_node,
     Phase.TEST: test_node,
     Phase.PR: pr_node,
 }
