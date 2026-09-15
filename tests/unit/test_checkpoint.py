@@ -90,6 +90,13 @@ def full_state() -> RunState:
         waiting_s=12.5,
         seq=7,
         started_at=datetime.now(UTC),
+        previous_failure_signature="abc1230000000000",
+        strategy="alternative",
+        escalation_reason="debug_attempts_exhausted",
+        baseline_failures={"sig1", "sig2"},
+        resume_phase=Phase.DEBUG,
+        test_context={"tests/test_ops.py::test_x": "> 3 | assert False"},
+        warned={"budget_usd"},
     )
 
 
@@ -103,6 +110,11 @@ def test_round_trip_preserves_every_field() -> None:
     assert restored.answers == [("which scheme?", "JWT")]
     assert restored.attempts == {"t1": 2}
     assert restored.tasks is not None and restored.tasks.by_id("t1").spec.title == "add stats"
+    # Phase 3 added a set and an enum, both of which JSON flattens
+    assert restored.baseline_failures == {"sig1", "sig2"}
+    assert restored.warned == {"budget_usd"}
+    assert restored.resume_phase is Phase.DEBUG
+    assert restored.strategy == "alternative"
 
 
 def test_derived_task_properties_follow_the_graph() -> None:

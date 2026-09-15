@@ -46,6 +46,11 @@ class Task(StateModel):
     status: TaskStatus = "pending"
     attempts: int = 0
     replanned: bool = False
+    # HEAD before the Coder started, so an exhausted task can be rewound to a clean
+    # base instead of a replan inheriting three attempts' worth of half-edits.
+    task_start_sha: str | None = None
+    # What a human said when the run escalated to them. Carried into the Debugger prompt.
+    human_hint: str | None = None
 
     @property
     def id(self) -> str:

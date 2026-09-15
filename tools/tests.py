@@ -47,7 +47,7 @@ class RunTestsTool(BaseTool):
         if await asyncio.to_thread(report_path.is_file):
             try:
                 data = json.loads(await asyncio.to_thread(report_path.read_text))
-                report = parse_json_report(data, cmd, output)
+                report = parse_json_report(data, cmd, output, worktree=ctx.worktree)
             except (json.JSONDecodeError, ValueError):
                 report = None
         if report is None:
