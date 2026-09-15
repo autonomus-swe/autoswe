@@ -205,7 +205,7 @@ class ChatTurn:
     refusal: str | None = None
 
 
-def usage_from(resp: Any, model: str) -> Usage:
+def usage_from(resp: Any, model: str, base_url: str | None = None) -> Usage:
     """Read tokens (and OpenRouter's exact ``cost`` when present) from an SDK response."""
     u = getattr(resp, "usage", None)
     if u is None:
@@ -222,7 +222,7 @@ def usage_from(resp: Any, model: str) -> Usage:
     )
     extra = getattr(u, "model_extra", None) or {}
     reported = extra.get("cost") if isinstance(extra, dict) else None
-    cost = float(reported) if reported is not None else pricing.cost(model, usage)
+    cost = float(reported) if reported is not None else pricing.cost(model, usage, base_url)
     return Usage(**{**usage.model_dump(), "cost_usd": round(cost, 6)})
 
 
@@ -384,7 +384,7 @@ class OpenAICompatProvider:
             content=msg.content,
             tool_calls=calls,
             finish_reason=str(choice.finish_reason or "stop"),
-            usage=usage_from(resp, self.model),
+            usage=usage_from(resp, self.model, self.base_url),
             raw_message=_assistant_message(msg),
             refusal=getattr(msg, "refusal", None),
         )
