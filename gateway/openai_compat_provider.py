@@ -78,6 +78,70 @@ def _invalid_tool_call_detail(err: Any) -> tuple[str, str | None] | None:
     return detail[:600], generation
 
 
+# Weaker models mirror the JSON Schema instead of conforming to it: a `list[str]` field
+# comes back as `{"items": [{"title": "..."}]}` — the schema's own wrapper, one dict per
+# level of schema. The content is right and only the container is wrong, and saying so in
+# a retry does not help because the model repeats the same shape. Both repairs below are
+# narrow enough to be unambiguous: a dict holding nothing but the list, and a dict holding
+# nothing but the string. Anything else is left alone and still fails.
+REPAIR_PASSES = 3
+
+
+def _at(data: Any, loc: tuple[Any, ...]) -> tuple[Any, Any] | None:
+    """``(container, key)`` for a pydantic error location, or None if it does not resolve."""
+    if not loc:
+        return None
+    node = data
+    for key in loc[:-1]:
+        try:
+            node = node[key]
+        except (KeyError, IndexError, TypeError):
+            return None
+    return node, loc[-1]
+
+
+def _repair_once(data: Any, errors: Sequence[Any]) -> bool:
+    """Apply the known structural fixes in place. True when something changed."""
+    changed = False
+    for err in errors:
+        spot = _at(data, tuple(err.get("loc") or ()))
+        if spot is None:
+            continue
+        container, key = spot
+        try:
+            value = container[key]
+        except (KeyError, IndexError, TypeError):
+            continue
+        fixed: Any = None
+        if err.get("type") == "list_type" and isinstance(value, dict) and len(value) == 1:
+            inner = value.get("items")
+            if isinstance(inner, list):
+                fixed = inner
+        elif err.get("type") == "string_type" and isinstance(value, dict) and len(value) == 1:
+            only = next(iter(value.values()))
+            if isinstance(only, str):
+                fixed = only
+        if fixed is not None:
+            container[key] = fixed
+            changed = True
+    return changed
+
+
+def repair_structured[T: BaseModel](raw: str, output: type[T]) -> T | None:
+    """Validate ``raw`` after unwrapping schema-shaped containers, or None if it still fails."""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    for _ in range(REPAIR_PASSES):
+        try:
+            return output.model_validate(data)
+        except ValidationError as e:
+            if not _repair_once(data, e.errors()):
+                return None
+    return None
+
+
 def _retry_after_s(err: Any, now_s: float) -> float | None:
     """How long to wait out a rate limit, or None when this is not one.
 
@@ -468,6 +532,10 @@ class OpenAICompatProvider:
                 return output.model_validate_json(raw), total
             except ValidationError as e:
                 last_error = str(e)[:1500]
+                repaired = repair_structured(raw, output)
+                if repaired is not None:
+                    log.info("structured_output_repaired", model=self.model, output=output.__name__)
+                    return repaired, total
             messages.append(turn.raw_message)
             if turn.tool_calls:
                 messages.append(
