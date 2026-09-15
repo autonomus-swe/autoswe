@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # get withdrawn without notice, which then 404s mid-run; the router does not.
     llm_model: str = "openrouter/free"
     llm_max_tokens: int = Field(default=16_000, gt=0)
+    # Ten minutes is generous for a hosted endpoint and nowhere near enough for a local
+    # one. A 7B model on CPU generates at well under a token a second, so a single
+    # structured-output call can run for half an hour; the default cut it off mid-answer
+    # and the run died on a timeout that looked like a provider fault.
+    llm_timeout_s: float = Field(default=600.0, gt=0)
     anthropic_api_key: SecretStr | None = None
     github_token: SecretStr | None = None
     # Corporate TLS-inspecting proxies sign traffic with a private root CA that lands in
@@ -92,6 +97,7 @@ class Settings(BaseSettings):
             "llm_provider": self.llm_provider,
             "llm_base_url": self.llm_base_url,
             "llm_model": self.llm_model,
+            "llm_timeout_s": f"{self.llm_timeout_s:g}s",
             "llm_api_key": "set" if self.llm_api_key else "unset",
             "anthropic_api_key": "set" if self.anthropic_api_key else "unset",
             "github_token": "set" if self.github_token else "unset",

@@ -45,7 +45,10 @@ def build_provider(settings: Settings) -> LLMProvider:
 
     key = settings.llm_api_key.get_secret_value() if settings.llm_api_key else None
     return OpenAICompatProvider(
-        model=settings.llm_model, api_key=key, base_url=settings.llm_base_url
+        model=settings.llm_model,
+        api_key=key,
+        base_url=settings.llm_base_url,
+        timeout_s=settings.llm_timeout_s,
     )
 
 

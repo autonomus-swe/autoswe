@@ -13,6 +13,7 @@ from pydantic import Field
 
 from agents.submit import submit_tool
 from contracts import LLMModel, TaskResult, ToolResult, Usage
+from contracts.plan import TaskGraphSpec
 from core.errors import ProviderError
 from gateway import pricing
 from gateway.openai_compat_provider import (
@@ -22,6 +23,7 @@ from gateway.openai_compat_provider import (
     OpenAICompatProvider,
     ToolCallReq,
     _retry_after_s,
+    repair_structured,
     usage_from,
 )
 from gateway.provider import NullHooks, Request
@@ -586,3 +588,63 @@ def test_retry_after_clamps_a_hostile_or_stale_reset() -> None:
 
 def test_retry_after_falls_back_when_the_provider_says_nothing() -> None:
     assert _retry_after_s(_limit_err(), 0.0) == RATE_LIMIT_FALLBACK_WAIT_S
+
+
+# ---- structured-output repair -------------------------------------------------------
+# qwen2.5:7b decomposed the Phase 2 goal into seven correct tasks and then wrapped every
+# list field in the schema's own container. The payloads below are what it actually sent.
+
+
+def test_repair_unwraps_the_schema_shaped_container_a_local_model_sends() -> None:
+    raw = json.dumps(
+        {
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Implement subtract",
+                    "description": "Add subtract(a, b) to fixture/ops.py",
+                    "depends_on": {"items": []},
+                    "files": {"items": [{"title": "fixture/ops.py"}]},
+                    "acceptance_criteria": {"items": [{"title": "subtract(3, 2) returns 1"}]},
+                    "test_selector": "tests/test_ops.py",
+                }
+            ]
+        }
+    )
+    graph = repair_structured(raw, TaskGraphSpec)
+    assert graph is not None, "the content was right; only the container was wrong"
+    task = graph.tasks[0]
+    assert task.acceptance_criteria == ["subtract(3, 2) returns 1"]
+    assert task.files == ["fixture/ops.py"]
+    assert task.depends_on == []
+    assert task.id == "t1" and task.test_selector == "tests/test_ops.py"
+
+
+def test_repair_leaves_a_valid_payload_untouched() -> None:
+    raw = json.dumps({"tasks": [dict(VALID_TASK)]})
+    assert repair_structured(raw, TaskGraphSpec) == TaskGraphSpec.model_validate(
+        {"tasks": [VALID_TASK]}
+    )
+
+
+def test_repair_refuses_what_it_cannot_unambiguously_fix() -> None:
+    """A wrong container is recoverable. Missing or ambiguous content is not."""
+    missing = json.dumps({"tasks": [{"id": "t1", "title": "no description or files"}]})
+    assert repair_structured(missing, TaskGraphSpec) is None
+    # two keys: which one is the list? refuse rather than guess
+    ambiguous = json.dumps(
+        {"tasks": [{**VALID_TASK, "files": {"items": ["a.py"], "extra": ["b.py"]}}]}
+    )
+    assert repair_structured(ambiguous, TaskGraphSpec) is None
+    assert repair_structured("not json at all", TaskGraphSpec) is None
+
+
+VALID_TASK = {
+    "id": "t1",
+    "title": "Implement subtract",
+    "description": "Add subtract(a, b) to fixture/ops.py",
+    "depends_on": [],
+    "files": ["fixture/ops.py"],
+    "acceptance_criteria": ["subtract(3, 2) returns 1"],
+    "test_selector": "tests/test_ops.py",
+}
