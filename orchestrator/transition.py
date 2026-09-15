@@ -1,11 +1,35 @@
-"""Pure phase transitions. The model never chooses the next phase."""
+"""Pure phase transitions. The model never chooses the next phase.
+
+v3 adds the verification loop: a failing test goes to DEBUG while attempts remain, and to
+ESCALATE when they do not. Two guards run before the phase machine, because cancellation
+and an exhausted budget outrank whatever the run was about to do.
+
+This function may set bookkeeping on ``s`` — ``strategy``,
+``previous_failure_signature``, ``escalation_reason`` — but it performs no I/O and reads
+nothing except ``s``. That is what keeps it table-testable, and the table is the closest
+thing this project has to a specification of its own behaviour.
+"""
 
 from __future__ import annotations
 
 from orchestrator.state import Phase, RunState
 
+MAX_DEBUG_ATTEMPTS = 3
+
 
 def transition(s: RunState) -> Phase:
+    # A human asked to stop. Nothing else matters, including a half-finished task.
+    if s.cancelled:
+        return Phase.FAILED
+
+    # Budgets are checked here rather than inside each node so that no node can spend
+    # past a limit by forgetting to look. ESCALATE decides what to do about it.
+    if s.budget.exceeded(s.usage, s.elapsed_s(), cost_measurable=s.cost_measurable):
+        s.escalation_reason = s.budget.reason(
+            s.usage, s.elapsed_s(), cost_measurable=s.cost_measurable
+        )
+        return Phase.ESCALATE
+
     match s.phase:
         case Phase.SETUP:
             return Phase.ANALYZE
@@ -16,19 +40,53 @@ def transition(s: RunState) -> Phase:
                 return Phase.FAILED
             return Phase.AWAITING_INPUT if s.plan.open_questions else Phase.DECOMPOSE
         case Phase.AWAITING_INPUT:
-            # an answer arrived (or the run was cancelled, which the runner handles first)
-            return Phase.PLAN
+            # An answer arrived. Where it resumes depends on what asked: the Planner's
+            # open questions go back to PLAN, an escalation's answer goes to DEBUG.
+            return s.resume_phase or Phase.PLAN
         case Phase.DECOMPOSE:
             return Phase.CODE if s.tasks else Phase.FAILED
         case Phase.CODE:
-            return Phase.TEST if s.task_result else Phase.FAILED
+            if s.current_task_id and s.current_task_id in s.task_results:
+                return Phase.TEST
+            # The Coder produced nothing. That is a failed attempt, not a dead run —
+            # ESCALATE counts it and sends it back if there is budget for another.
+            s.escalation_reason = "coder_no_result"
+            return Phase.ESCALATE
         case Phase.TEST:
-            report = s.last_test_report
-            if report is None or not report.passed:
-                return Phase.FAILED  # Phase 3 replaces this with DEBUG / ESCALATE
-            more = s.tasks.next_ready() if s.tasks else None
-            return Phase.CODE if more else Phase.PR
+            return _after_test(s)
+        case Phase.DEBUG:
+            return Phase.TEST
+        case Phase.ESCALATE:
+            # escalate_node has already decided: CODE, AWAITING_INPUT, or FAILED.
+            return s.resume_phase or Phase.FAILED
         case Phase.PR:
+            # The v3 sketch in the phase doc returns DONE unconditionally here. Keeping
+            # the check from v2: a run that reached PR without producing a URL has not
+            # succeeded, and DONE would be a claim the run cannot support.
             return Phase.DONE if s.pr_url else Phase.FAILED
-        case _:
-            raise ValueError(f"no transition defined for phase {s.phase}")
+    raise ValueError(f"no transition defined for phase {s.phase}")
+
+
+def _after_test(s: RunState) -> Phase:
+    report = s.last_test_report
+    if report is None:
+        s.escalation_reason = "no_test_report"
+        return Phase.ESCALATE
+
+    if report.passed:
+        # A clean run clears the debug memory: the next task's first failure is its own
+        # first failure, not a continuation of this one.
+        s.previous_failure_signature = None
+        s.strategy = None
+        return Phase.CODE if s.tasks and s.tasks.next_ready() else Phase.PR
+
+    if s.attempts.get(s.current_task_id or "", 0) >= MAX_DEBUG_ATTEMPTS:
+        s.escalation_reason = "debug_attempts_exhausted"
+        return Phase.ESCALATE
+
+    # The same signature twice means the last hypothesis changed nothing that mattered.
+    # Saying so is the whole point of the signature: without it the Debugger would form
+    # the same theory again, three times, and call it three attempts.
+    s.strategy = "alternative" if report.signature == s.previous_failure_signature else None
+    s.previous_failure_signature = report.signature
+    return Phase.DEBUG

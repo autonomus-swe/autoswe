@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
 from uuid import UUID
@@ -97,6 +97,9 @@ class RunState(StateModel):
     test_context: dict[str, str] = Field(default_factory=dict)
     # Budget kinds already warned about, so a warning is emitted once and not every node.
     warned: set[str] = Field(default_factory=set)
+    # Whether spend can be measured at all for the model in use. Set once from the
+    # pricing table; kept on the state so `transition` stays a function of `s` alone.
+    cost_measurable: bool = True
 
     review: ReviewReport | None = None  # Phase 4
     security: SecurityReport | None = None  # Phase 4
@@ -110,6 +113,17 @@ class RunState(StateModel):
     waiting_s: float = 0.0  # time parked in AWAITING_INPUT, excluded from the budget
     seq: int = 0  # checkpoint sequence
     started_at: datetime | None = None
+
+    def elapsed_s(self, now: datetime | None = None) -> float:
+        """Seconds this run has been working, excluding time parked on a human.
+
+        A run waiting overnight for an answer has not spent its wall-clock budget; the
+        budget is meant to bound the agent, not the reviewer.
+        """
+        if self.started_at is None:
+            return 0.0
+        moment = now or datetime.now(UTC)
+        return max(0.0, (moment - self.started_at).total_seconds() - self.waiting_s)
 
     # v1 kept a single synthetic task; v2 uses the graph. This keeps older call sites
     # and the Phase 1 tests working while the graph is the source of truth.
