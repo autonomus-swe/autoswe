@@ -28,6 +28,7 @@ from gateway.openai_compat_provider import ChatTurn, OpenAICompatProvider, ToolC
 from orchestrator.deps import Deps, docker_sandbox_factory
 from orchestrator.runner import run
 from orchestrator.state import Phase, RunState
+from orchestrator.transition import MAX_DEBUG_ATTEMPTS
 from repo.clone import repo_key
 from repo.gitcmd import git
 from storage import repo as db
@@ -122,6 +123,7 @@ class ScriptedAgents(OpenAICompatProvider):
         ]
         self.seen_tools: list[str] = []
         self.roles: list[str] = []
+        self.hypothesis_submitted = False
 
     async def _complete(self, **kw: Any) -> ChatTurn:
         offered = {t["function"]["name"] for t in kw.get("tools", [])}
@@ -133,10 +135,22 @@ class ScriptedAgents(OpenAICompatProvider):
                 return self._done()
             self.roles.append(role)
             return call(role[0], tool, PROFILE if role == "analyzer" else PLAN)
+        # The Debugger is the only role offered submit_hypothesis. It states a
+        # hypothesis, then submits a result that fixes nothing, so the loop exhausts its
+        # attempts the way a genuinely stuck run does.
+        if "submit_hypothesis" in offered:
+            self.roles.append("debugger")
+            if not self.hypothesis_submitted:
+                self.hypothesis_submitted = True
+                return call("h", "submit_hypothesis", HYPOTHESIS)
+            self.hypothesis_submitted = False
+            return call("r", "submit_result", STUCK_RESULT)
         if "submit_result" in offered:
             if "coder" not in self.roles:
                 self.roles.append("coder")
-            return self.coder_script.pop(0)
+            # An exhausted script means this fake has nothing left to say, which is a
+            # turn that ends rather than an IndexError halfway through a run.
+            return self.coder_script.pop(0) if self.coder_script else self._done()
         return self._done()
 
     @staticmethod
@@ -164,6 +178,18 @@ PLAN = {
     "risks": [],
     "test_strategy": "uv run --no-sync pytest -q tests/test_ops.py",
     "open_questions": [],
+}
+HYPOTHESIS = {
+    "failure_class": "assertion",
+    "root_cause": "the implementation was never written",
+    "plan": "write it",
+    "confidence": 0.6,
+}
+STUCK_RESULT = {
+    "summary": "still cannot work it out",
+    "files_touched": [],
+    "how_to_test": "pytest",
+    "notes_for_reviewer": ["stuck"],
 }
 TASK_GRAPH = {
     "tasks": [
@@ -330,7 +356,12 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
 async def test_failing_tests_end_the_run_without_a_pr(
     deps: tuple[Deps, ScriptedAgents, StubGitHub], origin_repo: Path
 ) -> None:
-    """The coder submits without fixing anything: TEST fails, so no branch is pushed."""
+    """A stuck run exhausts its debug attempts and escalates, and still opens no PR.
+
+    Phase 3 changed what this path looks like. A failing test used to end the run; now it
+    goes to DEBUG, and only after the attempts and a replan are spent does the run fail.
+    Unattended, because attended it would park on a human instead of terminating.
+    """
     d, provider, github = deps
     provider.coder_script = [
         call(
@@ -360,6 +391,7 @@ async def test_failing_tests_end_the_run_without_a_pr(
         repo_url=str(origin_repo),
         base_branch="main",
         work_branch=f"agent/{run_id}",
+        unattended=True,
     )
 
     final = await run(state, d)
@@ -370,7 +402,17 @@ async def test_failing_tests_end_the_run_without_a_pr(
     assert state.work_branch not in await git("branch", "--list", cwd=origin_repo)
     async with session(d.engine) as s:
         row = await db.get_run(s, run_id)
+        steps = await db.list_steps(s, run_id)
+        events = [e.type for e in await db.list_events(s, run_id)]
     assert row is not None and row.status == "failed" and row.error
+
+    # it debugged before giving up, and each attempt recorded its hypothesis
+    debug_steps = [st for st in steps if st.agent == "debugger"]
+    assert debug_steps, [st.agent for st in steps]
+    assert all((st.output or {}).get("hypothesis") for st in debug_steps)
+    assert "debug_hypothesis" in events and "escalated" in events
+    # and it stopped rather than looping: the cap is what ends it
+    assert max(state.attempts.values()) >= MAX_DEBUG_ATTEMPTS, state.attempts
 
 
 @requires_docker
