@@ -40,6 +40,34 @@ Suggested duration: 5–7 days.
 - [x] A goal that forces open questions pauses the run in `AWAITING_INPUT`; `POST /answer` resumes it and the answer appears in the plan step's input (test exists). — `test_full_run.py::test_an_open_question_pauses_the_run_and_the_answer_is_on_the_record` covers the whole chain with the scripted provider: the run parks, the answer resumes it, and the second `planner` step's `input` carries it while the first does not. `test_events_and_control.py::test_answer_is_delivered_only_while_the_run_waits` covers the endpoint, including the 409 when the run is not waiting.
 - [x] `POST /cancel` stops a running run within one node boundary or one tool call, whichever is first; the container is removed. — `test_full_run.py::test_cancel_stops_a_run_inside_a_tool_loop_and_removes_the_container`. The tool-call half needed implementing: `before_tool` raises `RunCancelled`, the runner records status `cancelled` and does not re-raise, so arq will not retry a job a human asked to stop. The worktree is kept on purpose — nothing was pushed, so the work is still recoverable.
 - [ ] A goal that decomposes into three or more tasks completes with one commit per task. — **the loop is proven end to end against a real model; only the task count falls short.** On 2026-09-14 with `poolside/laguna-s-2.1:free` the run went SETUP → ANALYZE → PLAN → DECOMPOSE → CODE(t1) → TEST → CODE(t2) → TEST → PR → DONE: both tasks `done`, a commit each, a pull request opened, `tests/` untouched. The Decomposer produced **two** tasks, not three, and it was right to — every function lived in one file, so it was one unit of work. A two-task graph cannot exercise a criterion about three, so the goal now spreads the work over three modules (`fixture/ops.py`, `fixture/mathx.py`, `fixture/textx.py`) with a test file importing each. Not yet re-run: that attempt spent the day's quota.
+
+  **Attempt log, because each attempt failed differently and the pattern matters more than
+  any single failure.** All four ran against a real model on a free tier:
+
+  | run | model | reached | why it stopped |
+  |---|---|---|---|
+  | A | `openrouter/free` | ANALYZE | Analyzer explored 11 of 12 turns, never submitted. Fixed a real harness flaw — a reminder shared the iteration budget, so it landed on the last turn. |
+  | B | `poolside/laguna-s-2.1:free` | TEST | The coder's *self-written* tests failed. Goal changed to hand the tests over, per the Phase 1 fixture idiom. |
+  | C | `poolside/laguna-s-2.1:free` | **DONE** | Nothing. Both tasks done, a commit each, PR opened, `tests/` untouched. Only the count fell short: 2 tasks, not 3. |
+  | D | `poolside/laguna-s-2.1:free` | DECOMPOSE | Decomposer returned `{"path": "fixture/ops.py"}` instead of `{"tasks": [...]}`, twice. The retry does feed the validation error back and the schema is attached every call; the model simply could not produce the shape. |
+
+  Run C is the important one: **the multi-task CODE/TEST loop is verified end to end
+  against a real model.** What is unverified is a three-task graph specifically.
+
+  **The criterion and the Decomposer prompt are in tension.** `agents/prompts/decomposer.md`
+  says "Between 2 and 8 tasks" and "Prefer fewer, coherent tasks over many trivial ones.
+  Three good tasks beat eight fragments." That bias is deliberate and worth keeping — task
+  fragmentation is expensive, and every task costs a CODE and a TEST phase. But it means a
+  goal only decomposes into three when it holds three genuinely separable, coherent units.
+  Hence the three-module goal. Do not "fix" this by asking the prompt for more tasks.
+
+  **Honest read on closing this.** Four runs, four different free-model failure modes, one
+  full success. Two of the four exposed real harness bugs, now fixed; the other two were
+  model quality. On 50 requests a day, one run per day, this is being verified by
+  repetition against a model that fails differently each time. Either spend `$10` for
+  1000/day and settle it in an afternoon, or tick the criterion as "loop verified against
+  a real model; three-task decomposition not verified" and move to Phase 3 — whose debug
+  loop would, incidentally, have rescued run B.
 - [ ] Tag `v0.2.0`.
 
 ### Provider note (why an e2e box is unticked)
