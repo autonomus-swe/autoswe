@@ -64,7 +64,7 @@ def test_one_assertion_failure() -> None:
     assert not r.passed and r.failed == 1 and len(r.failures) == 1
     f = r.failures[0]
     assert f.test_id.endswith("test_subtract") and f.kind == "assertion"
-    assert f.message == "AssertionError: assert 3 == 2" and len(f.signature) == 40
+    assert f.message == "AssertionError: assert 3 == 2" and len(f.signature) == 16
     assert "- tests/test_ops.py::test_subtract [assertion]" in summarize(r)
 
 

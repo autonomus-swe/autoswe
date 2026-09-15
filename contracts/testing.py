@@ -35,3 +35,6 @@ class TestReport(LLMModel):
     duration_s: float = Field(ge=0)
     command: str
     truncated_output: str
+    # one signature for the whole report, so "same failure as last time" is a
+    # single comparison in the transition table
+    signature: str = ""

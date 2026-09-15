@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 from uuid import UUID
 
 from pydantic import Field
@@ -78,6 +79,24 @@ class RunState(StateModel):
     attempts: dict[str, int] = Field(default_factory=dict)
     task_results: dict[str, TaskResult] = Field(default_factory=dict)
     last_test_report: TestReport | None = None
+
+    # ---- Phase 3: the verification loop ----
+    # Report signature of the previous TEST. Equal signatures mean the last debug attempt
+    # changed nothing, which is what puts the Debugger on an alternative strategy.
+    previous_failure_signature: str | None = None
+    strategy: Literal["alternative"] | None = None
+    # Why the run is escalating. escalate_node reads this to decide what to do next.
+    escalation_reason: str | None = None
+    # Failures already present on the base branch, recorded in SETUP. The agent owns the
+    # tests it touched, not the ones it inherited.
+    baseline_failures: set[str] = Field(default_factory=set)
+    # Where to continue after AWAITING_INPUT or ESCALATE: PLAN, CODE, DEBUG or FAILED.
+    resume_phase: Phase | None = None
+    # Source context per failing test, for the Debugger prompt. Runtime only, never in an
+    # LLM schema — the model reads code through frames, not through this.
+    test_context: dict[str, str] = Field(default_factory=dict)
+    # Budget kinds already warned about, so a warning is emitted once and not every node.
+    warned: set[str] = Field(default_factory=set)
 
     review: ReviewReport | None = None  # Phase 4
     security: SecurityReport | None = None  # Phase 4
