@@ -116,9 +116,12 @@ def graph(*ids: str) -> TaskGraph:
             {"tasks": graph("t1"), "current_task_id": "t1", "task_results": {"t1": RESULT}},
             Phase.TEST,
         ),
-        (Phase.CODE, {"tasks": graph("t1"), "current_task_id": "t1"}, Phase.FAILED),
-        (Phase.TEST, {"last_test_report": report(False)}, Phase.FAILED),
-        (Phase.TEST, {}, Phase.FAILED),
+        # v3: a Coder that produced nothing is a failed attempt, not a dead run
+        (Phase.CODE, {"tasks": graph("t1"), "current_task_id": "t1"}, Phase.ESCALATE),
+        # v3: a failing test is what DEBUG exists for
+        (Phase.TEST, {"last_test_report": report(False)}, Phase.DEBUG),
+        (Phase.TEST, {}, Phase.ESCALATE),
+        (Phase.DEBUG, {}, Phase.TEST),
         (Phase.PR, {"pr_url": "https://example/pull/1"}, Phase.DONE),
         (Phase.PR, {}, Phase.FAILED),
     ],
