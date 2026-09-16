@@ -1,0 +1,22 @@
+[
+ {
+  "RuleID": "generic-api-key",
+  "Description": "Detected a Generic API Key, potentially exposing access to various services and sensitive operations.",
+  "StartLine": 1,
+  "EndLine": 1,
+  "StartColumn": 1,
+  "EndColumn": 66,
+  "Match": "AWS_SECRET_ACCESS_KEY = \"REDACTED\"",
+  "Secret": "REDACTED",
+  "File": "src/config.py",
+  "SymlinkFile": "",
+  "Commit": "fbb785f74b01f4d29754bb0a228ac52a17aed3dc",
+  "Entropy": 5.221928,
+  "Author": "t",
+  "Email": "t@t",
+  "Date": "2026-09-16T17:28:49Z",
+  "Message": "another",
+  "Tags": [],
+  "Fingerprint": "fbb785f74b01f4d29754bb0a228ac52a17aed3dc:config.py:generic-api-key:1"
+ }
+]
