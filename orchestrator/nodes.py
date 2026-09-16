@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
+from agents import tester
 from agents.analyzer import AnalyzerAgent
 from agents.coder import CoderAgent
 from agents.debugger import DebuggerAgent
@@ -163,6 +164,92 @@ async def setup_node(state: RunState, deps: Deps, res: RunResources) -> RunState
     return state
 
 
+async def _baseline(state: RunState, deps: Deps, res: RunResources) -> set[str]:
+    """Which tests were already failing before the agent touched anything.
+
+    Real repositories have failing and environment-dependent tests, and a run that is
+    blamed for inheriting them never finishes. So the suite is run once and every
+    signature it produces is excused later.
+
+    Two things about *when* this runs, both deliberate:
+
+    The phase document puts it in SETUP. It is at the end of ANALYZE instead, because
+    ANALYZE is where the test command stops being a guess. A baseline taken with the
+    default command would describe a different set of tests from the one the agent's own
+    runs execute, and a comparison across two test sets is not a comparison.
+
+    It runs after the network has been disconnected, so the baseline is taken under the
+    conditions the agent will face. Taken with network access, a test that needs the
+    internet looks green here and red later, and the agent is blamed for it.
+
+    Failing to establish a baseline is not fatal. An empty baseline excuses nothing, which
+    is the strict reading, and strict is the safe direction to be wrong in.
+    """
+    if not state.test_command.strip():
+        return set()
+    repo = repo_key(state.repo_url)
+    sha = state.base_sha or ""
+    cached = await deps.bus.get_baseline(repo, sha) if sha else None
+    if cached is not None:
+        log.info("baseline_cached", count=len(cached), sha=sha[:12])
+        return set(cached)
+
+    async with session(deps.engine) as s:
+        step_id = await db.start_step(
+            s, run_id=state.run_id, task_id=None, agent="tester", phase=Phase.ANALYZE.value
+        )
+    report: TestReport | None = None
+    preview = ""
+    error: str | None = None
+    try:
+        ctx = _run_context(state, res, step_id, "tester")
+        result = await RunTestsTool()(ctx, selector="")
+        report = TestReport.model_validate(result.artifact)
+        preview = result.content[:2000]
+    except Exception as e:  # see the docstring: strict, not fatal
+        error = f"{type(e).__name__}: {e}"
+        log.warning("baseline_failed", error=error)
+    signatures = sorted({f.signature for f in report.failures if f.signature}) if report else []
+    async with session(deps.engine) as s:
+        if report is not None:
+            # In the ledger like any other action: this ran the repository's whole test
+            # suite, and a run's audit trail that omits it cannot explain what was excused.
+            await db.insert_tool_call(
+                s,
+                step_id=step_id,
+                name="run_tests",
+                input={"selector": "", "baseline": True},
+                output_preview=preview,
+                exit_code=0 if report.passed else 1,
+                duration_ms=int(report.duration_s * 1000),
+            )
+            await db.save_artifact(
+                s, state.run_id, "baseline_report", None, report.model_dump(mode="json")
+            )
+        await db.finish_step(
+            s,
+            step_id,
+            output={"signatures": signatures, "failures": len(signatures)},
+            error=error,
+            usage=state.usage.model_copy(update={"cost_usd": 0.0}),
+        )
+    if report is not None and sha:
+        await deps.bus.set_baseline(repo, sha, signatures)
+    log.info("baseline_recorded", count=len(signatures), sha=sha[:12])
+    await _emit(
+        deps,
+        state.run_id,
+        "test_report",
+        {
+            "baseline": True,
+            "passed": bool(report and report.passed),
+            "total": report.total if report else 0,
+            "failed": len(signatures),
+        },
+    )
+    return set(signatures)
+
+
 def _run_context(state: RunState, res: RunResources, step_id: UUID, role: str) -> RunContext:
     assert res.sandbox is not None and res.worktree is not None
     return RunContext(
@@ -199,6 +286,8 @@ async def analyze_node(state: RunState, deps: Deps, res: RunResources) -> RunSta
         raise
     finally:
         await _end(state, deps, step_id, hooks, profile, error)
+    # Now that the test command is known rather than guessed. See _baseline.
+    state.baseline_failures = await _baseline(state, deps, res)
     await _emit(deps, state.run_id, "phase_changed", {"phase": Phase.PLAN.value})
     return state
 
@@ -700,8 +789,22 @@ async def _replan_task(state: RunState, deps: Deps, res: RunResources, task_obj:
     return True
 
 
+@dataclass
+class _TestRun:
+    """One ``run_tests`` call, kept so every run in a TEST phase reaches the database."""
+
+    selector: str
+    report: TestReport
+    preview: str
+
+
 async def test_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
-    """Deterministic: no model call, just the tool and its parsed report."""
+    """Run the tests and decide which failures are the agent's.
+
+    Deterministic, with one exception: a failure the parser could not classify is sent to
+    a cheap model for a *label*, which is rendered as a note for the Debugger and never
+    written back onto the report. Whether the tests passed is decided in Python.
+    """
     async with session(deps.engine) as s:
         step_id = await db.start_step(
             s, run_id=state.run_id, task_id=None, agent="tester", phase=Phase.TEST.value
@@ -709,28 +812,74 @@ async def test_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     ctx = _run_context(state, res, step_id, "tester")
     task = state.task
     selector = task.test_selector if task else ""
-    result = await RunTestsTool()(ctx, selector=selector)
-    report = TestReport.model_validate(result.artifact)
-    if report.passed and selector:
-        # the task's own tests pass; now prove the rest of the suite still does
-        result = await RunTestsTool()(ctx, selector="")
+    runs: list[_TestRun] = []
+
+    async def run(sel: str) -> TestReport:
+        result = await RunTestsTool()(ctx, selector=sel)
         report = TestReport.model_validate(result.artifact)
+        runs.append(_TestRun(sel, report, result.content[:2000]))
+        return report
+
+    targeted = await run(selector) if selector.strip() else None
+    flaky: list[str] = []
+    inherited: list[str] = []
+    if targeted is not None and not targeted.passed:
+        # Short-circuit. The selector names the tests this task was written against, so
+        # they are never excused as pre-existing: a failure there is the job, not an
+        # inheritance. Nor is the full suite informative while they fail.
+        report = raw = targeted
+    else:
+        report = raw = await run("")
+        # The baseline is only trusted where the task said what it owns. Without a
+        # selector there is no line between "already broken" and "what I was asked to
+        # fix", and excusing the second is how a run reports success having done nothing:
+        # the tests a goal names are, by definition, failing before it starts.
+        if selector.strip():
+            report, inherited = tester.filter_baseline(raw, state.baseline_failures)
+            loose = tester.outside(report, selector) if not report.passed else []
+            if loose and len(loose) == len(report.failures):
+                # Everything still failing is in a test this task never claimed. Re-run
+                # exactly those, once. If they pass alone they are flaky or
+                # order-dependent; one re-run cannot say which, so the ids are recorded
+                # and the pull request will list them rather than quietly moving on.
+                if (await run(tester.selector_for(loose))).passed:
+                    report, flaky = tester.without_flaky(report, loose)
+                    log.info("test_flaky", tests=flaky)
+
+    context = tester.source_context(report, ctx.worktree)
+    unknown = tester.needs_triage(report.failures)
+    if unknown:
+        kinds, usage = await tester.TesterAgent().classify_unknown(deps.provider, unknown)
+        state.usage = state.usage.add(usage)
+        for test_id, note in tester.render_triage(kinds).items():
+            context[test_id] = f"{note}\n\n{context.get(test_id, '')}".strip()
+
     state.last_test_report = report
+    state.test_context = context
+    state.flaky_tests |= set(flaky)
+    state.preexisting_failures |= set(inherited)
     if report.passed and state.tasks is not None and state.current_task_id is not None:
         state.tasks.by_id(state.current_task_id).status = "done"
         async with session(deps.engine) as s:
             await db.upsert_tasks(s, state.run_id, state.tasks)
     async with session(deps.engine) as s:
-        await db.insert_tool_call(
-            s,
-            step_id=step_id,
-            name="run_tests",
-            input={"selector": ""},
-            output_preview=result.content[:2000],
-            exit_code=0 if report.passed else 1,
-            duration_ms=int(report.duration_s * 1000),
-        )
+        for item in runs:
+            await db.insert_tool_call(
+                s,
+                step_id=step_id,
+                name="run_tests",
+                input={"selector": item.selector},
+                output_preview=item.preview,
+                exit_code=0 if item.report.passed else 1,
+                duration_ms=int(item.report.duration_s * 1000),
+            )
         await db.save_artifact(s, state.run_id, "test_report", None, report.model_dump(mode="json"))
+        if report.signature != raw.signature:
+            # What the runner actually said, before anything was excused. A reviewer
+            # asking "why did this pass" needs the unfiltered report to answer it.
+            await db.save_artifact(
+                s, state.run_id, "test_report_raw", None, raw.model_dump(mode="json")
+            )
         await db.finish_step(
             s,
             step_id,
@@ -742,7 +891,13 @@ async def test_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
         deps,
         state.run_id,
         "test_report",
-        {"passed": report.passed, "total": report.total, "failed": report.failed},
+        {
+            "passed": report.passed,
+            "total": report.total,
+            "failed": report.failed,
+            "flaky": flaky,
+            "pre_existing": inherited,
+        },
     )
     return state
 

@@ -90,6 +90,10 @@ class RunState(StateModel):
     # Failures already present on the base branch, recorded in SETUP. The agent owns the
     # tests it touched, not the ones it inherited.
     baseline_failures: set[str] = Field(default_factory=set)
+    # Tests excused during the run, kept so the pull request can say so. A reviewer who is
+    # told "all tests pass" deserves to know which ones were not made to pass here.
+    flaky_tests: set[str] = Field(default_factory=set)
+    preexisting_failures: set[str] = Field(default_factory=set)
     # Where to continue after AWAITING_INPUT or ESCALATE: PLAN, CODE, DEBUG or FAILED.
     resume_phase: Phase | None = None
     # Source context per failing test, for the Debugger prompt. Runtime only, never in an

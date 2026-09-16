@@ -316,6 +316,7 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
     # the audit trail replays the whole run in the order it happened, every agent included
     assert tool_names == [
         "submit_profile",  # analyzer
+        "run_tests",  # the baseline, once the analyzer has settled the test command
         "submit_plan",  # planner
         "str_replace_based_edit_tool",  # coder from here
         "str_replace_based_edit_tool",
@@ -324,7 +325,11 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
         "git_status",
         "git_commit",
         "submit_result",
-        "run_tests",  # the deterministic TEST phase after the coder finished
+        # the deterministic TEST phase after the coder finished: the task's own tests
+        # first, then the whole suite to prove nothing else broke. Both are recorded —
+        # one row per run, since "which run produced this" is the question a reader has.
+        "run_tests",
+        "run_tests",
     ]
     assert llm_turns >= 8
     assert artifact is not None and artifact.content["passed"] is True
@@ -343,9 +348,12 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
         "pr_opened",
         "run_finished",
     } <= set(events), sorted(set(events))
-    # every tool call an agent made is on the stream. The deterministic TEST phase adds a
-    # tool_calls row of its own but announces itself as test_report, hence the one fewer.
-    assert events.count("tool_call") == len(tool_names) - 1
+    # Every tool call an *agent* made is on the stream as tool_call. Three of the rows
+    # above were not an agent's: the baseline and the two runs in TEST. Those announce
+    # themselves as test_report — one per phase that reports, not one per run.
+    DETERMINISTIC_TEST_RUNS = 3
+    assert events.count("tool_call") == len(tool_names) - DETERMINISTIC_TEST_RUNS
+    assert events.count("test_report") == 2, "the baseline, and the verdict on the task"
 
     # teardown really released everything
     assert not (Path(d.worktrees_dir()) / str(run_id)).exists()

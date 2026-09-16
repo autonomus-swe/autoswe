@@ -10,7 +10,14 @@ from contracts.repo import RepoFacts, RepoProfile
 from contracts.review import ReviewCandidates, ReviewFinding, ReviewReport, Severity
 from contracts.security import SecurityChecklist, SecurityFinding, SecurityReport, SecuritySeverity
 from contracts.task_result import TaskResult
-from contracts.testing import FailureKind, Frame, TestFailure, TestReport
+from contracts.testing import (
+    FailureClassification,
+    FailureKind,
+    Frame,
+    TestFailure,
+    TestReport,
+    Triage,
+)
 from contracts.tools import ExecResult, ToolResult
 
 __all__ = [
@@ -19,6 +26,7 @@ __all__ = [
     "Event",
     "EventType",
     "ExecResult",
+    "FailureClassification",
     "FailureKind",
     "Frame",
     "ImplementationPlan",
@@ -44,5 +52,6 @@ __all__ = [
     "TestFailure",
     "TestReport",
     "ToolResult",
+    "Triage",
     "Usage",
 ]

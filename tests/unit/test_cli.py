@@ -60,6 +60,23 @@ def test_frames_drops_a_trailing_partial_frame() -> None:
             {"passed": False, "total": 9, "failed": 2},
             "failed — 9 tests, 2 failing",
         ),
+        (
+            "test_report",
+            {"baseline": True, "passed": False, "total": 9, "failed": 2},
+            # not a verdict on the agent's work: it is what the repository already was
+            "baseline — 9 tests, 2 failing",
+        ),
+        (
+            "test_report",
+            {
+                "passed": True,
+                "total": 9,
+                "failed": 0,
+                "flaky": ["tests/z.py::test_a"],
+                "pre_existing": ["tests/y.py::test_b", "tests/y.py::test_c"],
+            },
+            "passed — 9 tests, 0 failing · 1 flaky · 2 pre-existing",
+        ),
         ("awaiting_input", {"questions": ["a?", "b?"]}, "a? · b?"),
         ("run_finished", {"status": "done", "cost_usd": 0.1234}, "done · $0.1234"),
         ("run_finished", {"status": "failed"}, "failed · $0.0000"),
