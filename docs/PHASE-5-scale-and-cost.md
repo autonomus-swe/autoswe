@@ -193,6 +193,7 @@ When a yielded assistant message contains several `tool_use` blocks and every on
 - **gVisor.** `SANDBOX_RUNTIME=runsc` passes `runtime="runsc"`; document the host install (`runsc` binary + Docker daemon config). Keep it optional; make it default in the `prod` compose profile.
 - **Limits per profile.** `file_count > 2000` → `mem_limit=6g`; Go and Node builds → `nano_cpus=4e9` during install only (recreate is not possible, so set the higher value at creation when the profile predicts it).
 - **GC.** An arq cron job every 10 min removes containers labelled `autoswe.run_id` whose run is terminal and older than `KEEP_FAILED_SANDBOX_TTL`, worktrees of terminal runs older than 1 h, and bare clones untouched for 14 days.
+  **Measured 2026-09-16, after Phase 3:** 41 worktrees, **322 MB**. `teardown` removes a worktree only when the run pushed (`if res.worktree is not None and state.pushed`), which is deliberate — a failed run's tree is the evidence — but nothing then reaps it, so every failed or cancelled run leaves one behind with its `.venv` inside. At roughly 8 MB a run this is the first thing in this phase that a developer notices, and the reaper above is the fix.
 
 **Tests:** in the sandbox during install, `curl https://pypi.org` succeeds via the proxy and `curl https://example.com` is refused (403 from the proxy); after disconnect both fail; Node and Go fixture repos complete the M1 flow.
 
