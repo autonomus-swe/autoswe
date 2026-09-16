@@ -54,6 +54,23 @@ def guess_kind(message: str) -> FailureKind:
     return "exception"
 
 
+def collection_kind(message: str) -> FailureKind:
+    """The class for a failure that happened while *collecting* a module.
+
+    ``exception`` is the honest fallback for a test that ran and raised, but it says
+    nothing about a module that would not load. Measured rather than assumed: a
+    module-level ``NameError`` from a forgotten import arrives here as exactly that
+    — the json report carries the crash message, not pytest's "ImportError while
+    importing test module" header — so a message-based classifier calls it an exception
+    and the Debugger learns nothing.
+
+    A more specific match still wins. A module-level ``ConnectionError`` is an
+    environment failure whether it happened during collection or during a test.
+    """
+    kind = guess_kind(message)
+    return "import" if kind == "exception" else kind
+
+
 def exc_type_of(message: str, longrepr: str = "") -> str:
     """The exception class name, for the signature. "" when nothing looks like one."""
     for text in (message, longrepr):
@@ -93,12 +110,22 @@ def _text(longrepr: Any) -> str:
 
 
 def _first_line(longrepr: Any) -> str:
+    """The one line worth putting in front of the Debugger.
+
+    pytest marks several lines with ``E``: the exception and its message, then the
+    expanded comparison, then advice ("Use -v to get more diff"). Taking the last one —
+    which is what the first version of this did — hands the Debugger the advice and throws
+    away the comparison, so a real off-by-one arrived as "Use -v to get more diff". The
+    line that names an exception type is the one that says what happened.
+    """
     text = _text(longrepr)
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    # pytest puts the summary ("E   AssertionError: ...") near the end; prefer it
-    for ln in reversed(lines):
-        if ln.startswith("E "):
-            return ln[1:].strip()[:MESSAGE_CHARS]
+    flagged = [ln[1:].strip() for ln in lines if ln.startswith("E ")]
+    for ln in flagged:
+        if _EXC_TYPE.match(ln):
+            return ln[:MESSAGE_CHARS]
+    if flagged:
+        return flagged[0][:MESSAGE_CHARS]
     return (lines[-1] if lines else "unknown failure")[:MESSAGE_CHARS]
 
 
@@ -114,17 +141,43 @@ def _functions_by_location(longrepr: str) -> dict[tuple[str, int], str]:
     return out
 
 
+def _entries_from_longrepr(longrepr: str) -> list[dict[str, Any]]:
+    """Traceback entries recovered from the printed representation.
+
+    A *collection* failure has no ``traceback`` in the json report — only a longrepr. It
+    names every file and line all the same, and a Debugger handed a message with no frames
+    has nothing to read, so they are parsed back out. Printed order is outermost first,
+    which is the order the real entries come in.
+    """
+    return [
+        {"path": m.group("file"), "lineno": int(m.group("line"))}
+        for m in _LONGREPR_FRAME.finditer(longrepr)
+    ]
+
+
+def _same_place(a: dict[str, Any], b: dict[str, Any], worktree: Path | None) -> bool:
+    """Do two traceback entries point at the same line, whatever shape their paths are?"""
+    if str(a.get("lineno") or "") != str(b.get("lineno") or ""):
+        return False
+    pa, pb = str(a.get("path") or ""), str(b.get("path") or "")
+    if pa == pb:
+        return True
+    if worktree is None:
+        return False
+    return src.relative(pa, worktree) == src.relative(pb, worktree)
+
+
 def frames_from(phase: dict[str, Any], worktree: Path | None) -> list[Frame]:
     """Build frames from a json-report phase (``call``, ``setup`` or ``teardown``)."""
     longrepr = _text(phase.get("longrepr"))
     functions = _functions_by_location(longrepr)
-    entries = list(phase.get("traceback") or [])
+    entries = list(phase.get("traceback") or []) or _entries_from_longrepr(longrepr)
     crash = phase.get("crash") or {}
-    # A crash entry is the innermost frame and is sometimes the only one reported.
-    if crash.get("path") and not any(
-        e.get("path") == crash.get("path") and e.get("lineno") == crash.get("lineno")
-        for e in entries
-    ):
+    # A crash entry is the innermost frame and is sometimes the only one reported. It is
+    # also usually a *duplicate* of the last traceback entry — and reported with an
+    # absolute path where the traceback uses a relative one, so comparing the strings
+    # misses it and the Debugger is shown the same frame twice.
+    if crash.get("path") and not any(_same_place(e, crash, worktree) for e in entries):
         entries.append(crash)
 
     frames: list[Frame] = []
@@ -192,10 +245,12 @@ def parse_json_report(
     for collector in data.get("collectors", []):
         if collector.get("outcome") == "failed":
             longrepr = _text(collector.get("longrepr"))
+            message = _first_line(collector.get("longrepr"))
             failures.append(
                 failure(
                     collector.get("nodeid") or "<collection>",
-                    _first_line(collector.get("longrepr")),
+                    message,
+                    kind=collection_kind(f"{message}\n{longrepr}"),
                     frames=frames_from(collector, worktree),
                     longrepr=longrepr,
                 )
@@ -234,6 +289,17 @@ def parse_json_report(
     )
 
 
+def where(frame: Frame) -> str:
+    """``file:line in function``, dropping the function when pytest did not name one.
+
+    It often does not: a plain assertion failure has a single frame and pytest prints it
+    as ``tests/test_x.py:20: AssertionError`` with no function at all. Printing "in ?"
+    there is noise, and the test id already says which test it was.
+    """
+    named = frame.function and frame.function != "?"
+    return f"{frame.file}:{frame.line}" + (f" in {frame.function}" if named else "")
+
+
 def summarize(report: TestReport, max_failures: int = 20) -> str:
     passed = report.total - report.failed - report.errors - report.skipped
     head = (
@@ -246,7 +312,7 @@ def summarize(report: TestReport, max_failures: int = 20) -> str:
         lines.append(f"- {f.test_id} [{f.kind}] {f.message}")
         for fr in f.frames:
             if fr.in_repo:
-                lines.append(f"    {fr.file}:{fr.line} in {fr.function}: {fr.code}")
+                lines.append(f"    {where(fr)}: {fr.code}")
     if len(report.failures) > max_failures:
         lines.append(f"… and {len(report.failures) - max_failures} more failures")
     return "\n".join(lines)

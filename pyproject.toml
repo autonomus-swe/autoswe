@@ -36,6 +36,9 @@ dev = [
   "pytest-asyncio>=0.24",
   "pytest-cov>=5.0",
   "testcontainers[postgres,redis]>=4.8",
+  # the sandbox installs this to produce reports; the host needs it to verify that the
+  # chaos fixtures still fail the way their README says they do
+  "pytest-json-report>=1.5",
   "ruff>=0.6",
   "mypy>=1.11",
   "pre-commit>=3.8",

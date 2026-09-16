@@ -45,6 +45,22 @@ def e2e_settings() -> Settings:
 
 
 @pytest.fixture
+def chaos_repo(e2e_settings: Settings) -> Iterator[Path]:
+    """The chaos fixture repository, one branch per scenario. See tests/e2e/chaos.py."""
+    import asyncio
+
+    from tests.e2e.chaos import materialise
+
+    base = Path(os.environ.get("AUTOSWE_TEST_TMP", Path.home() / ".autoswe" / "tmp"))
+    root = base / f"chaos-{uuid.uuid4().hex[:8]}"
+    try:
+        asyncio.run(materialise(root / "origin"))
+        yield root / "origin"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.fixture
 def origin_repo(e2e_settings: Settings) -> Iterator[Path]:
     """A throwaway git repository on disk holding the fixture project."""
     base = Path(os.environ.get("AUTOSWE_TEST_TMP", Path.home() / ".autoswe" / "tmp"))
