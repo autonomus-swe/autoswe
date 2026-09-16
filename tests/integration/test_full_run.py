@@ -121,13 +121,16 @@ class ScriptedAgents(OpenAICompatProvider):
                 {"role": "assistant", "content": "done"},
             ),
         ]
-        self.seen_tools: list[str] = []
+        # Accumulated across the run, not overwritten per call: the question is "was this
+        # tool ever offered", and the last caller used to be the coder and is now the
+        # reviewer, whose set is deliberately read-only.
+        self.seen_tools: set[str] = set()
         self.roles: list[str] = []
         self.hypothesis_submitted = False
 
     async def _complete(self, **kw: Any) -> ChatTurn:
         offered = {t["function"]["name"] for t in kw.get("tools", [])}
-        self.seen_tools = sorted(offered)
+        self.seen_tools |= offered
         for tool, role in (("submit_profile", "analyzer"), ("submit_plan", "planner")):
             if tool not in offered:
                 continue
@@ -145,6 +148,14 @@ class ScriptedAgents(OpenAICompatProvider):
                 return call("h", "submit_hypothesis", HYPOTHESIS)
             self.hypothesis_submitted = False
             return call("r", "submit_result", STUCK_RESULT)
+        if "submit_review" in offered:
+            # Guarded like the analyzer and planner above: submit once, then end the turn.
+            # Without this the fake re-submits every turn until max_iterations, which is
+            # what a real model does not do — and it hides how many turns a phase took.
+            if "review" in self.roles:
+                return self._done()
+            self.roles.append("review")
+            return call("v", "submit_review", REVIEW_REPORT)
         if "submit_result" in offered:
             if "coder" not in self.roles:
                 self.roles.append("coder")
@@ -158,6 +169,14 @@ class ScriptedAgents(OpenAICompatProvider):
         return ChatTurn("done", [], "stop", Usage(), {"role": "assistant", "content": "done"})
 
     async def parse(self, req: Any, output: type[Any]) -> tuple[Any, Usage]:
+        # Two roles reach `parse` now. Dispatching on the requested type rather than on
+        # call order keeps this fake honest when a phase is inserted — which is exactly
+        # what happened when REVIEW arrived between TEST and PR.
+        if output.__name__ == "ReviewCandidates":
+            self.roles.append("review_pre")
+            return output.model_validate(REVIEW_CANDIDATES), Usage(
+                input_tokens=400, output_tokens=60
+            )
         self.roles.append("decomposer")
         return output.model_validate(TASK_GRAPH), Usage(input_tokens=200, output_tokens=40)
 
@@ -190,6 +209,24 @@ STUCK_RESULT = {
     "files_touched": [],
     "how_to_test": "pytest",
     "notes_for_reviewer": ["stuck"],
+}
+# The pre-pass raises one real concern; the verification pass confirms it as a `minor`, so
+# the run is reviewed and not blocked — fix rounds are a later change.
+REVIEW_CANDIDATES = {
+    "findings": [
+        {
+            "file": "fixture/ops.py",
+            "line": 5,
+            "severity": "minor",
+            "category": "missing-docstring",
+            "summary": "subtract has no docstring",
+            "failure_scenario": "a reader has to infer the argument order from the body",
+        }
+    ]
+}
+REVIEW_REPORT = {
+    "findings": REVIEW_CANDIDATES["findings"],
+    "blocking": False,
 }
 TASK_GRAPH = {
     "tasks": [
@@ -288,10 +325,17 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
 
     # the coder was offered exactly its role's tools plus submit_result
     # every agent in the loop ran, in order, each offered its own tool set
-    assert provider.roles == ["analyzer", "planner", "decomposer", "coder"]
-    assert {"bash", "run_tests", "git_commit", "read_file", "search_code"} <= set(
-        provider.seen_tools
-    )
+    assert provider.roles == [
+        "analyzer",
+        "planner",
+        "decomposer",
+        "coder",
+        "review_pre",  # the cheap pass enumerates
+        "review",  # the expensive one verifies
+    ]
+    assert {"bash", "run_tests", "git_commit", "read_file", "search_code"} <= provider.seen_tools
+    # and the reviewer was offered no way to change anything
+    assert {"submit_review", "git_log"} <= provider.seen_tools
 
     # the branch reached the origin with the right content and untouched tests
     assert state.work_branch in await git("branch", "--list", state.work_branch, cwd=origin_repo)
@@ -330,6 +374,9 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
         # one row per run, since "which run produced this" is the question a reader has.
         "run_tests",
         "run_tests",
+        # the reviewer's verification pass. The cheap pass before it has no tools at all,
+        # so it leaves an llm_calls row and no tool_calls row.
+        "submit_review",
     ]
     assert llm_turns >= 8
     assert artifact is not None and artifact.content["passed"] is True
@@ -611,6 +658,14 @@ class StallsThenLoops(ScriptedAgents):
 
     async def _complete(self, **kw: Any) -> ChatTurn:
         offered = {t["function"]["name"] for t in kw.get("tools", [])}
+        if "submit_review" in offered:
+            # Guarded like the analyzer and planner above: submit once, then end the turn.
+            # Without this the fake re-submits every turn until max_iterations, which is
+            # what a real model does not do — and it hides how many turns a phase took.
+            if "review" in self.roles:
+                return self._done()
+            self.roles.append("review")
+            return call("v", "submit_review", REVIEW_REPORT)
         if "submit_result" in offered:
             return call("x", "str_replace_based_edit_tool", {"command": "view", "path": "."})
         return await super()._complete(**kw)

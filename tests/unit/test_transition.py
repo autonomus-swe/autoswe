@@ -25,7 +25,7 @@ from contracts import (
     TestReport,
     Usage,
 )
-from orchestrator.state import Phase, RunState
+from orchestrator.state import TERMINAL, Phase, RunState
 from orchestrator.transition import MAX_DEBUG_ATTEMPTS, transition
 
 pytestmark = pytest.mark.unit
@@ -149,11 +149,18 @@ def test_a_passing_test_moves_to_the_next_task() -> None:
     assert transition(s) == Phase.CODE
 
 
-def test_a_passing_test_with_no_work_left_goes_to_pr() -> None:
+def test_a_passing_test_with_no_work_left_goes_to_review() -> None:
+    """Every task done means the change is final, so it is reviewed before it is pushed."""
     tasks = graph("t1")
     tasks.by_id("t1").status = "done"
     s = state(phase=Phase.TEST, tasks=tasks, last_test_report=report(True))
-    assert transition(s) == Phase.PR
+    assert transition(s) == Phase.REVIEW
+
+
+def test_review_leads_to_the_pull_request() -> None:
+    """Advisory for now: findings are recorded and the run proceeds. Fix rounds are next,
+    and this row changes when they land — which is the point of having it."""
+    assert transition(state(phase=Phase.REVIEW)) == Phase.PR
 
 
 def test_passing_clears_the_debug_memory() -> None:
@@ -359,6 +366,20 @@ def test_three_failures_then_escalation_is_the_whole_debug_budget() -> None:
     assert s.escalation_reason == "debug_attempts_exhausted"
 
 
-def test_a_phase_with_no_node_is_a_programming_error() -> None:
-    with pytest.raises(ValueError, match="no transition"):
-        transition(state(phase=Phase.REVIEW))
+# Phases with no transition row yet. Each one is a phase the enum declares and the machine
+# cannot leave, so the list shrinking is how this phase's progress shows up here.
+UNROUTED = {Phase.SECURITY}
+
+
+def test_every_phase_is_routed_except_the_ones_not_built_yet() -> None:
+    """Named rather than sampled: picking one unbuilt phase as the example meant moving the
+    test every time one was built, and a test that moves stops guarding anything."""
+    for phase in Phase:
+        if phase in TERMINAL:
+            continue  # terminal phases are never handed to transition
+        s = state(phase=phase, tasks=graph("t1"), last_test_report=report(True))
+        if phase in UNROUTED:
+            with pytest.raises(ValueError, match="no transition"):
+                transition(s)
+        else:
+            assert isinstance(transition(s), Phase), phase

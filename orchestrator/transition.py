@@ -59,6 +59,11 @@ def transition(s: RunState) -> Phase:
         case Phase.ESCALATE:
             # escalate_node has already decided: CODE, AWAITING_INPUT, or FAILED.
             return s.resume_phase or Phase.FAILED
+        case Phase.REVIEW:
+            # Fix rounds arrive in the next change. For now a review is advisory: its
+            # findings are recorded and the run proceeds, which is honest about what is
+            # built rather than pretending a gate exists.
+            return Phase.PR
         case Phase.PR:
             # The v3 sketch in the phase doc returns DONE unconditionally here. Keeping
             # the check from v2: a run that reached PR without producing a URL has not
@@ -78,7 +83,12 @@ def _after_test(s: RunState) -> Phase:
         # first failure, not a continuation of this one.
         s.previous_failure_signature = None
         s.strategy = None
-        return Phase.CODE if s.tasks and s.tasks.next_ready() else Phase.PR
+        if s.tasks and s.tasks.next_ready():
+            return Phase.CODE
+        # Every task done means the change is final, so it gets reviewed before it is
+        # pushed. Phase 4 puts SECURITY between REVIEW and PR; until then REVIEW is the
+        # last gate, and a run with nothing to review records an empty report and moves on.
+        return Phase.REVIEW
 
     if s.attempts.get(s.current_task_id or "", 0) >= MAX_DEBUG_ATTEMPTS:
         s.escalation_reason = "debug_attempts_exhausted"

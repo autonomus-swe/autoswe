@@ -118,6 +118,38 @@ async def test_no_change_is_no_files(tmp_path: Path) -> None:
     assert d.diff_stat([]) == "no changes"
 
 
+async def test_it_works_in_a_linked_worktree_where_dot_git_is_a_file(tmp_path: Path) -> None:
+    """The shape every run actually uses, and the one the other tests here do not exercise.
+
+    `git init` gives you a `.git` directory; a linked worktree gives you a `.git` *file*
+    holding a pointer. Putting the temporary index at `<worktree>/.git/...` therefore works
+    in every test above and fails in production with `Not a directory` — which is what
+    happened, caught by an integration test rather than by these.
+    """
+    bare = tmp_path / "bare.git"
+    src = tmp_path / "src"
+    src.mkdir()
+    await git("init", "-q", "-b", "main", cwd=src)
+    (src / "a.py").write_text("one\n")
+    await git("add", "-A", cwd=src)
+    await git("commit", "-q", "-m", "base", cwd=src)
+    await git("clone", "-q", "--bare", str(src), str(bare))
+
+    wt = tmp_path / "wt"
+    await git("worktree", "add", "-q", str(wt), "main", cwd=bare)
+    sha = (await git("rev-parse", "HEAD", cwd=wt)).strip()
+    assert (wt / ".git").is_file(), "the premise: .git is a file here, not a directory"
+
+    (wt / "a.py").write_text("two\n")
+    (wt / "new.py").write_text("added\n")
+
+    files = d.split_by_file(await d.full_diff(wt, sha))
+
+    assert sorted(f.path for f in files) == ["a.py", "new.py"]
+    gitdir = Path((await git("rev-parse", "--absolute-git-dir", cwd=wt)).strip())
+    assert not (gitdir / "autoswe-review-index").exists(), "the temporary index is cleaned up"
+
+
 # ---- the budget: what the model is allowed to see -------------------------------------
 
 

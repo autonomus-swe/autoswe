@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
-from agents import tester
+from agents import reviewer, tester
 from agents.analyzer import AnalyzerAgent
 from agents.coder import CoderAgent
 from agents.debugger import DebuggerAgent
@@ -22,6 +22,8 @@ from agents.planner import PlannerAgent
 from contracts import (
     DebugHypothesis,
     RepoFacts,
+    ReviewFinding,
+    ReviewReport,
     Task,
     TaskGraph,
     TaskGraphSpec,
@@ -1024,6 +1026,91 @@ async def _store_diff(state: RunState, deps: Deps, res: RunResources) -> None:
     log.info("diff_stored", files=len(files), bytes=len(text))
 
 
+async def _review_diff(state: RunState, deps: Deps, res: RunResources) -> list[diff.FileDiff]:
+    """The diff to review: the artifact TEST stored, or a fresh one if it is missing.
+
+    Read back rather than recomputed so a resumed review judges the change it was reviewed
+    against. The fallback exists because a review is still worth having if the artifact
+    failed to write — and because a run resumed from an older checkpoint may predate it.
+    """
+    async with session(deps.engine) as s:
+        row = await db.latest_artifact(s, state.run_id, "diff")
+    if row is not None and isinstance(row.content, dict) and row.content.get("text"):
+        return diff.split_by_file(str(row.content["text"]))
+    log.info("diff_artifact_missing", note="recomputing from the worktree")
+    if res.worktree is None:
+        return []
+    return diff.split_by_file(await diff.full_diff(res.worktree.path, state.base_sha or "HEAD"))
+
+
+async def review_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
+    """Two passes over the diff: enumerate, then verify against the files.
+
+    The cheap pass is allowed to fail — it leaves the expensive one with nothing to check,
+    which is a worse review rather than none, since that pass reads the code itself.
+    """
+    files = await _review_diff(state, deps, res)
+    if not files:
+        # Nothing changed, so there is nothing to review. Recording an empty report rather
+        # than skipping keeps the artifact set the same shape for every run.
+        state.review = ReviewReport(findings=[], blocking=False)
+        log.info("review_skipped", reason="the run changed no files")
+        await _emit(deps, state.run_id, "review_report", {"findings": 0, "blocking": False})
+        return state
+
+    pre_id, pre_hooks, _ = await _begin(state, deps, res, "review_pre", Phase.REVIEW)
+    candidates: list[ReviewFinding] = []
+    error: str | None = None
+    try:
+        candidates = await reviewer.ReviewPreAgent().run(
+            deps.provider, state.goal, state.plan, state.tasks, files, pre_hooks
+        )
+    except Exception as e:  # the pre-pass is the expendable half
+        error = f"{type(e).__name__}: {e}"
+        log.warning("review_pre_unusable", error=error)
+    finally:
+        await _end(state, deps, pre_id, pre_hooks, None, error, None)
+
+    step_id, hooks, ctx = await _begin(state, deps, res, "review", Phase.REVIEW)
+    report = None
+    dropped: list[ReviewFinding] = []
+    error = None
+    try:
+        report, dropped, _outcome = await reviewer.ReviewAgent().run(
+            deps.provider, ctx, state.goal, candidates, files, hooks
+        )
+        state.review = report
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        await _end(state, deps, step_id, hooks, report, error, None)
+        if report is not None:
+            async with session(deps.engine) as s:
+                await db.save_artifact(
+                    s, state.run_id, "review", None, reviewer.artifact(report, dropped)
+                )
+
+    assert report is not None
+    await _emit(
+        deps,
+        state.run_id,
+        "review_report",
+        {
+            "findings": len(report.findings),
+            "blocking": report.blocking,
+            "candidates": len(candidates),
+            "dropped": len(dropped),
+            "by_severity": {
+                sev: sum(1 for f in report.findings if f.severity == sev)
+                for sev in ("blocking", "major", "minor", "nit")
+                if any(f.severity == sev for f in report.findings)
+            },
+        },
+    )
+    return state
+
+
 async def pr_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     assert res.worktree is not None
     report = state.last_test_report
@@ -1066,6 +1153,7 @@ NODES: dict[Phase, Node] = {
     Phase.DEBUG: debug_node,
     Phase.ESCALATE: escalate_node,
     Phase.TEST: test_node,
+    Phase.REVIEW: review_node,
     Phase.PR: pr_node,
 }
 

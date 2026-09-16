@@ -130,8 +130,9 @@ def test_transition_table(current: Phase, kw: dict[str, Any], expected: Phase) -
     assert transition(state(phase=current, **kw)) == expected
 
 
-def test_test_phase_returns_to_code_while_tasks_remain_then_goes_to_pr() -> None:
-    """The multi-task loop: CODE and TEST alternate until the graph is exhausted."""
+def test_test_phase_returns_to_code_while_tasks_remain_then_goes_to_review() -> None:
+    """The multi-task loop: CODE and TEST alternate until the graph is exhausted, and the
+    finished change is reviewed before it is pushed."""
     tasks = graph("t1", "t2", "t3")
     s = state(phase=Phase.TEST, tasks=tasks, last_test_report=report(True))
 
@@ -140,12 +141,14 @@ def test_test_phase_returns_to_code_while_tasks_remain_then_goes_to_pr() -> None
         assert transition(s) == Phase.CODE, f"after {task_id} there is still work"
 
     tasks.by_id("t3").status = "done"
-    assert transition(s) == Phase.PR
+    assert transition(s) == Phase.REVIEW
 
 
 def test_transition_rejects_phases_without_a_node() -> None:
+    """SECURITY is declared and not yet routed. tests/unit/test_transition.py keeps the
+    authoritative list; this is the smoke check that the guard exists at all."""
     with pytest.raises(ValueError, match="no transition"):
-        transition(state(phase=Phase.REVIEW))
+        transition(state(phase=Phase.SECURITY))
 
 
 def test_status_mapping() -> None:

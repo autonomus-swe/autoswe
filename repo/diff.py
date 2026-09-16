@@ -91,21 +91,27 @@ async def full_diff(worktree: Path, base_sha: str) -> str:
     Untracked files are staged into a *temporary* index with ``git add -N`` (intent to
     add), so they appear in the diff without the real index being touched. An agent's
     staged-or-not state is its own; reviewing must not disturb it.
+
+    The index goes wherever git says its directory is, not in ``<worktree>/.git`` — in a
+    linked worktree, which is what every run of this system works in, ``.git`` is a *file*
+    containing a pointer and ``<worktree>/.git/anything`` cannot be created. That mistake
+    cost an integration test; the unit tests had all used ``git init`` repositories, where
+    ``.git`` is a directory and the bug is invisible.
     """
-    env = {"GIT_INDEX_FILE": str(worktree / ".git" / "autoswe-review-index")}
-    # Start the temporary index from the current commit, or `add -N` would report every
-    # tracked file as new.
-    await git("read-tree", "HEAD", cwd=worktree, env=env)
-    untracked = await git("ls-files", "--others", "--exclude-standard", cwd=worktree, env=env)
-    paths = [p for p in untracked.splitlines() if p.strip()]
-    if paths:
-        await git("add", "-N", "--", *paths, cwd=worktree, env=env)
+    gitdir = (await git("rev-parse", "--absolute-git-dir", cwd=worktree)).strip()
+    index = Path(gitdir) / "autoswe-review-index"
+    env = {"GIT_INDEX_FILE": str(index)}
     try:
+        # Start the temporary index from the current commit, or `add -N` would report every
+        # tracked file as new.
+        await git("read-tree", "HEAD", cwd=worktree, env=env)
+        untracked = await git("ls-files", "--others", "--exclude-standard", cwd=worktree, env=env)
+        paths = [p for p in untracked.splitlines() if p.strip()]
+        if paths:
+            await git("add", "-N", "--", *paths, cwd=worktree, env=env)
         return await git("diff", base_sha, cwd=worktree, env=env)
     finally:
-        index = worktree / ".git" / "autoswe-review-index"
-        if index.exists():
-            index.unlink()
+        index.unlink(missing_ok=True)
 
 
 def split_by_file(diff: str) -> list[FileDiff]:
