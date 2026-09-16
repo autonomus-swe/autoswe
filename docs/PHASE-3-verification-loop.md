@@ -40,7 +40,7 @@ Suggested duration: 5–7 days. This phase is the core of the resume claim; the 
 - [x] Wall-clock, dollar, and token budgets each produce `budget_warning` at 90 % and `ESCALATE` at 100 % (table tests with fake usage).
 - [x] A bash command on the ASK list pauses the run; `POST /approve` runs it, `POST /reject` returns the reason to the model (integration test).
 - [x] `transition()` has a table test with at least 25 rows and 100 % branch coverage.
-- [ ] Tag `v0.3.0`.
+- [x] Tag `v0.3.0`.
 
 ---
 
@@ -263,6 +263,18 @@ class Budget(StateModel):
 - A cancel during a long `exec` must not wait for the timeout: the runner's cancel watcher calls `sandbox.kill_exec()` (implemented as `container.kill()` followed by teardown — the run is over anyway).
 - A cancel during `AWAITING_INPUT` or an approval wait returns immediately (the inbox loop checks the flag every poll).
 
+**Verified in the running product, 2026-09-16.** `autoswe cancel` during `ANALYZE`: the
+watcher noticed in ~2 s and killed the sandbox (`cancel_killing_sandbox` →
+`sandbox_exec_killed`), the run ended `cancelled` with "cancelled while a phase was
+running", the container was removed and the repo lock released.
+
+**What it does not stop: an in-flight request to the model.** The 14 s between the kill and
+the run ending was the provider call unwinding. The watcher kills the sandbox, not the HTTP
+request, so a cancel during a model call waits for that call — bounded only by
+`llm_timeout_s`, which defaults to 600 s and is set to 5400 s in some local setups. Worth
+closing in Phase 5 (the provider call would need to take a cancellation token), and worth
+knowing now: a cancel is prompt against commands and patient against models.
+
 ---
 
 ### Step 3.9 — Chaos fixtures and e2e
@@ -325,4 +337,4 @@ uv run autoswe answer <id> "The test is wrong; leave it failing and document why
 - [~] Exit criteria in §1 all ticked; `evals/results/m3.jsonl` has the five scenarios with attempts and cost. Blocked on a funded key — see `evals/results/README.md`; no numbers are recorded that were not measured.
 - [x] `RunState` carries `fix_rounds` (dict, default empty) and `return_to` (None) as placeholders — Phase 4 fills them.
 - [x] You can walk through the transition table row by row and explain why `transition()` is allowed to mutate bookkeeping fields but never do I/O.
-- [ ] Tag `v0.3.0`.
+- [x] Tag `v0.3.0`.
