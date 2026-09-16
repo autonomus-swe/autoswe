@@ -128,6 +128,9 @@ button, input, textarea { font:inherit; color:inherit; }
 .phase.past { color:var(--ink-soft); border-color:var(--ink-soft); }
 .phase.now  { color:var(--bg); background:var(--accent); border-color:var(--accent); font-weight:600; }
 .phase.fail { color:var(--rose); border-color:var(--rose); background:var(--rose-dim); }
+/* An excursion the run is not currently in — drawn dashed so the linear stages stay
+   readable as a sequence and DEBUG does not look like a step between TEST and PR. */
+.phase.off-rail { border-style:dashed; color:var(--ink-soft); }
 
 h2.section {
   font-size:12px; font-family:var(--mono); letter-spacing:.09em; text-transform:uppercase;

@@ -227,3 +227,37 @@ async def test_sigkill_after_plan_resumes_without_replanning(
         await deps.engine.dispose()
         await bus.close()
         await engine.dispose()
+
+
+async def test_load_state_derives_whether_spend_can_be_measured(
+    migrated_pg_url: str, redis_url: str, host_tmp: Path
+) -> None:
+    """The flag `RunState` claimed was "set once from the pricing table", actually set.
+
+    It defaulted to True and nothing assigned it, so a run on an unpriced model kept the
+    dollar dimension in its budget and read 0 % of it forever — the admission that spend
+    could not be measured never happened. Derived on every load now, fresh or resumed,
+    because a checkpoint carries whatever was true when it was written.
+    """
+    deps = _deps(migrated_pg_url, redis_url, str(host_tmp), ScriptedAgents())
+    async with session(deps.engine) as s:
+        run_id = await db.create_run(
+            s,
+            repo_url="https://github.com/acme/demo",
+            base_branch="main",
+            goal=GOAL,
+            budget=Budget(),
+        )
+    try:
+        # the scripted provider's model is "scripted/agents" on a non-local base url,
+        # so it is not in the pricing table and not free — exactly the unmeasurable case
+        state, resumed = await load_state(deps, run_id)
+        assert not resumed
+        assert state.cost_measurable is False, deps.provider.model
+
+        deps.provider.model = "claude-opus-5"  # a priced model, same run
+        state, _ = await load_state(deps, run_id)
+        assert state.cost_measurable is True
+    finally:
+        await deps.bus.close()
+        await deps.engine.dispose()

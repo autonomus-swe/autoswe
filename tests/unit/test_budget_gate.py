@@ -294,3 +294,46 @@ async def test_a_structured_call_reaches_the_ledger_through_the_hooks() -> None:
         Recorder(),
     )
     assert [u.cost_usd for u in recorded] == [0.002]
+
+
+# ---- the flag that was documented but never assigned ---------------------------------
+
+
+@pytest.mark.parametrize(
+    ("model", "base_url", "measurable"),
+    [
+        ("claude-opus-5", "https://api.anthropic.com", True),
+        ("claude-haiku-4-5-20251001", "https://api.anthropic.com", True),  # dated variant
+        ("qwen2.5:7b", "http://localhost:11434/v1", True),  # local: zero is a measurement
+        ("some/model:free", "https://openrouter.ai/api/v1", True),
+        ("some/paid-model", "https://openrouter.ai/api/v1", False),  # unpriced, not free
+    ],
+)
+def test_whether_spend_can_be_measured_is_derived_not_assumed(
+    model: str, base_url: str, measurable: bool
+) -> None:
+    """`RunState.cost_measurable` said "set once from the pricing table" and nothing set it.
+
+    The consequence was silent: a run on an unpriced model kept the dollar dimension in
+    its budget, read 0 % of it forever, and the guard built to admit "we cannot measure
+    this" never fired. `resume.load_state` now derives it on every load.
+    """
+    from gateway.pricing import priced
+
+    assert priced(model, base_url) is measurable
+
+
+def test_an_unmeasurable_run_is_still_bounded_by_the_clock() -> None:
+    """Dropping the dollar dimension must not leave the run unbounded."""
+    g = gate(elapsed=601.0, cost_measurable=False)
+    assert g.exhausted() == "budget_wall_clock"
+    inside = gate(elapsed=1.0, cost_measurable=False)
+    assert inside.exhausted() is None
+
+
+def test_an_unmeasurable_dollar_budget_reports_no_dollar_fraction() -> None:
+    """The fraction is absent rather than a reassuring zero — a reader can tell the
+    difference between "spent nothing" and "cannot say"."""
+    b = Budget(max_usd=10.0, wall_clock_s=600)
+    assert "budget_usd" in b.fraction_used(Usage(cost_usd=1.0), 0.0)
+    assert "budget_usd" not in b.fraction_used(Usage(cost_usd=1.0), 0.0, cost_measurable=False)

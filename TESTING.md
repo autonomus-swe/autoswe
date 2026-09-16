@@ -1,320 +1,740 @@
-# How to test autoswe
+# What is built, and how to see it for yourself
 
-Two audiences in one file. **Part A** is the fast answer: five minutes, no API key, no
-quota, and you end up looking at the console with real data in it. **Part B** is the
-thorough pass. **Part C** is the parts that cost quota, and how not to waste it.
+Every command here has been run on a clean checkout, and every expected output is what it
+actually printed — not what it ought to print. Where reality differs from the design, the
+difference is in the text.
 
-Companions: `MANUAL-TESTING.md` walks each capability in depth;
-`PHASE-1-CHECKLIST.md` is the Phase 1 exit-criteria runbook; `docs/PHASE-2-*.md` §1
-records what is verified and what is not.
-
-> Every command below was executed on this machine before being written down. Where
-> something is a known limitation rather than a step, it says so.
-
-**What you need**
-
-| | |
-|---|---|
-| Docker | for Postgres, Redis, and the agent sandbox |
-| Python | 3.12 via `uv` |
-| API key | `dev-key-change-me` — the dev default in `.env` |
-| LLM quota | **not needed for Part A or B** |
+Read Part 0 and Part 1 to see it alive in ten minutes. Read Part 6 before you plan
+anything: it is the list of what is missing, and it is longer than the list of what works.
 
 ---
 
-## Part A — see it working in five minutes
+## Where the product is
 
-Three terminals. Keep them open; later parts reuse them.
+| phase | what it does | state |
+|---|---|---|
+| **0 — foundations** | settings, typed errors, contracts, logging, schema, sandbox image, CI | **done** |
+| **1 — single-agent loop** | tools, sandbox, worktree, Coder, gateway, opens a PR | **done** |
+| **2 — plan and state** | Analyzer/Planner/Decomposer, checkpoint/resume, events, API, console, CLI | **done** (1 criterion partial) |
+| **3 — verification loop** | parsed failures, Debugger, escalation, approvals, budgets, cancel | **done** (1 criterion unproven) |
+| **4 — review, security, PR** | reviewer, `bandit`/`semgrep`/`pip-audit`, fix rounds, a real PR body | **not started** — 13 criteria open |
+| **5 — scale and cost** | concurrency, caching, model downgrade, GC, metrics | **not started** — 14 criteria open |
+| **6 — interop and evals** | MCP server and client, SWE-bench-style evals, Anthropic provider | **not started** — 14 criteria open |
 
-### 1. Terminal 1 — bring up the stack
+In one sentence: **it can take a goal, plan it, write the code, run the tests, debug a
+failure, and open a pull request — and it does none of the reviewing, scanning, or
+scaling that would make that pull request safe to merge unread.**
+
+---
+
+## Part 0 — bring it up
 
 ```bash
-cd ~/Desktop/proj/phase_0
-make up && make migrate
+git clone https://github.com/autonomus-swe/autoswe && cd autoswe
+cp .env.example .env         # then fill in the three required values, see below
+./scripts/bringup.sh
 ```
 
-Expect `Container phase_0-postgres-1 Healthy`, `Container phase_0-redis-1 Healthy`, then
-Alembic migration output. Both containers must say **Healthy** — `make up` waits for
-them, so if it returns you are fine.
+The script is idempotent, reads its ports from `.env` rather than assuming, and prints the
+evidence for each step rather than only its own opinion. Re-run it any time.
 
-### 2. Terminal 1 — start the API and the console
+```
+== Preflight — is this machine able to run it at all
+  ✓ docker 29.6.1 — daemon reachable
+  ✓ docker compose 5.3.1
+  ✓ uv 0.11.17
+  ✓ git 2.43.0
+  ✓ .env exists
+
+== Configuration — which settings are present
+  ✓ DATABASE_URL set
+  ✓ REDIS_URL set
+  ✓ API_KEYS set
+  ✓ an LLM key is set — provider=openai_compat, model=qwen2.5:7b
+  ✓ GITHUB_TOKEN set — a run can push a branch and open a pull request
+    ports from .env: postgres=5432 redis=6380
+
+== Python environment
+  ✓ dependencies installed (Python 3.12.12)
+  ✓ autoswe 0.3.0
+
+== Infrastructure — Postgres, Redis, the install network
+  ✓ postgres running, published on :5432
+  ✓ redis running, published on :6380
+  ✓ 127.0.0.1:5432 accepts connections
+  ✓ 127.0.0.1:6380 accepts connections
+  ✓ docker network 'agent-install' exists — the sandbox installs dependencies on it, then is disconnected
+
+== Database schema
+  ✓ migrations applied — 0002 (head)
+
+== Sandbox image — where the agent's code actually runs
+  ✓ agent-sandbox:python-3.12 present (756MB, built 28 hours ago)
+
+== API and console
+  ✓ GET /healthz -> {"status":"ok","checks":{"database":"ok","redis":"ok"}}
+  ✓ console at http://127.0.0.1:8000/ -> HTTP 200
+  ✓ GET /runs with no key -> HTTP 401 (auth is enforced)
+
+== Worker
+  ✓ worker_started — "model": "qwen2.5:7b"
+  ✓ listening for jobs on redis :6380
+```
+
+Other subcommands:
 
 ```bash
-uv run uvicorn api.main:app --host 127.0.0.1 --port 8000
+./scripts/bringup.sh status       # processes, containers, health, disk used by run state
+./scripts/bringup.sh seed         # put a finished run on the console — no model, no quota
+./scripts/bringup.sh seed --ask   # ...and one parked on a question, so you can answer it
+./scripts/bringup.sh logs         # tail the API and worker
+./scripts/bringup.sh down         # stop the API and worker, keep the data
+./scripts/bringup.sh reset        # stop everything and delete the volumes
+./scripts/bringup.sh infra-only   # Postgres, Redis and migrations, nothing else
 ```
 
-Leave it running. Check it from terminal 2:
+### The three settings that are actually required
+
+`DATABASE_URL`, `REDIS_URL`, `API_KEYS`. Without them nothing loads, and the failure names
+the missing one:
+
+```bash
+# `env -u DATABASE_URL` is not enough: pydantic-settings reads .env from disk, so the
+# variable comes back and the process starts happily. Passing env_file=None is what
+# actually exercises the fail-fast path.
+env REDIS_URL=redis://localhost:6379/0 API_KEYS=dev-key-change-me \
+  uv run python -c "from core.settings import load_settings; load_settings(None)"; echo "exit=$?"
+# FATAL: missing or invalid settings: DATABASE_URL
+# exit=2
+```
+
+`LLM_API_KEY` (or `ANTHROPIC_API_KEY`) and `GITHUB_TOKEN` are needed **only by the worker**,
+which exits at startup naming whichever is missing. The API, the console and both test
+suites work without them. The bring-up script says so rather than starting a worker that
+will die.
+
+The sandbox image is built once (`make sandbox-image`, a few minutes). Without it the unit
+suite still passes and the sandbox integration tests skip.
+
+---
+
+## Part 1 — see it alive, no model needed
+
+The interesting states of a run are awkward to reach on demand, so there is a seeder that
+writes the same rows and publishes the same events the orchestrator does.
+
+```bash
+./scripts/bringup.sh seed
+```
+
+```
+  phase -> analyze
+  phase -> plan
+  phase -> decompose
+  phase -> code
+  phase -> test
+  phase -> code
+  phase -> test
+  phase -> code
+  phase -> test
+  phase -> pr
+  phase -> done
+  done
+```
+
+Open **http://127.0.0.1:8000/** and paste the key from `API_KEYS` into the field. You get a
+rail of runs on the left and one run in full on the right: phase chips, stat tiles, three
+task cards, a live event feed, and every tool call and model turn.
+
+It is a fixture, not a simulator — it proves the interface, not the orchestrator. The tests
+in Part 2 prove the orchestrator.
+
+The same run through the API, which is what the console is reading:
+
+```bash
+export KEY=$(grep -m1 ^API_KEYS= .env | cut -d= -f2- | cut -d, -f1)
+RUN=$(curl -s -H "X-API-Key: $KEY" localhost:8000/runs | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["run_id"])')
+curl -s -H "X-API-Key: $KEY" "localhost:8000/runs/$RUN/detail" | python3 -c '
+import json,sys; d=json.load(sys.stdin)
+print("phase/status :", d["run"]["phase"], "/", d["run"]["status"])
+print("counts       :", {k: len(d[k]) for k in ("tasks","steps","events","tool_calls","llm_calls")})
+print("tasks        :", [(t["id"], t["status"]) for t in d["tasks"]])'
+```
+
+```
+phase/status : done / done
+counts       : {'tasks': 3, 'steps': 6, 'events': 52, 'tool_calls': 23, 'llm_calls': 31}
+tasks        : [('t1', 'done'), ('t2', 'done'), ('t3', 'done')]
+```
+
+### The endpoints, by hand
 
 ```bash
 curl -s localhost:8000/healthz
 # {"status":"ok","checks":{"database":"ok","redis":"ok"}}
+
+curl -s -o /dev/null -w '%{http_code}\n' localhost:8000/runs                       # 401
+curl -s -o /dev/null -w '%{http_code}\n' -H 'X-API-Key: wrong' localhost:8000/runs # 401
+curl -s -o /dev/null -w '%{http_code}\n' -H "X-API-Key: $KEY" localhost:8000/runs  # 200
+
+curl -s -o /dev/null -w '%{http_code}\n' -H "X-API-Key: $KEY" localhost:8000/runs/nope
+# 422   — a malformed uuid is rejected at the boundary
+curl -s -o /dev/null -w '%{http_code}\n' -H "X-API-Key: $KEY" \
+  localhost:8000/runs/00000000-0000-0000-0000-000000000000
+# 404
 ```
 
-Both checks must read `ok`. If `database` is not ok, step 1 did not finish.
-
-### 3. Open the console
-
-Visit **<http://127.0.0.1:8000/>** and paste `dev-key-change-me` into the
-**X-API-Key** box, top right. The key is held in `localStorage`, so you do this once
-per browser.
-
-The left rail fills with runs, newest first. It will be empty on a fresh database —
-step 4 fixes that.
-
-### 4. Terminal 2 — put a run on the screen
-
-A real agent run costs requests from a small free allowance, and the states worth
-looking at (a live stream, a task half-finished, a run parked on a question) are the
-awkward ones to reach on demand. So there is a seeder that writes the same rows and
-publishes the same events the orchestrator does, with no model involved:
+The event stream, both ways — `EventSource` cannot set headers, so the console passes the
+key as a query parameter:
 
 ```bash
-cd ~/Desktop/proj/phase_0
-uv run python scripts/seed_demo_run.py
+curl -s --max-time 5 -H "X-API-Key: $KEY" -H 'Last-Event-ID: 0-0' \
+  "localhost:8000/runs/$RUN/events" | head -6
+curl -s --max-time 5 "localhost:8000/runs/$RUN/events?key=$KEY" | head -6
 ```
 
-It prints the run id and a URL, then about 40 seconds of phase changes. **Click the top
-run in the rail while it is still going** — that is the interesting view. You should see:
+```
+id: 240
+event: phase_changed
+data: {"phase":"analyze"}
 
-- **phase chips** filling in left to right: `setup analyze plan decompose code test pr done`
-- **Live events** appending as they happen, the header saying `streaming`
-- **Tasks** appearing at `decompose` and turning `done` one at a time
-- **Tool calls** and **Model turns** tables growing
-- the totals row counting up — 23 tool calls, 31 model turns, ~84k tokens in
-
-When it finishes the header switches to `finished` and a **pull request** link appears
-next to the branch name.
-
-> The seeder is a fixture, not a simulator. It proves nothing about the orchestrator —
-> the test suite does that. It exists so the interface can be looked at.
-
-### 5. Answer a parked run from the UI
-
-This is the one interaction that is otherwise hard to reach:
-
-```bash
-uv run python scripts/seed_demo_run.py --ask
+id: 241
+event: agent_started
 ```
 
-It stops at `plan` and waits. In the console the status pill reads `awaiting_input` and a
-panel appears — *"The planner needs an answer"* — with the two questions. Type anything
-and press **Send**. The panel becomes *"Answer sent — waiting for the run to pick it
-up"*, the seeder prints `answer received`, and the run carries on to `done`.
-
-The same thing from the CLI, if you would rather:
+From the terminal instead, which exits non-zero when the run did not pass:
 
 ```bash
-export AUTOSWE_API_KEY=dev-key-change-me
-uv run autoswe answer <run-id> "Return every modal value; whitespace-separated."
-# accepted
-```
-
-### 6. Cancel one, and see one fail
-
-```bash
-uv run python scripts/seed_demo_run.py --speed 2     # then hit Cancel in the console
-uv run python scripts/seed_demo_run.py --fail        # ends failed, with t3 red
-```
-
-**Cancel** appears in the header of any run that is not finished. The run stops at the
-next task boundary and the pill turns `cancelled`. `--fail` leaves the last task `failed`
-and shows the error banner — worth seeing once, so you recognise it later.
-
-### 7. Watch a run from the terminal
-
-```bash
-uv run python scripts/seed_demo_run.py &          # or use a run already going
-uv run autoswe watch <run-id>
+uv run autoswe watch "$RUN"; echo "exit: $?"
 ```
 
 ```
 phase_changed    analyze
 agent_started    analyzer
-tool_call        search_code
-test_report      passed — 3 tests, 0 failing
-pr_opened        https://github.com/.../pull/42
-run_finished     done · $0.0000
+agent_finished   error: RunCancelled: cancelled before running read_file
+run_finished     cancelled · $0.0000
+exit: 1
 ```
 
-`watch` exits non-zero if the run did not pass, so it composes in a shell. Pointed at a
-finished run it replays the history and exits; pointed at a live one it follows, and
-reconnects from its cursor if the stream drops.
+All nine CLI commands: `version`, `config`, `run`, `status`, `watch`, `answer`, `approve`,
+`reject`, `cancel` (`uv run autoswe --help`). `autoswe config` prints the whole effective
+configuration with every secret masked.
 
 ---
 
-## Part B — the thorough pass, still no quota
-
-### 8. The automated suite
+## Part 2 — the automated suites
 
 ```bash
-make sandbox-image     # once; the Docker-backed tests skip without it
-uv run pytest -m "unit or integration"
-# 274 passed, 4 deselected
+make lint && make type && make test && make test-int
 ```
 
-`make sandbox-image` matters more than it looks. Without
-`agent-sandbox:python-3.12` every test behind `requires_docker` **skips** while the run
-still reports success — that is how twelve tests went unnoticed in CI. To check you are
-really running them:
+```
+All checks passed!                      # ruff
+144 files already formatted             # ruff format --check
+Success: no issues found in 143 source files   # mypy --strict
+446 passed, 100 deselected               # unit,       ~3s
+ 93 passed, 453 deselected               # integration, ~2m30s
+```
+
+The integration suite is not a mock: it runs a real Docker sandbox, a real Postgres from
+testcontainers, and a real Redis. **No test skips** on a machine with Docker and the
+sandbox image. If you see skips, the image is missing.
+
+Secrets, across the whole history rather than the working tree:
 
 ```bash
-uv run pytest -m integration 2>&1 | tail -1
-# 54 passed, 224 deselected     <- 54, and no "skipped"
+gitleaks git --config .gitleaks.toml --redact .
+# 103 commits scanned.
+# no leaks found
 ```
 
-If the count is much lower and you see `skipped`, the image is missing.
-
-Tiers, if you want them separately:
-
-```bash
-uv run pytest -m unit           # fast, no Docker
-uv run pytest -m integration    # real Postgres, Redis, Docker sandbox
-make lint && make type          # ruff + mypy strict
-```
-
-### 9. The two tests worth understanding
-
-Most of the suite is ordinary. These two carry the phase:
-
-```bash
-uv run pytest tests/integration/test_resume.py -v
-```
-
-`test_sigkill_after_plan_resumes_without_replanning` starts a worker in a child process,
-waits until `PLAN` and `DECOMPOSE` are durable, then sends it a **real `SIGKILL`**. An
-in-process exception would prove nothing — `runner.run` catches those, marks the run
-failed and tears the sandbox down, which is exactly what a crash does not do. After the
-kill the run is still marked `running` and the repo lock is still held; resume then
-re-attaches and finishes with exactly one analyzer, planner and decomposer step. Takes
-about two minutes.
-
-```bash
-uv run pytest tests/integration/test_full_run.py -v -k cancel_stops
-```
-
-Cancel has to land within one tool call, not one node — a coder loop runs up to 60
-iterations. This one cancels a run that is stuck inside its tool loop and checks the
-container is gone afterwards.
-
-### 10. The endpoints by hand
-
-```bash
-export K=dev-key-change-me
-curl -s -H "X-API-Key: $K" localhost:8000/runs | head -c 300          # list
-curl -s -H "X-API-Key: $K" localhost:8000/runs/<id>/detail | jq keys  # one run in full
-curl -s -o /dev/null -w '%{http_code}\n' localhost:8000/runs          # 401 without a key
-curl -N -H "X-API-Key: $K" localhost:8000/runs/<id>/events            # SSE
-```
-
-`/detail` answers with `run`, `tasks`, `steps`, `events`, `tool_calls`, `llm_calls` and
-`totals` in one request — the console draws itself from that single call, then follows
-the event stream.
-
-Two behaviours worth poking at:
-
-```bash
-# the stream accepts the key as a query parameter, because EventSource cannot set headers
-curl -s -o /dev/null -w '%{http_code}\n' "localhost:8000/runs/<id>/events?key=$K"   # 200
-curl -s -o /dev/null -w '%{http_code}\n' "localhost:8000/runs/<id>/events?key=nope" # 401
-
-# answering a run that is not waiting is a conflict, not a silent no-op
-uv run autoswe answer <finished-run-id> "hello"
-# error: 409 run is done, not awaiting input
-```
-
-The query-parameter key is deliberately limited to the read-only stream: query strings
-end up in access logs and browser history, so every other route requires the header.
-
-### 11. Reset the data
-
-The seeded runs are labelled `DEMO — …` so they are easy to find:
-
-```bash
-docker compose exec -T postgres psql -U postgres -d autoswe \
-  -c "delete from runs where goal like 'DEMO%';"
-```
-
-Deleting a run cascades to its events, steps, tool calls and tasks.
+Coverage, if you want the number: **92%** over 8,738 statements. The gaps are the outer
+shells — CLI bodies, the SSE loop, worker bootstrap — which is why Part 1 exists.
 
 ---
 
-## Part C — testing against a real model
+## Part 3 — the guarantees you should doubt
 
-This is where it costs something, and where the honest limits are.
+These are the claims that matter, so each one is a command rather than a paragraph.
 
-### 12. What the free tiers actually allow
+### The sandbox really is a sandbox
 
-Measured, not quoted from a pricing page:
+One script checks eight boundaries at once. It starts a real container, inspects it from
+the host, and then asks the container about itself.
 
-| | |
+```bash
+uv run python - <<'PY'
+import asyncio, json, os
+from pathlib import Path
+from sandbox.docker import DockerSandbox
+
+WS = Path.home() / ".autoswe" / "proof-ws"
+HOME = str(Path.home())
+CHECKS = [
+    ("id -u", "uid inside"),
+    ("grep CapEff /proc/self/status", "capabilities"),
+    ("grep NoNewPrivs /proc/self/status", "no_new_privs"),
+    ("touch /etc/proof; echo exit=$?", "write /etc"),
+    ("touch /usr/bin/proof; echo exit=$?", "write /usr/bin"),
+    ("touch /tmp/proof; echo exit=$?", "write /tmp"),
+    ("touch /workspace/proof; echo exit=$?", "write /workspace"),
+    ("df -h /tmp | tail -1", "/tmp filesystem"),
+    ("cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/cpu.max /sys/fs/cgroup/pids.max", "cgroup mem/cpu/pids"),
+    ("env | cut -d= -f1 | sort | paste -sd,", "env names inside"),
+    ("env | grep -iE 'anthropic|github|database|redis|api_key|token' || echo '(none)'", "secret-shaped env"),
+    (f"ls -d {HOME} 2>&1 | head -1", "host HOME inside"),
+]
+
+async def main() -> None:
+    WS.mkdir(parents=True, exist_ok=True)
+    sb = DockerSandbox("proof", WS, image="agent-sandbox:python-3.12",
+                       network="agent-install", user=f"{os.getuid()}:{os.getgid()}")
+    await sb.start()
+    try:
+        a = sb.container.attrs
+        keys = ("CapDrop", "ReadonlyRootfs", "Tmpfs", "Memory", "NanoCpus", "PidsLimit", "SecurityOpt")
+        print("Config.User        ", a["Config"]["User"])
+        print("HostConfig         ", json.dumps({k: a["HostConfig"][k] for k in keys}, sort_keys=True))
+        print("Mounts             ", [(m["Type"], m["Source"], m["Destination"], m["RW"]) for m in a["Mounts"]])
+        for cmd, label in CHECKS:
+            r = await sb.exec(cmd)
+            print(f"{label:19}", (r.stdout + r.stderr).strip())
+    finally:
+        await sb.stop()
+
+asyncio.run(main())
+PY
+```
+
+```
+Config.User         1001:1001
+HostConfig          {"CapDrop": ["ALL"], "Memory": 4294967296, "NanoCpus": 2000000000,
+                     "PidsLimit": 512, "ReadonlyRootfs": true, "SecurityOpt": null,
+                     "Tmpfs": {"/tmp": "size=1g,exec"}}
+Mounts              [('bind', '/home/you/.autoswe/proof-ws', '/workspace', True)]
+uid inside          1001
+capabilities        CapEff: 0000000000000000
+no_new_privs        NoNewPrivs: 0
+write /etc          touch: cannot touch '/etc/proof': Read-only file system
+                    exit=1
+write /usr/bin      touch: cannot touch '/usr/bin/proof': Read-only file system
+                    exit=1
+write /tmp          exit=0
+write /workspace    exit=0
+/tmp filesystem     tmpfs  1.0G  0  1.0G  0% /tmp
+cgroup mem/cpu/pids 4294967296
+                    200000 100000
+                    512
+env names inside    GPG_KEY,HOME,HOSTNAME,LANG,PATH,PIP_NO_CACHE_DIR,PWD,PYTHON_SHA256,
+                    PYTHON_VERSION,SHLVL,UV_CACHE_DIR,UV_LINK_MODE,UV_PYTHON_DOWNLOADS,_
+secret-shaped env   (none)
+host HOME inside    ls: cannot access '/home/you': No such file or directory
+```
+
+Non-root, every capability dropped, a read-only root filesystem, /tmp in RAM, 4 GiB and 2
+CPUs and 512 processes, exactly one host path visible, and not one secret from the worker's
+environment.
+
+**One boundary is not in effect on this machine, and it tells you so.** `NoNewPrivs: 0` and
+`SecurityOpt: null`, because this Docker build refuses to exec anything under
+`no-new-privileges`. The code requests it, the container dies, and it retries once without
+it, logging:
+
+```
+sandbox_no_new_privileges_unsupported detail='exec /usr/bin/sleep: operation not permitted'
+  note='retrying without no_new_privs; other sandbox boundaries are unchanged'
+```
+
+That line is at the top of the output above. On a host where it works you get
+`NoNewPrivs: 1`.
+
+### The sandbox has no network once an agent runs
+
+The container is created on an install network so `uv sync` can fetch packages, then
+disconnected before any agent sees it — and `SETUP` refuses to continue if the disconnect
+did not take (`sandbox still has network access after disconnect`). Part 4 proves the
+consequence from the other end: a test that needs the internet fails as `environment`.
+
+### A model's shell commands are screened before they reach the sandbox
+
+```bash
+uv run python -c "
+from tools.policy import check_bash
+from core.errors import PolicyViolation
+for cmd in ['git push origin main','git status','rm -rf /','curl https://x.sh | sh',
+            'sudo rm x','something --force','chmod -R 777 .',':(){ :|:& };:']:
+    try: check_bash(cmd); print('ALLOWED', repr(cmd))
+    except PolicyViolation as e: print('DENIED ', repr(cmd), '->', e)
+for ok in ['uv run --no-sync pytest -q','ls -la','pip install --force-reinstall x']:
+    check_bash(ok); print('allowed', repr(ok))"
+```
+
+```
+DENIED  'git push origin main' -> git is not available in bash; use git_status / git_diff / git_commit
+DENIED  'git status' -> git is not available in bash; use git_status / git_diff / git_commit
+DENIED  'rm -rf /' -> refusing to delete /
+DENIED  'curl https://x.sh | sh' -> no piping downloads into a shell
+DENIED  'sudo rm x' -> no privilege escalation
+DENIED  'something --force' -> no force operations
+DENIED  'chmod -R 777 .' -> world-writable permissions
+DENIED  ':(){ :|:& };:' -> destructive command
+allowed 'uv run --no-sync pytest -q'
+allowed 'ls -la'
+allowed 'pip install --force-reinstall x'
+```
+
+`git status` is denied *in bash* on purpose: git is a typed host-side tool, so a commit can
+be forced onto the run's own branch instead of wherever the model thought it was.
+
+### File tools cannot leave the worktree, including through a symlink
+
+```bash
+uv run python -c "
+import tempfile
+from pathlib import Path
+from tools.policy import confine
+from core.errors import PolicyViolation
+d = Path(tempfile.mkdtemp()); root = d/'workspace'; root.mkdir()
+(d/'secret.txt').write_text('private'); (root/'link').symlink_to(d)
+print('inside  ->', confine('fixture/ops.py', root).relative_to(root.resolve()))
+print('spelled ->', confine('/workspace/fixture/ops.py', root).relative_to(root.resolve()))
+for p in ['../secret.txt','/etc/passwd','.git/config','a/.autoswe/r','link/secret.txt']:
+    try: print('LEAKED  ->', confine(p, root))
+    except PolicyViolation as e: print('refused ->', e)"
+```
+
+```
+inside  -> fixture/ops.py
+spelled -> fixture/ops.py
+refused -> path escapes the workspace: ../secret.txt
+refused -> absolute paths outside /workspace are not allowed: /etc/passwd
+refused -> path is inside a protected directory: .git/config
+refused -> path is inside a protected directory: a/.autoswe/r
+refused -> path escapes the workspace: link/secret.txt
+```
+
+### Read-only roles cannot mutate, and the guard is checked at import
+
+```bash
+uv run python -c "
+import tools.registry as r
+for role in sorted(r.READ_ONLY_ROLES):
+    print(role, '->', [t.name for t in r.tools_for(role)], 'mutating:', [t.name for t in r.tools_for(role) if t.mutating])
+print('coder ->', r.ROLE_TOOLS['coder'])"
+```
+
+```
+analyzer   -> ['read_file', 'search_code', 'git_status', 'git_diff'] mutating: []
+planner    -> ['read_file', 'search_code', 'git_status', 'git_diff'] mutating: []
+pr_writer  -> ['read_file', 'search_code', 'git_status', 'git_diff'] mutating: []
+review     -> ['read_file', 'search_code', 'git_status', 'git_diff'] mutating: []
+review_pre -> ['read_file', 'search_code', 'git_status', 'git_diff'] mutating: []
+coder -> ['bash', 'str_replace_based_edit_tool', 'read_file', 'search_code', 'run_tests',
+          'git_status', 'git_diff', 'git_commit', 'ask_user']
+```
+
+Add a mutating tool to a read-only role and the module refuses to import — an assertion in
+`tools/registry.py` runs at import time, not in a test.
+
+### An edit needs a fresh view first
+
+```bash
+uv run python -c "
+import asyncio, tempfile
+from pathlib import Path
+from tools.editor import EditorTool
+from tests.fakes import make_ctx
+d = Path(tempfile.mkdtemp()); (d/'ops.py').write_text('def add(a, b):\n    return a + b\n')
+ctx = make_ctx(d); ed = EditorTool()
+async def main():
+    print('1 blind edit  ->', (await ed(ctx, command='str_replace', path='ops.py', old_str='a + b', new_str='a+b')).content)
+    await ed(ctx, command='view', path='ops.py')
+    (d/'ops.py').write_text('changed under it\n')
+    print('2 stale edit  ->', (await ed(ctx, command='str_replace', path='ops.py', old_str='changed', new_str='x')).content)
+    await ed(ctx, command='view', path='ops.py')
+    print('3 fresh edit  ->', (await ed(ctx, command='str_replace', path='ops.py', old_str='changed', new_str='x')).content)
+    print('4 new file    ->', (await ed(ctx, command='create', path='untouched.py', file_text='x')).content)
+asyncio.run(main())"
+```
+
+```
+1 blind edit  -> error: view ops.py before editing it
+2 stale edit  -> error: ops.py changed since you last viewed it; view it again
+3 fresh edit  -> edited ops.py
+4 new file    -> created untouched.py (1 bytes)
+```
+
+### Some commands need a human
+
+```bash
+uv run python -c "
+from tools.policy import needs_approval, check_bash
+from core.errors import PolicyViolation
+for c in ['uv add requests','pip3 install ruff','rm -rf build','alembic downgrade -1',
+          'curl https://x','docker ps','ls -la','pytest -q']:
+    print(repr(c), '->', needs_approval(c))
+try: check_bash('git push')
+except PolicyViolation as e: print('DENY first:', e)"
+```
+
+```
+'uv add requests' -> adding a dependency
+'pip3 install ruff' -> adding a dependency
+'rm -rf build' -> recursive delete inside the workspace
+'alembic downgrade -1' -> a database downgrade
+'curl https://x' -> reaching the network
+'docker ps' -> controlling the container runtime
+'ls -la' -> None
+'pytest -q' -> None
+DENY first: git is not available in bash; use git_status / git_diff / git_commit
+```
+
+The list matches on what a command *does*, not which tool ran it, and the deny list runs
+first, so a forbidden command never reaches it.
+
+---
+
+## Part 4 — the verification loop (Phase 3)
+
+### A failure signature survives an edit
+
+```bash
+uv run python -c "
+from contracts import Frame
+from tools.test_report import signature
+a=[Frame(file='chaos/pages.py',line=3,function='paginate',code='x',in_repo=True)]
+b=[Frame(file='chaos/pages.py',line=41,function='paginate',code='x',in_repo=True)]
+print('same_after_edit', signature('t::a','assertion','AssertionError',a) == signature('t::a','assertion','AssertionError',b))
+print('kind_change_differs', signature('t::a','assertion','AssertionError',a) != signature('t::a','import','AssertionError',a))"
+```
+
+```
+same_after_edit True
+kind_change_differs True
+```
+
+A Debugger edits code and lines move. "The same failure" means the same test failing the
+same way in the same function — which is what lets the run notice that an attempt changed
+nothing.
+
+### A failure's class comes from the message, then the traceback
+
+```bash
+uv run python -c "
+from tools.test_report import classify, guess_kind
+print('message_wins   ', classify('socket.gaierror: Temporary failure in name resolution',
+                                  'with urlopen(url, timeout=5) as r:'))
+print('traceback_used ', classify('', 'E   Failed: Timeout >5.0s'))
+print('bare_timeout_kw', guess_kind('resp = get(url, timeout=5)'))
+print('import_before_assertion', guess_kind('ImportError while importing test module\nE assert 1 == 2'))"
+```
+
+```
+message_wins    environment
+traceback_used  timeout
+bare_timeout_kw exception
+import_before_assertion import
+```
+
+A traceback quotes source code, and source code contains words. Reading both at once once
+let `urlopen(url, timeout=5)` outvote `socket.gaierror`, so a run with no network was told
+it had a timeout — and the Debugger is told `environment` failures are not its to fix while
+being told nothing of the sort about `timeout`.
+
+### The baseline never excuses the job
+
+```bash
+uv run pytest tests/unit/test_tester.py -q
+# 42 passed
+```
+
+```
+dropped ['tests/test_legacy.py::test_old'] kept ['tests/test_pages.py::test_last'] passed False
+all_inherited_is_a_pass True
+empty_signature_never_forgiven []
+collected_nothing_is_never_a_pass False
+no_selector_excuses_nothing []
+```
+
+Failures the repository already had are excused. The task's own selector never is. With no
+selector, **nothing** is excused — the tests a goal names are failing before it starts;
+that is what makes it a goal.
+
+### The Debugger cannot touch anything before it has a theory
+
+```bash
+uv run python -c "
+import asyncio
+from uuid import uuid4
+from orchestrator.hooks import OrchestratorHooks
+from agents.debugger import HYPOTHESIS_KEY
+sub = {}
+h = OrchestratorHooks(run_id=uuid4(), step_id=uuid4(), engine=None, bus=None,
+                      provider_name='p', model='m', effort=None, role='debugger', submitted=sub)
+async def main():
+    for t in ['bash','str_replace_based_edit_tool','run_tests','git_commit']:
+        print('BEFORE', t, '->', (await h.before_tool(t, {}) or '')[:58])
+    for t in ['read_file','search_code']:
+        print('READ  ', t, '->', await h.before_tool(t, {}))
+    sub[HYPOTHESIS_KEY] = object()
+    print('AFTER  bash ->', await h.before_tool('bash', {}))
+asyncio.run(main())"
+```
+
+```
+BEFORE bash -> call submit_hypothesis first — bash changes things, and a di
+BEFORE str_replace_based_edit_tool -> call submit_hypothesis first — str_repl
+BEFORE run_tests -> call submit_hypothesis first — run_tests changes things,
+BEFORE git_commit -> call submit_hypothesis first — git_commit changes things
+READ   read_file -> None
+READ   search_code -> None
+AFTER  bash -> None
+```
+
+Reading is always allowed; changing anything is not, until the hypothesis exists. A
+diagnosis written after the edit is a description of the edit.
+
+### The same failure twice changes the strategy
+
+```bash
+uv run pytest tests/unit/test_transition.py --cov=orchestrator.transition --cov-branch --cov-report=term -q
+```
+
+```
+same_signature -> debug   strategy alternative
+new_signature  -> debug   strategy None
+passing        -> pr      strategy None
+
+Name                         Stmts   Miss Branch BrPart  Cover
+orchestrator/transition.py      51      0     34      0   100%
+51 passed
+```
+
+**51 cases, 100% branch coverage, measured.** `transition()` is a pure function of the run
+state: it does no I/O and the model never chooses the next phase.
+
+### The five chaos fixtures, in the real sandbox
+
+```bash
+uv run pytest tests/integration/test_chaos_in_sandbox.py -q
+# 5 passed
+```
+
+One fixture repository, a branch per scenario, installed in the real sandbox with the
+network cut:
+
+| branch | what is wrong | what the parser reports |
+|---|---|---|
+| `a-off-by-one` | the last partial page is dropped | two **distinct** `assertion` signatures, with `assert [[1, 2], [3, 4]] == [[1, 2], [3, 4], [5]]` in the message |
+| `b-missing-import` | a module uses `datetime` without importing it | `import`, with `chaos/stamp.py:5` and the line read from disk |
+| `c-impossible` | a test asserts a list is both three pages and two | unsatisfiable by construction |
+| `d-network` | a test fetches example.com | `environment` — **only checkable here**; it passes on a networked host |
+| `e-baseline` | the off-by-one *plus* a test already failing | the inherited failure separates from the task's own |
+
+### A cancel lands mid-command
+
+With the worker running and a run in flight:
+
+```bash
+uv run autoswe cancel "$RUN"
+```
+
+```
+14:56:01  cancel requested
+14:56:03  cancel_killing_sandbox   phase=analyze      ← ~2s, mid-phase
+14:56:03  sandbox_exec_killed
+14:56:17  run_cancelled            "cancelled while a phase was running"
+```
+
+The container is removed and the repo lock released. **The 14 seconds are the model call
+unwinding** — see Part 6.
+
+---
+
+## Part 5 — a real run, against a real model
+
+```bash
+export AUTOSWE_API_KEY=$(grep -m1 ^API_KEYS= .env | cut -d= -f2- | cut -d, -f1)
+uv run autoswe run --repo https://github.com/you/some-repo \
+  --goal "tests/test_x.py is failing. Fix src/x.py so it passes. Do not change the tests."
+uv run autoswe watch <run-id>
+```
+
+Read this before you try it:
+
+- **The repository must be an `https://github.com/owner/name` URL.** A local path is
+  rejected with `422 repo_url must be an https://github.com/... URL`. That is deliberate —
+  a local path submitted through the API would bind-mount arbitrary host directories into a
+  sandbox — but it means you need a real GitHub repository and a `GITHUB_TOKEN` that can
+  push to it.
+- **The model must speak the OpenAI-compatible API.** `LLM_PROVIDER=anthropic` raises
+  `NotImplementedError: the anthropic provider arrives in Phase 6; set
+  LLM_PROVIDER=openai_compat`. An Anthropic key is of no use on its own today; OpenRouter or
+  any OpenAI-compatible gateway is.
+- **A local 7B model will not finish.** Measured on this machine: `qwen2.5:7b` via Ollama got
+  through SETUP, ANALYZE (with the baseline) and PLAN in 13 minutes, then failed at
+  DECOMPOSE — it returned prose instead of calling the forced `submit_TaskGraphSpec`
+  function, twice. Phases it reached worked. See `evals/results/README.md`.
+- **`pytest -m e2e` will not skip on a machine with any `LLM_API_KEY` set** — including the
+  placeholder one a local Ollama setup uses. It will drive real runs, slowly. Unset the key
+  first if that is not what you want.
+
+---
+
+## Part 6 — what is not built, and what will surprise you
+
+This is the part to read before planning. Everything here is verified, not assumed.
+
+### Whole phases missing
+
+**Phases 4, 5 and 6 are unbuilt: 41 of 41 exit criteria open.** In practice that means the
+agent pushes a branch and opens a pull request with **no code review, no security scan and
+no dependency audit**. `REVIEW` and `SECURITY` exist in the phase enum and have no nodes.
+The PR body has three sections where Phase 4 promises eight.
+
+```bash
+grep -c '^- \[ \]' docs/PHASE-4-review-security-pr.md docs/PHASE-5-scale-and-cost.md docs/PHASE-6-interop-and-evals.md
+# 13, 14, 14
+```
+
+### Things that will bite you today
+
+| what | evidence |
 |---|---|
-| **OpenRouter free** | 20 requests/**minute** and **50 requests/day**. Roughly three agent runs. |
-| **Hugging Face** | **Cannot run this agent at all.** A free account cannot make one tool-calling request: the gate is a pre-flight cost estimate, and a single tool definition trips it even with a tiny prompt on the zero-rate provider, pinned. See `docs/PHASE-2-plan-and-state.md` §1 for the measurements. |
-| **GitHub Models** | Retired — `410 github_models_retirement_brownout`. |
+| **A pause longer than ~50 minutes is killed, not honoured.** The open-question timeout is 24 h; the queue's job timeout is 50 min. | `orchestrator/worker.py:98  job_timeout = 50 * 60` vs `orchestrator/nodes.py:58  AWAITING_INPUT_TIMEOUT_S = 24 * 3600` |
+| **A cancel does not interrupt a model call.** It kills the sandbox command in ~2 s, then waits out the provider request — bounded only by `llm_timeout_s` (600 s default). | Part 4's timings |
+| **Nothing is reaped.** One worktree per run that did not push, with its `.venv` inside, plus every stopped container. | `./scripts/bringup.sh status` → `41 worktrees, 322M`; `docker ps -a --filter name=run- \| wc -l` → `19`, oldest 9 days |
+| **The dollar budget cannot bound an unpriced model** — only the 45-minute wall clock can. The system knows this rather than reporting a reassuring zero: an unknown model logs `unknown_model_pricing` and the budget drops the dollar dimension (`cost_measurable=False`). A *local* endpoint is different — there a zero is a real measurement. | `PRICES` in `gateway/pricing.py` has three entries (the Claude models); `uv run python -c "from gateway.pricing import is_free, priced; print(priced('some/paid-model'), is_free('qwen2.5:7b','http://localhost:11434/v1'))"` → `False True` |
+| **The console cannot approve or reject a tool call.** The endpoints and CLI commands exist; the buttons do not. | `grep -c approve api/static/app.js` → `0` |
+| **Nothing shows you the `tool_call_id`** that `autoswe approve` needs. | it is in the `awaiting_input` event payload; neither the console nor `watch` prints it |
+| **`unattended` cannot be set by any client.** Every run created through the API is attended, so escalation always parks rather than failing. | `unattended` appears in `storage/repo.py`, not in `api/schemas.py` |
+| **Artifacts are written and nothing can read them.** Four kinds go into the `artifacts` table — `baseline_report`, `test_report`, `test_report_raw` (the unfiltered report, kept precisely so a reviewer can ask *why did this pass*) and `step_input`. There is no `GET /runs/{id}/artifacts`, no `autoswe artifacts`, and no console field, so the only way to read any of it is SQL. The diff itself is not stored at all — it lives only in the worktree. | `grep -rn save_artifact orchestrator/ \| grep -v test` → 4 call sites; `grep -rn artifact api/routes/ cli/` → nothing |
+| **`/metrics` is a placeholder** and needs no key. | `curl -s localhost:8000/metrics` → `{"detail":"prometheus metrics arrive in Phase 5"}` |
+| **There is no MCP server or client.** | `wc -c mcp_bridge/__init__.py` → `0` |
+| **Only a Python sandbox image exists.** A repository whose tests are `go test` or `npm test` has nothing to run them in. | `ls sandbox/images/` |
+| **The worker refuses to start without `GITHUB_TOKEN`**, even for a run that would never push. | `core/settings.py  require_worker()` |
+| **The README still describes Phase 2** and quotes an integration count 39 short. | `head -1 README.md` |
 
-The per-minute limit is handled: the gateway reads how long the window has left and
-waits it out, verified absorbing twelve of them in one run. The **daily 50 is the wall**,
-and it is not something a test can wait for, so the retry clamps and gives up rather
-than parking your suite for hours.
+### The one unproven claim in Phase 3
 
-**Spend it deliberately.** One e2e test on a fresh day's quota, not the pair:
+Eight of nine exit criteria are met with tests. The ninth — the agent diagnosing and
+recovering from a real failure end to end, and giving up honestly on the impossible one —
+is written (`tests/e2e/test_m3.py`) and has never passed, because no model available here
+can get through DECOMPOSE. `evals/results/m3.jsonl` does not exist, for the same reason and
+deliberately: a file of numbers nobody measured is worse than no file.
 
-```bash
-# the cheap one: only needs ANALYZE and PLAN
-uv run pytest -m e2e tests/e2e/test_m2.py -k pauses -v
+Everything *below* that claim is proven, including in the real sandbox. What is unproven is
+the agent's reasoning, which is the interesting half.
 
-# the expensive one: a full multi-task coding loop, will likely exhaust the day
-uv run pytest -m e2e tests/e2e/test_m2.py -k decomposes -v
-```
+---
 
-Check what is left before you start:
-
-```bash
-curl -s -X POST https://openrouter.ai/api/v1/chat/completions \
-  -H "Authorization: Bearer $(grep ^LLM_API_KEY .env | cut -d= -f2-)" \
-  -H 'content-type: application/json' \
-  -d '{"model":"openrouter/free","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
-  | head -c 200
-```
-
-A `429` mentioning `free-models-per-day` means wait for 00:00 UTC. `$10` of credit
-raises the cap to 1000/day.
-
-### 13. A real run, end to end
-
-Needs a worker as well as the API, so this is terminal 3:
+## Part 7 — put it back
 
 ```bash
-uv run arq orchestrator.worker.WorkerSettings
+./scripts/bringup.sh down     # stop the API and worker, keep the data
+./scripts/bringup.sh reset    # ...and delete the volumes
+
+# the things nothing reaps yet
+docker ps -aq --filter name=run- | xargs -r docker rm
+rm -rf ~/.autoswe/worktrees/*        # only when no run is in flight
 ```
-
-Then start a run — from the console's **New run** button, or:
-
-```bash
-uv run autoswe run \
-  --repo https://github.com/Vatsalya001/autoswe-fixture-python \
-  --goal "Implement subtract(a, b) and slugify(text) in fixture/ops.py so that tests/test_ops.py passes. Do not change the tests."
-```
-
-Watch it in the console. A real run differs from the seeder in ways worth noticing: the
-model turns show a real model name and real latencies, tool calls have real durations,
-and `cost` is where you would see spend — except it reads `$0.00`, which is the next
-item.
-
-### 14. Known gaps
-
-Not defects to discover; they are recorded so you do not waste time on them.
-
-- **`cost_usd` always reads `$0.00`.** `gateway/pricing.py` only knows Anthropic model
-  prices, and nothing in use is an Anthropic model. Accurate for a free model, wrong in
-  principle, and it has to be fixed before Phase 3 budgets mean anything.
-- **The multi-task e2e test has never passed against a real model.** Written, lint and
-  type clean, but no free provider has had the quota. `docs/PHASE-2-plan-and-state.md`
-  §1 records it.
-- **The Planner does not pause when it should.** Given `"Add authentication."` with
-  `unattended=False` it planned and started coding instead of asking. The phase notes
-  warn about a planner that asks too *many* questions; the opposite is also a failure.
-- **Docker here is snap-packaged.** It refuses `no-new-privileges` and cannot bind-mount
-  `/tmp`, both already handled in code — do not re-fix them. Worktrees live under
-  `$HOME/.autoswe`.
-- **A local Redis holds 6379**, so `.env` uses `REDIS_PORT=6380`.
