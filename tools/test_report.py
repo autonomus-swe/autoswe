@@ -26,7 +26,10 @@ MESSAGE_CHARS = 300
 # before assertions because a collection failure often mentions both.
 _KINDS: list[tuple[re.Pattern[str], FailureKind]] = [
     (re.compile(r"ModuleNotFoundError|ImportError|No module named|cannot import name"), "import"),
-    (re.compile(r"\bTimeout\b|timed out|Failed: Timeout", re.I), "timeout"),
+    # Not a bare `\bTimeout\b`: source code says `timeout=5` all the time, and a
+    # traceback quotes source. `urlopen(url, timeout=5)` made a DNS failure read as a
+    # timeout — the line that *caused* the failure taken as if it described it.
+    (re.compile(r"TimeoutError|TimeoutExpired|Failed: Timeout|\btimed out\b", re.I), "timeout"),
     (
         re.compile(
             r"ConnectionError|ConnectionRefusedError|PermissionError|FileNotFoundError"
@@ -54,7 +57,21 @@ def guess_kind(message: str) -> FailureKind:
     return "exception"
 
 
-def collection_kind(message: str) -> FailureKind:
+def classify(message: str, longrepr: str = "") -> FailureKind:
+    """Classify on the message first, and only then on the printed traceback.
+
+    The two are not equally trustworthy. A message describes the failure; a longrepr
+    *quotes source code*, and source code contains words that look like classifications.
+    Reading both at once let `with urlopen(url, timeout=5)` outvote
+    `socket.gaierror: Temporary failure in name resolution`, so a run with no network was
+    told it had a timeout — and the Debugger's prompt excuses `environment` failures but
+    not `timeout` ones, which is exactly the wrong way round to get it.
+    """
+    kind = guess_kind(message)
+    return kind if kind != "exception" else guess_kind(longrepr)
+
+
+def collection_kind(message: str, longrepr: str = "") -> FailureKind:
     """The class for a failure that happened while *collecting* a module.
 
     ``exception`` is the honest fallback for a test that ran and raised, but it says
@@ -67,7 +84,7 @@ def collection_kind(message: str) -> FailureKind:
     A more specific match still wins. A module-level ``ConnectionError`` is an
     environment failure whether it happened during collection or during a test.
     """
-    kind = guess_kind(message)
+    kind = classify(message, longrepr)
     return "import" if kind == "exception" else kind
 
 
@@ -209,7 +226,7 @@ def failure(
     frames: list[Frame] | None = None,
     longrepr: str = "",
 ) -> TestFailure:
-    k = kind or guess_kind(f"{message}\n{longrepr}")
+    k = kind or classify(message, longrepr)
     exc = exc_type_of(message, longrepr)
     fr = frames or []
     return TestFailure(
@@ -250,7 +267,7 @@ def parse_json_report(
                 failure(
                     collector.get("nodeid") or "<collection>",
                     message,
-                    kind=collection_kind(f"{message}\n{longrepr}"),
+                    kind=collection_kind(message, longrepr),
                     frames=frames_from(collector, worktree),
                     longrepr=longrepr,
                 )

@@ -180,3 +180,63 @@ def test_a_collection_failure_with_a_specific_cause_keeps_it() -> None:
         ],
     }
     assert parse_json_report(data, "pytest -q").failures[0].kind == "environment"
+
+
+# ---- source code is not a classification ---------------------------------------------
+
+# Exactly what `d-network` produced inside a real sandbox: a DNS failure, with the word
+# "timeout" appearing only in the *code* that caused it.
+NO_NETWORK = {
+    "duration": 0.18,
+    "summary": {"total": 4, "passed": 3, "failed": 1},
+    "tests": [
+        {
+            "nodeid": "tests/test_fetch.py::test_example_com_is_reachable",
+            "outcome": "failed",
+            "call": {
+                "longrepr": (
+                    "    def test_example_com_is_reachable():\n"
+                    '>       assert title_length("https://example.com") > 100\n'
+                    "tests/test_fetch.py:5: in test_example_com_is_reachable\n"
+                    '    assert title_length("https://example.com") > 100\n'
+                    "chaos/fetch.py:10: in title_length\n"
+                    "    with urlopen(url, timeout=5) as response:\n"
+                    "E   socket.gaierror: [Errno -3] Temporary failure in name resolution"
+                )
+            },
+        }
+    ],
+    "collectors": [],
+}
+
+
+def test_a_dns_failure_is_environment_even_when_the_code_says_timeout() -> None:
+    """Found in a sandbox, not at a desk. `urlopen(url, timeout=5)` is the line that
+    *caused* the failure, not a description of it — and reading both at once let it
+    outvote `socket.gaierror`.
+
+    It matters which way round this goes: the Debugger's prompt tells it that
+    `environment` failures are not its to fix, and says nothing of the sort about
+    `timeout`. Misclassified, the one scenario built to stop it mocking the network was
+    the one that invited it.
+    """
+    report = parse_json_report(NO_NETWORK, "pytest -q")
+    (failure,) = report.failures
+    assert failure.kind == "environment"
+    assert "name resolution" in failure.message
+
+
+def test_a_real_timeout_is_still_a_timeout() -> None:
+    """The fix must not cost the classification it was protecting."""
+    assert guess_kind("Failed: Timeout >5.0s") == "timeout"
+    assert guess_kind("E   TimeoutError: the read timed out") == "timeout"
+    assert guess_kind("subprocess.TimeoutExpired: command timed out") == "timeout"
+
+
+def test_the_message_outranks_the_traceback() -> None:
+    from tools.test_report import classify
+
+    assert classify("ValueError: bad width", "with urlopen(url, timeout=5):") == "exception"
+    assert classify("", "E   ModuleNotFoundError: No module named 'x'") == "import", (
+        "the traceback is still read when the message says nothing"
+    )

@@ -17,6 +17,7 @@ anyone's estimate.
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -61,8 +62,25 @@ async def drive(
         unattended=unattended,
     )
 
-    final = await run(state, deps)
+    # A run that raises is the outcome most worth having in the record, and the first
+    # version of this recorded only the ones that returned — so an eval file could look
+    # thin and clean while every hard scenario was crashing. Whatever happens, a row.
+    crash: str | None = None
+    try:
+        final = await run(state, deps)
+    except Exception as e:
+        crash = f"{type(e).__name__}: {e}"[:600]
+        final = state  # `run` mutates the state it was given, so this is how far it got
+        raise
+    finally:
+        await _record(deps, run_id, scenario, final, crash)
 
+    return final
+
+
+async def _record(
+    deps: Deps, run_id: UUID, scenario: Scenario, final: RunState, crash: str | None
+) -> None:
     async with session(deps.engine) as s:
         cost = await db.run_cost(s, run_id)
         steps = await db.list_steps(s, run_id)
@@ -87,13 +105,13 @@ async def drive(
             "pre_existing": sorted(final.preexisting_failures),
             "escalation_reason": final.escalation_reason,
             "error": final.error,
+            "crashed": crash,
         },
     )
     print(
         f"\n{scenario.branch}: {final.phase.value} · "
         f"{sum(final.attempts.values())} debug attempts · ${cost.cost_usd:.4f} → {path}"
     )
-    return final
 
 
 async def diff_under_tests(repo: Path, branch: str, work_branch: str) -> str:
