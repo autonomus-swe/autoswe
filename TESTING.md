@@ -68,6 +68,17 @@ cp .env.example .env         # then fill in the three required values, see below
 ./scripts/bringup.sh
 ```
 
+Every command in this document runs **from the repository root** — the directory holding
+`pyproject.toml`. One directory up there is no project for `uv` to find, so `uv run pytest`
+picks up a bare interpreter and dies on `ModuleNotFoundError: No module named 'structlog'`,
+which looks like a missing dependency and is really a missing `cd`.
+
+**Keep the checkout under `$HOME` if your Docker came from snap.** A snap-packaged Docker
+client is confined and cannot read paths outside your home directory, so the compose file
+is invisible to it and `docker compose` reports `no configuration file provided` about a
+file you can see with `ls`. The bring-up script detects this and says so. It is the same
+confinement that makes `WORKTREES_DIR` have to live under `$HOME`.
+
 The script is idempotent, reads its ports from `.env` rather than assuming, and prints the
 evidence for each step rather than only its own opinion. Re-run it any time.
 
