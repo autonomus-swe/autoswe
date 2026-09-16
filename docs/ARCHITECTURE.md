@@ -427,6 +427,16 @@ def transition(s: RunState) -> Phase:
 
 **Tester details.** `run_tests` first runs only the task's selector (fast signal), then the full suite (regression guard). Output is parsed from JUnit XML / `pytest --json-report` into `TestReport`; stack traces are parsed into frames (`file`, `line`, `function`, `code`) so the Debugger receives structured data plus the 20 lines of source around each in-repo frame — not 400 lines of raw stdout.
 
+**Which failures are the agent's.** A real repository has failing tests before an agent arrives, and a run blamed for inheriting them never finishes. So the full suite is run once at the end of `ANALYZE` — after the test command stops being a guess, and after the network is disconnected, so the baseline is taken under the conditions the agent will face — and every signature it produces is excused later. Three rules decide the rest:
+
+- **The selector is never excused.** It names the tests the task was written against, so a failure there is the job, not an inheritance. The targeted run also short-circuits: the suite is not informative while the task's own tests fail.
+- **Without a selector, nothing is excused.** There is no line between "already broken" and "what I was asked to fix", and the tests a goal names are failing before it starts — that is what makes it a goal. Applying a baseline here is how a run reports success having done nothing.
+- **A test that fails in the suite and passes alone is recorded, not forgotten.** It is either flaky or order-dependent and one re-run cannot say which, so the run continues and the pull request lists it. Same for the pre-existing failures: `RunState.flaky_tests` and `preexisting_failures` exist so a reviewer told "all tests pass" can see which ones were not made to pass here.
+
+The unfiltered report is kept as a `test_report_raw` artifact whenever filtering changed the verdict, because "why did this pass" is a question a reviewer is entitled to answer. The baseline is cached in Redis by `repo:base_sha` — a property of the commit, not of the run that discovered it — so repeated runs on the same commit skip a full suite. A cache miss costs time and is never wrong.
+
+One model call happens in this phase, and only when the parser produced a failure it could not describe at all: the Tester (Haiku 4.5) puts a class to it. The answer is rendered as a note in the Debugger's context and **never written back onto `TestFailure.kind`**, because `kind` feeds the signature that no-progress detection compares. A label that can come back differently on an identical report would make three identical attempts look like three different ones.
+
 **Debugger details.** Its prompt forces a `DebugHypothesis` (failure class: assertion / exception / import / environment / flaky; root cause; plan) *before* it is allowed to edit. The hypothesis is stored on the step, so when a run escalates a human can read three hypotheses and see where it went wrong.
 
 ---

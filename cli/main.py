@@ -124,7 +124,15 @@ def _describe(type_: str, p: dict[str, Any]) -> str:
         case "tool_call":
             return f"{p.get('name', '')}{' — failed' if p.get('is_error') else ''}"
         case "test_report":
-            return f"{'passed' if p.get('passed') else 'failed'} — {p.get('total')} tests, {p.get('failed')} failing"  # noqa: E501
+            verdict = (
+                "baseline" if p.get("baseline") else ("passed" if p.get("passed") else "failed")
+            )
+            excused = "".join(
+                f" · {len(p[key])} {label}"
+                for key, label in (("flaky", "flaky"), ("pre_existing", "pre-existing"))
+                if p.get(key)
+            )
+            return f"{verdict} — {p.get('total')} tests, {p.get('failed')} failing{excused}"
         case "awaiting_input":
             return " · ".join(p.get("questions") or [])
         case "run_finished":
