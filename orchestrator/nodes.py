@@ -28,10 +28,11 @@ from contracts import (
     TaskSpec,
     TestReport,
 )
-from core.errors import AgentError, SandboxError
+from core.errors import AgentError, BudgetExhausted, SandboxError
 from gateway.routing import route_for
 from observability.logging import bind_run, get_logger
 from orchestrator.approvals import ApprovalGate
+from orchestrator.budgets import BudgetGate
 from orchestrator.deps import Deps
 from orchestrator.events import emit
 from orchestrator.hooks import OrchestratorHooks
@@ -438,8 +439,45 @@ async def _begin(
         submitted=ctx.submitted,
         approvals=_approval_gate(state, deps, res),
         answers=ctx.answers,
+        budget=_budget_gate(state, deps),
     )
     return step_id, hooks, ctx
+
+
+def _tester_hooks(state: RunState, deps: Deps, step_id: UUID) -> OrchestratorHooks:
+    """Hooks for the TEST phase, which is deterministic apart from one triage call."""
+    return OrchestratorHooks(
+        run_id=state.run_id,
+        step_id=step_id,
+        engine=deps.engine,
+        bus=deps.bus,
+        provider_name=deps.provider.provider_name,
+        model=deps.provider.model,
+        effort=route_for("tester").effort,
+        role="tester",
+        budget=_budget_gate(state, deps),
+    )
+
+
+def _budget_gate(state: RunState, deps: Deps) -> BudgetGate:
+    """The step's view of spending. Holds the run's ``warned`` set by reference, so a
+    warning is emitted once per run rather than once per phase."""
+
+    async def warn(kind: str, fraction: float) -> None:
+        await _emit(
+            deps, state.run_id, "budget_warning", {"kind": kind, "fraction": round(fraction, 3)}
+        )
+
+    return BudgetGate(
+        run_id=state.run_id,
+        engine=deps.engine,
+        budget=state.budget,
+        elapsed=state.elapsed_s,
+        warned=state.warned,
+        cost_measurable=state.cost_measurable,
+        on_warning=warn,
+        usage=state.usage,
+    )
 
 
 async def _end(
@@ -451,10 +489,13 @@ async def _end(
     error: str | None,
     extra_input: dict[str, Any] | None = None,
 ) -> None:
-    state.usage = state.usage.add(hooks.usage)
     payload = output.model_dump(mode="json") if hasattr(output, "model_dump") else None
     async with session(deps.engine) as s:
         await db.finish_step(s, step_id, output=payload, error=error, usage=hooks.usage)
+        # Reconciled from llm_calls rather than accumulated in memory. The in-memory sum
+        # drifts: a step that crashed after its rows were written still spent the money,
+        # and a resumed run starts from a checkpoint that never saw it.
+        state.usage = await db.run_cost(s, state.run_id)
         await db.set_run_cost(s, state.run_id, state.usage.cost_usd)
     if extra_input:
         async with session(deps.engine) as s:
@@ -508,6 +549,7 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
         submitted=ctx.submitted,
         approvals=_approval_gate(state, deps, res),
         answers=ctx.answers,
+        budget=_budget_gate(state, deps),
     )
     error: str | None = None
     result = None
@@ -528,7 +570,6 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
         error = f"{type(e).__name__}: {e}"
         raise
     finally:
-        state.usage = state.usage.add(hooks.usage)
         async with session(deps.engine) as s:
             await db.finish_step(
                 s,
@@ -537,6 +578,7 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
                 error=error,
                 usage=hooks.usage,
             )
+            state.usage = await db.run_cost(s, state.run_id)
             await db.set_run_cost(s, state.run_id, state.usage.cost_usd)
     log.info(
         "coder_done",
@@ -615,6 +657,7 @@ async def debug_node(state: RunState, deps: Deps, res: RunResources) -> RunState
         submitted=ctx.submitted,
         approvals=_approval_gate(state, deps, res),
         answers=ctx.answers,
+        budget=_budget_gate(state, deps),
     )
     error: str | None = None
     hypothesis = None
@@ -634,11 +677,15 @@ async def debug_node(state: RunState, deps: Deps, res: RunResources) -> RunState
         )
         if result is not None:
             state.task_results[task.id] = result
+    except BudgetExhausted as e:
+        # Out of budget mid-attempt. Not a crash: the attempt is over, the hypothesis is
+        # still worth storing, and `transition` reads the budget itself and escalates.
+        error = f"budget exhausted: {e}"
+        log.info("debug_attempt_out_of_budget", task_id=task.id, reason=str(e))
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
         raise
     finally:
-        state.usage = state.usage.add(hooks.usage)
         async with session(deps.engine) as s:
             # The hypothesis is the record of this attempt, so it is stored whether or
             # not the fix worked; the next TEST decides that.
@@ -649,6 +696,7 @@ async def debug_node(state: RunState, deps: Deps, res: RunResources) -> RunState
                 error=error,
                 usage=hooks.usage,
             )
+            state.usage = await db.run_cost(s, state.run_id)
             await db.set_run_cost(s, state.run_id, state.usage.cost_usd)
     if hypothesis is not None:
         await _emit(
@@ -783,7 +831,7 @@ async def _replan_task(state: RunState, deps: Deps, res: RunResources, task_obj:
     graph = None
     try:
         graph = await DecomposerAgent().replan(
-            deps.provider, state.goal, task_obj.spec, state.last_test_report, hypotheses
+            deps.provider, state.goal, task_obj.spec, state.last_test_report, hypotheses, hooks
         )
     except Exception as e:  # a failed replan is not a crash: the human path is still open
         error = f"{type(e).__name__}: {e}"
@@ -876,10 +924,16 @@ async def test_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     context = tester.source_context(report, ctx.worktree)
     unknown = tester.needs_triage(report.failures)
     if unknown:
-        kinds, usage = await tester.TesterAgent().classify_unknown(deps.provider, unknown)
-        state.usage = state.usage.add(usage)
+        # Hooks even for one call: it is how the triage reaches llm_calls, which is what
+        # budgets are enforced from. A model call the run cannot see is worse than one it
+        # cannot afford.
+        kinds = await tester.TesterAgent().classify_unknown(
+            deps.provider, unknown, _tester_hooks(state, deps, step_id)
+        )
         for test_id, note in tester.render_triage(kinds).items():
             context[test_id] = f"{note}\n\n{context.get(test_id, '')}".strip()
+        async with session(deps.engine) as s:
+            state.usage = await db.run_cost(s, state.run_id)
 
     state.last_test_report = report
     state.test_context = context

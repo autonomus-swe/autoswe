@@ -27,8 +27,8 @@ from pathlib import Path
 from typing import ClassVar
 
 from agents.base import Agent
-from contracts import FailureKind, TestFailure, TestReport, Triage, Usage
-from gateway.provider import LLMProvider, Request
+from contracts import FailureKind, TestFailure, TestReport, Triage
+from gateway.provider import Hooks, LLMProvider
 from observability.logging import get_logger
 from repo import source_context as src
 from tools.test_report import report_signature
@@ -41,6 +41,7 @@ MAX_CONTEXT_FRAMES = 3
 CONTEXT_RADIUS = 10
 # One broken commit can fail hundreds of tests. Triage is a courtesy, not a duty.
 MAX_TRIAGE = 10
+TRIAGE_MAX_TOKENS = 2000
 SHORT_MESSAGE_CHARS = 12
 
 
@@ -225,8 +226,8 @@ class TesterAgent(Agent):
     prompt_file: ClassVar[str] = "tester"
 
     async def classify_unknown(
-        self, provider: LLMProvider, failures: list[TestFailure]
-    ) -> tuple[dict[str, FailureKind], Usage]:
+        self, provider: LLMProvider, failures: list[TestFailure], hooks: Hooks | None = None
+    ) -> dict[str, FailureKind]:
         """Put a name to failures the parser could not classify.
 
         The result is *advice*, delivered to the Debugger as a note. It deliberately does
@@ -238,20 +239,20 @@ class TesterAgent(Agent):
         Never raises. A run must not fail because an optional courtesy did.
         """
         if not failures:
-            return {}, Usage()
-        req = Request(
-            role=self.role,
-            system=self.system_prompt(),
-            messages=[{"role": "user", "content": render_for_triage(failures)}],
-            max_tokens=2000,
-        )
+            return {}
         try:
-            triage, usage = await provider.parse(req, Triage)
+            triage = await self.run_structured(
+                provider,
+                render_for_triage(failures),
+                Triage,
+                hooks=hooks,
+                max_tokens=TRIAGE_MAX_TOKENS,
+            )
         except Exception as e:  # advice is not worth a failed run
             log.warning("triage_failed", error=f"{type(e).__name__}: {e}")
-            return {}, Usage()
+            return {}
         wanted = {f.test_id for f in failures}
-        return {c.test_id: c.kind for c in triage.classifications if c.test_id in wanted}, usage
+        return {c.test_id: c.kind for c in triage.classifications if c.test_id in wanted}
 
 
 def render_triage(kinds: dict[str, FailureKind]) -> dict[str, str]:

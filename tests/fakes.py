@@ -27,6 +27,7 @@ class FakeSandbox:
         self.networked = True
         self.started = False
         self.stopped = False
+        self.killed = False
 
     async def start(self) -> None:
         self.started = True
@@ -42,6 +43,9 @@ class FakeSandbox:
     ) -> ExecResult:
         self.commands.append(cmd)
         return self.handler(cmd)
+
+    async def kill_exec(self) -> None:
+        self.killed = True
 
     async def connect_install_network(self) -> None:
         self.networked = True

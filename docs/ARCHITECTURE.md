@@ -359,6 +359,12 @@ For URL-reachable servers, the Claude API's native MCP connector (`mcp_servers` 
 - **Tracing**: one OpenTelemetry trace per run; spans per phase, per agent step, per LLM call, per tool call, per sandbox exec. Exported to Langfuse (LLM-aware UI: prompts, completions, tokens, cost) and/or any OTLP backend.
 - **Structured logs** (`structlog`, JSON) with `run_id`, `task_id`, `step_id` on every line. Repository content and diffs are logged as artifacts, not as log lines.
 - **Cost**: `llm_calls` is aggregated into `runs.cost_usd` live; the UI shows spend vs. budget; `ESCALATE` fires at 90 % of the budget so the run can finish cleanly.
+
+**Where the number comes from.** `RunState.usage` is re-read from `llm_calls` at every step boundary and every tenth model turn, and the in-memory counter is only a cache. It has to be: a step that crashed after its rows were written still spent the money, a resumed run starts from a checkpoint that never saw it, and *any model call that skips the hooks is spend the run cannot see*. That last one is why `Agent.run_structured` takes hooks — the Tester's triage and the Decomposer's re-plan are single `parse` calls with no tool loop, and once the table is authoritative, invisible spend is worse than unenforced spend.
+
+**Enforced in two places, for two different reasons.** `transition` refuses to start a phase that cannot be afforded, so no node can spend past a limit by forgetting to look. But one Coder loop can run for dozens of turns, and a run that only checks at phase boundaries can spend twice a limit inside one step — so the tool loop is told too (`orchestrator/budgets.py`). Once a budget is gone, `before_tool` refuses anything that would start new work and says what to do instead: commit what is consistent, then submit. `git_commit`, `git_status`, `submit_result` and `submit_hypothesis` stay allowed, because they are how the work lands, and reads stay allowed because deciding what to commit may need a look. Every refusal costs a model turn, so after three the step is stopped outright with `BudgetExhausted` — an `AgentError`, so the node handles it the way it already handles an agent that produced nothing, and the phase machine escalates with the real reason.
+
+**Wall clock is always checked, and never counts waiting.** `elapsed_s()` subtracts `waiting_s`, so a run parked overnight on an approval does not wake up over its limit. It is the one dimension that always applies: a free or unpriced model spends no measurable dollars, and without the clock such a run would have no bound at all. Warnings fire once per run rather than once per phase (`RunState.warned`), and a budget already past 100 % is not warned about — it is stopped.
 - **Metrics** (Prometheus): runs by outcome, attempts per task, test pass rate after first coder pass, debug success rate, tokens per solved task, cache hit rate, sandbox exec time.
 
 ---
@@ -657,6 +663,10 @@ GET    /healthz  /metrics
 ```
 
 Event types on the stream: `phase_changed`, `agent_started`, `agent_text` (streamed), `tool_call`, `tool_result`, `test_report`, `debug_hypothesis`, `review_report`, `security_report`, `awaiting_input`, `pr_opened`, `budget_warning`, `run_finished`.
+
+**What a cancel actually stops.** Three places notice it, because a run can be in three kinds of place. Between nodes, the runner checks the flag. Between tool calls, `before_tool` raises. During a single long command — an install, a test suite, which is where a phase spends most of its wall clock — a watcher task polls every two seconds and calls `sandbox.kill_exec()`. Docker reports the killed exec's own status, so the waiting command returns 137 within about a second instead of running out its own ten-minute timeout.
+
+`kill_exec` kills the container rather than one command, because `docker exec` offers no handle to signal. That is acceptable only because a cancel is its sole caller: the run is over and the sandbox is about to be torn down anyway. The watcher never ends the run itself — it sets the flag and stops the sandbox, and the runner decides, so there is still exactly one place a run ends.
 
 ---
 

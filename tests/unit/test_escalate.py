@@ -114,7 +114,9 @@ def _stub_io(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(nodes, "_end", end)
 
     class FakeDecomposer:
-        async def replan(self, provider: Any, goal: str, task: Any, rep: Any, hyps: Any) -> Any:
+        async def replan(
+            self, provider: Any, goal: str, task: Any, rep: Any, hyps: Any, hooks: Any = None
+        ) -> Any:
             return getattr(provider, "_replan_result", None)
 
     monkeypatch.setattr(nodes, "DecomposerAgent", FakeDecomposer)

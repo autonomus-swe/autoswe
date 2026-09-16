@@ -15,7 +15,7 @@ from contracts import (
     TestReport,
 )
 from core.errors import AgentError
-from gateway.provider import LLMProvider
+from gateway.provider import Hooks, LLMProvider
 from observability.logging import get_logger
 
 log = get_logger(__name__)
@@ -127,6 +127,7 @@ class DecomposerAgent(Agent):
         task: TaskSpec,
         report: TestReport | None,
         hypotheses: list[DebugHypothesis],
+        hooks: Hooks | None = None,
     ) -> TaskGraphSpec | None:
         """Re-cut one exhausted task. Returns None rather than raising.
 
@@ -136,7 +137,7 @@ class DecomposerAgent(Agent):
         """
         message = replan_message(goal, task, report, hypotheses)
         try:
-            spec = await self.run_structured(provider, message, TaskGraphSpec)
+            spec = await self.run_structured(provider, message, TaskGraphSpec, hooks=hooks)
         except Exception as e:
             log.warning("replan_unusable", task_id=task.id, error=f"{type(e).__name__}: {e}")
             return None
