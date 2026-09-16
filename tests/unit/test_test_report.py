@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -120,3 +121,62 @@ async def test_run_tests_tool_reads_report_and_handles_missing(tmp_path: Path) -
         and missing.artifact
         and missing.artifact["failures"][0]["kind"] == "environment"
     )
+
+
+# ---- a collection failure: measured against what pytest actually emits --------------
+
+COLLECTION_SAMPLE = Path(__file__).resolve().parents[1] / "fixtures" / "reports"
+
+
+def test_a_module_that_will_not_import_is_classified_as_import() -> None:
+    """The real report from `b-missing-import`, not a hand-written approximation.
+
+    A forgotten `from datetime import datetime` arrives as a bare NameError: the json
+    report carries the crash message, not pytest's "ImportError while importing test
+    module" header. Classifying that as `exception` tells the Debugger nothing, so a
+    collection failure with no more specific class is an `import` failure — the one thing
+    we do know is that the module would not load.
+    """
+    data = json.loads((COLLECTION_SAMPLE / "collection_nameerror.json").read_text())
+    report = parse_json_report(data, "pytest -q")
+
+    assert not report.passed and report.errors == 1
+    (failure,) = report.failures
+    assert failure.kind == "import"
+    assert failure.test_id == "tests/test_stamp.py"
+    assert "datetime" in failure.message
+
+
+def test_a_collection_failure_still_carries_its_frames(tmp_path: Path) -> None:
+    """A collector has no `traceback` in the json report, only a printed longrepr — and a
+    Debugger handed a message with no frames has nothing to read."""
+    (tmp_path / "chaos").mkdir()
+    (tmp_path / "chaos" / "stamp.py").write_text("\n".join(f"line {i}" for i in range(1, 9)))
+    data = json.loads((COLLECTION_SAMPLE / "collection_nameerror.json").read_text())
+    report = parse_json_report(data, "pytest -q", worktree=tmp_path)
+
+    frames = report.failures[0].frames
+    assert [f.file for f in frames] == ["tests/test_stamp.py", "chaos/stamp.py"]
+    assert frames[1].line == 5 and frames[1].function == "<module>"
+    assert frames[1].code == "line 5", "the source is read from disk, never from the report"
+
+
+def test_a_collection_failure_with_a_specific_cause_keeps_it() -> None:
+    """`import` is the fallback, not an override: a module-level ConnectionError is an
+    environment failure whether it happened during collection or during a test."""
+    data = {
+        "duration": 0.1,
+        "summary": {"total": 0, "error": 1},
+        "tests": [],
+        "collectors": [
+            {
+                "nodeid": "tests/test_net.py",
+                "outcome": "failed",
+                "longrepr": (
+                    "tests/test_net.py:2: in <module>\n    probe()\n"
+                    "E   ConnectionRefusedError: [Errno 111] Connection refused"
+                ),
+            }
+        ],
+    }
+    assert parse_json_report(data, "pytest -q").failures[0].kind == "environment"

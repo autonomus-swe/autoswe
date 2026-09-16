@@ -31,6 +31,7 @@ from contracts import FailureKind, TestFailure, TestReport, Triage
 from gateway.provider import Hooks, LLMProvider
 from observability.logging import get_logger
 from repo import source_context as src
+from tools import test_report as tr
 from tools.test_report import report_signature
 
 log = get_logger(__name__)
@@ -186,7 +187,7 @@ def source_context(
         for frame in [fr for fr in f.frames if fr.in_repo][::-1][:MAX_CONTEXT_FRAMES]:
             body = src.around(frame.file, frame.line, worktree, radius)
             if body:
-                blocks.append(f"{frame.file}:{frame.line} in {frame.function}\n{body}")
+                blocks.append(f"{tr.where(frame)}\n{body}")
         if blocks:
             out[f.test_id] = "\n\n".join(blocks)
     return out

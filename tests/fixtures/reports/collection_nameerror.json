@@ -1,0 +1,16 @@
+{
+  "duration": 0.052,
+  "summary": {
+    "total": 0,
+    "collected": 3
+  },
+  "tests": [],
+  "collectors": [
+    {
+      "nodeid": "tests/test_stamp.py",
+      "outcome": "failed",
+      "result": [],
+      "longrepr": "tests/test_stamp.py:3: in <module>\n    from chaos.stamp import EPOCH, seconds_since_epoch\nchaos/stamp.py:5: in <module>\n    EPOCH = datetime(1970, 1, 1, tzinfo=UTC)\n            ^^^^^^^^\nE   NameError: name 'datetime' is not defined. Did you forget to import 'datetime'"
+    }
+  ]
+}
