@@ -1,0 +1,121 @@
+{
+ "errors": [],
+ "generated_at": "2026-09-16T17:28:24Z",
+ "results": [
+  {
+   "col_offset": 0,
+   "end_col_offset": 17,
+   "filename": "src/app.py",
+   "issue_confidence": "HIGH",
+   "issue_cwe": {
+    "id": 78,
+    "link": "https://cwe.mitre.org/data/definitions/78.html"
+   },
+   "issue_severity": "LOW",
+   "issue_text": "Consider possible security implications associated with the subprocess module.",
+   "line_number": 2,
+   "line_range": [
+    2
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess",
+   "test_id": "B404",
+   "test_name": "blacklist"
+  },
+  {
+   "col_offset": 11,
+   "end_col_offset": 41,
+   "filename": "src/app.py",
+   "issue_confidence": "HIGH",
+   "issue_cwe": {
+    "id": 327,
+    "link": "https://cwe.mitre.org/data/definitions/327.html"
+   },
+   "issue_severity": "HIGH",
+   "issue_text": "Use of weak MD5 hash for security. Consider usedforsecurity=False",
+   "line_number": 6,
+   "line_range": [
+    6
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b324_hashlib.html",
+   "test_id": "B324",
+   "test_name": "hashlib"
+  },
+  {
+   "col_offset": 11,
+   "end_col_offset": 58,
+   "filename": "src/app.py",
+   "issue_confidence": "HIGH",
+   "issue_cwe": {
+    "id": 78,
+    "link": "https://cwe.mitre.org/data/definitions/78.html"
+   },
+   "issue_severity": "HIGH",
+   "issue_text": "subprocess call with shell=True identified, security issue.",
+   "line_number": 10,
+   "line_range": [
+    10
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b602_subprocess_popen_with_shell_equals_true.html",
+   "test_id": "B602",
+   "test_name": "subprocess_popen_with_shell_equals_true"
+  },
+  {
+   "col_offset": 24,
+   "end_col_offset": 60,
+   "filename": "src/app.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 14,
+   "line_range": [
+    14
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "col_offset": 12,
+   "end_col_offset": 41,
+   "filename": "src/app.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 259,
+    "link": "https://cwe.mitre.org/data/definitions/259.html"
+   },
+   "issue_severity": "LOW",
+   "issue_text": "Possible hardcoded password: 'hardcoded-not-a-real-secret'",
+   "line_number": 17,
+   "line_range": [
+    17
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b105_hardcoded_password_string.html",
+   "test_id": "B105",
+   "test_name": "hardcoded_password_string"
+  },
+  {
+   "col_offset": 4,
+   "end_col_offset": 12,
+   "filename": "src/app.py",
+   "issue_confidence": "HIGH",
+   "issue_cwe": {
+    "id": 703,
+    "link": "https://cwe.mitre.org/data/definitions/703.html"
+   },
+   "issue_severity": "LOW",
+   "issue_text": "Try, Except, Pass detected.",
+   "line_number": 23,
+   "line_range": [
+    23,
+    24
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
+   "test_id": "B110",
+   "test_name": "try_except_pass"
+  }
+ ]
+}

@@ -19,6 +19,12 @@ class SecurityFinding(LLMModel):
     verified_by_llm: bool
     false_positive: bool
     rationale: str
+    # Whether this finding is inside a line the run added, decided host-side from the diff.
+    # The model is shown it — "is this yours" changes how a finding should be treated — but
+    # the gate recomputes it rather than reading this field back, for the same reason
+    # `ReviewReport.blocking` is recomputed: a finding's own report must not decide whether
+    # it counts.
+    in_diff: bool = False
 
 
 class SecurityChecklist(LLMModel):

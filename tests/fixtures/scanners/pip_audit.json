@@ -1,0 +1,125 @@
+{
+ "dependencies": [
+  {
+   "name": "requests",
+   "version": "2.19.0",
+   "vulns": [
+    {
+     "id": "PYSEC-2018-28",
+     "fix_versions": [
+      "2.20.0"
+     ],
+     "aliases": [
+      "CVE-2018-18074",
+      "GHSA-x84v-xcm2-53pg"
+     ],
+     "description": "The Requests package before 2.20.0 for Python sends an HTTP Authorization header to an http URI upon receiving a same-ho"
+    },
+    {
+     "id": "PYSEC-2018-28",
+     "fix_versions": [
+      "2.20.0"
+     ],
+     "aliases": [
+      "CVE-2018-18074",
+      "GHSA-x84v-xcm2-53pg"
+     ],
+     "description": "The Requests package through 2.19.1 before 2018-09-14 for Python sends an HTTP Authorization header to an http URI upon "
+    },
+    {
+     "id": "PYSEC-2023-74",
+     "fix_versions": [
+      "2.31.0"
+     ],
+     "aliases": [
+      "CVE-2023-32681",
+      "GHSA-j8r2-6x86-q33q"
+     ],
+     "description": "### Impact  Since Requests v2.3.0, Requests has been vulnerable to potentially leaking `Proxy-Authorization` headers to "
+    },
+    {
+     "id": "PYSEC-2023-74",
+     "fix_versions": [
+      "2.31.0"
+     ],
+     "aliases": [
+      "CVE-2023-32681",
+      "GHSA-j8r2-6x86-q33q"
+     ],
+     "description": "Requests is a HTTP library. Since Requests 2.3.0, Requests has been leaking Proxy-Authorization headers to destination s"
+    },
+    {
+     "id": "PYSEC-2026-1873",
+     "fix_versions": [
+      "2.32.0"
+     ],
+     "aliases": [
+      "GHSA-9wx4-h78v-vm56",
+      "CVE-2024-35195"
+     ],
+     "description": "When using a `requests.Session`, if the first request to a given origin is made with `verify=False`, TLS certificate ver"
+    },
+    {
+     "id": "PYSEC-2026-1872",
+     "fix_versions": [
+      "2.32.4"
+     ],
+     "aliases": [
+      "CVE-2024-47081",
+      "GHSA-9hjg-9r4m-mvj7"
+     ],
+     "description": "### Impact  Due to a URL parsing issue, Requests releases prior to 2.32.4 may leak .netrc credentials to third parties f"
+    },
+    {
+     "id": "PYSEC-2026-2275",
+     "fix_versions": [
+      "2.33.0"
+     ],
+     "aliases": [
+      "CVE-2026-25645",
+      "GHSA-gc5v-m9x4-r6x2"
+     ],
+     "description": "### Impact The `requests.utils.extract_zipped_paths()` utility function uses a predictable filename when extracting file"
+    },
+    {
+     "id": "PYSEC-2026-1873",
+     "fix_versions": [
+      "2.32.0"
+     ],
+     "aliases": [
+      "GHSA-9wx4-h78v-vm56",
+      "CVE-2024-35195"
+     ],
+     "description": "When using a `requests.Session`, if the first request to a given origin is made with `verify=False`, TLS certificate ver"
+    },
+    {
+     "id": "PYSEC-2026-1872",
+     "fix_versions": [
+      "2.32.4"
+     ],
+     "aliases": [
+      "CVE-2024-47081",
+      "GHSA-9hjg-9r4m-mvj7"
+     ],
+     "description": "### Impact  Due to a URL parsing issue, Requests releases prior to 2.32.4 may leak .netrc credentials to third parties f"
+    },
+    {
+     "id": "PYSEC-2026-2275",
+     "fix_versions": [
+      "2.33.0"
+     ],
+     "aliases": [
+      "CVE-2026-25645",
+      "GHSA-gc5v-m9x4-r6x2"
+     ],
+     "description": "Requests is a HTTP library. Prior to version 2.33.0, the `requests.utils.extract_zipped_paths()` utility function uses a"
+    }
+   ]
+  },
+  {
+   "name": "chardet",
+   "version": "3.0.4",
+   "vulns": []
+  }
+ ]
+}
