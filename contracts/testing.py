@@ -38,3 +38,19 @@ class TestReport(LLMModel):
     # one signature for the whole report, so "same failure as last time" is a
     # single comparison in the transition table
     signature: str = ""
+
+
+class FailureClassification(LLMModel):
+    test_id: str
+    kind: FailureKind
+
+
+class Triage(LLMModel):
+    """The Tester's answer for failures the parser could not classify.
+
+    Advice only: it is rendered into the Debugger's context and never written back onto
+    ``TestFailure.kind``, because ``kind`` feeds the signature the transition table
+    compares. See ``agents.tester.classify_unknown``.
+    """
+
+    classifications: list[FailureClassification]

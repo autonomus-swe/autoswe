@@ -249,7 +249,13 @@ function describe(type, p) {
     case "agent_started": return p.task_id ? `${p.agent} on ${p.task_id}` : p.agent ?? "";
     case "agent_finished": return p.error ? `error: ${p.error}` : "finished";
     case "tool_call": return `${p.name}${p.is_error ? " — failed" : ""} (${p.duration_ms}ms)`;
-    case "test_report": return `${p.passed ? "passed" : "failed"} — ${p.total} tests, ${p.failed} failing`;
+    case "test_report": {
+      // a baseline is not a verdict on the agent's work: it is what it inherited
+      const verdict = p.baseline ? "baseline" : p.passed ? "passed" : "failed";
+      const excused = [[p.flaky, "flaky"], [p.pre_existing, "pre-existing"]]
+        .filter(([ids]) => ids?.length).map(([ids, label]) => ` · ${ids.length} ${label}`).join("");
+      return `${verdict} — ${p.total} tests, ${p.failed} failing${excused}`;
+    }
     case "pr_opened": return p.pr_url ?? "";
     case "awaiting_input": return (p.questions ?? []).join(" · ");
     case "run_finished": return `${p.status}${p.cost_usd ? ` · ${money(p.cost_usd)}` : ""}`;

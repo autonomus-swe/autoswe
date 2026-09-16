@@ -11,6 +11,8 @@ from typing import Any
 import orjson
 import redis.asyncio as aioredis
 
+BASELINE_TTL_S = 7 * 24 * 3600
+
 _RENEW_LOCK = """
 if redis.call('GET', KEYS[1]) == ARGV[1] then
   return redis.call('PEXPIRE', KEYS[1], ARGV[2])
@@ -70,6 +72,12 @@ def pending_key(run_id: uuid.UUID | str) -> str:
 
 def cancel_key(run_id: uuid.UUID | str) -> str:
     return f"run:{run_id}:cancel"
+
+
+def baseline_key(repo: str, sha: str) -> str:
+    """Which tests were already failing at a commit — a property of the commit, not of
+    the run that discovered it, which is why this is not in the run's artifacts."""
+    return f"baseline:{repo}:{sha}"
 
 
 class RedisBus:
@@ -172,3 +180,28 @@ class RedisBus:
 
     async def is_cancelled(self, run_id: uuid.UUID | str) -> bool:
         return int(await self.r.exists(cancel_key(run_id))) == 1
+
+    # ---- baseline cache ------------------------------------------------------
+    # Purely a cache: a miss costs one full suite run, so a cold or evicted Redis is
+    # slower and never wrong. The TTL exists because the same commit can produce a
+    # different baseline once its dependencies resolve differently.
+
+    async def set_baseline(
+        self, repo: str, sha: str, signatures: list[str], ttl_s: int = BASELINE_TTL_S
+    ) -> None:
+        await self.r.set(
+            baseline_key(repo, sha), orjson.dumps({"signatures": signatures}).decode(), ex=ttl_s
+        )
+
+    async def get_baseline(self, repo: str, sha: str) -> list[str] | None:
+        """The cached signatures, or None on a miss. An empty list is a hit: a repository
+        whose suite is green has a baseline, and it is nothing."""
+        raw = await _aw(self.r.get(baseline_key(repo, sha)))
+        if raw is None:
+            return None
+        try:
+            data = orjson.loads(raw)
+        except orjson.JSONDecodeError:
+            return None
+        signatures = data.get("signatures") if isinstance(data, dict) else None
+        return [str(s) for s in signatures] if isinstance(signatures, list) else None
