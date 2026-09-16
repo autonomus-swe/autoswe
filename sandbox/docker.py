@@ -11,6 +11,7 @@ The docker SDK is synchronous; every call is wrapped in ``asyncio.to_thread``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ from sandbox.base import cap_output
 log = get_logger(__name__)
 
 EXIT_TIMEOUT = 124  # coreutils `timeout`
+EXIT_KILLED = 137  # 128 + SIGKILL, what a killed container reports
 START_TIMEOUT_S = 15.0
 START_POLL_S = 0.15
 START_SETTLE_SAMPLES = 4  # ~0.6s of continuous "running" before we trust it
@@ -181,6 +183,28 @@ class DockerSandbox:
             self.container = None
         log.info("sandbox_stopped", sandbox=self.id, removed=remove)
 
+    async def kill_exec(self) -> None:
+        """Kill the container so a running command stops now. See Sandbox.kill_exec.
+
+        An in-flight ``exec`` unblocks by itself: docker reports the exec's own status, so
+        the waiting call returns 137 (128 + SIGKILL) within about a second. The
+        ``APIError`` branch in ``exec`` is the fallback for the case where the container is
+        gone entirely rather than merely killed.
+
+        The container is left in place rather than removed, so teardown can still keep it
+        for inspection if the run asked for that.
+        """
+        if self.container is None:
+            return
+        container = self.container
+
+        def _kill() -> None:
+            with contextlib.suppress(NotFound, APIError):
+                container.kill()
+
+        await asyncio.to_thread(_kill)
+        log.info("sandbox_exec_killed", sandbox=self.id)
+
     # ---- exec ----------------------------------------------------------------
 
     async def exec(
@@ -208,6 +232,17 @@ class DockerSandbox:
             code, out, err = await asyncio.wait_for(asyncio.to_thread(_run), timeout_s + 30)
         except TimeoutError as e:  # the in-container `timeout` did not fire; treat as timed out
             raise SandboxError(f"exec hung past the timeout in {self.id}: {cmd[:80]}") from e
+        except (APIError, NotFound) as e:
+            # The container went away under us. The usual cause is `kill_exec` — a human
+            # cancelled — and a killed command is a failed command, not a crashed
+            # orchestrator. The cancel itself is what ends the run, on the next check.
+            log.info("sandbox_exec_interrupted", sandbox=self.id, detail=str(e)[:200])
+            return ExecResult(
+                exit_code=EXIT_KILLED,
+                stdout="",
+                stderr="the sandbox was stopped while this command was running",
+                duration_ms=int((time.monotonic() - t0) * 1000),
+            )
         duration_ms = int((time.monotonic() - t0) * 1000)
         stdout, t1 = cap_output(out, max_output_bytes)
         stderr, t2 = cap_output(err, max_output_bytes)

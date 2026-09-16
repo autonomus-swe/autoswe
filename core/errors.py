@@ -35,3 +35,12 @@ class AgentError(AutosweError):
 
 class RunCancelled(AutosweError):
     """A human asked the run to stop. Not a failure: the job must not be retried."""
+
+
+class BudgetExhausted(AgentError):
+    """A step was stopped mid-loop because the run is out of budget.
+
+    An ``AgentError`` on purpose: from the node's point of view the agent did not produce
+    its result, which is already a case every node handles. The phase machine then reads
+    the budget itself and escalates with the real reason.
+    """

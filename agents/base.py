@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -58,12 +59,31 @@ class Agent:
         return await provider.run_tools(req, [*self.tools(), *(extra_tools or [])], ctx, hooks)
 
     async def run_structured[T: BaseModel](
-        self, provider: LLMProvider, user_content: str, output: type[T], **prompt_vars: Any
+        self,
+        provider: LLMProvider,
+        user_content: str,
+        output: type[T],
+        *,
+        hooks: Hooks | None = None,
+        max_tokens: int | None = None,
+        **prompt_vars: Any,
     ) -> T:
+        """One model call, no tools.
+
+        ``hooks`` is how the call reaches the ledger. Budgets are enforced from
+        ``llm_calls``, so a structured call that skips the hooks is spend the run cannot
+        see — and once that number is authoritative, invisible spend is worse than
+        unenforced spend. Callers with a step to attach it to should always pass them.
+        """
         req = Request(
             role=self.role,
             system=self.system_prompt(**prompt_vars),
             messages=[{"role": "user", "content": user_content}],
         )
-        obj, _usage = await provider.parse(req, output)
+        if max_tokens:
+            req.max_tokens = max_tokens
+        started = time.monotonic()
+        obj, usage = await provider.parse(req, output)
+        if hooks is not None:
+            await hooks.on_message(obj, usage, int((time.monotonic() - started) * 1000))
         return obj

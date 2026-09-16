@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+
 from core.errors import RunCancelled
 from observability.logging import bind_run, clear_run, get_logger
 from observability.tracing import trace_span
@@ -16,6 +19,9 @@ from storage.db import session
 log = get_logger(__name__)
 
 
+CANCEL_POLL_S = 2.0
+
+
 async def _cancelled(state: RunState, deps: Deps) -> bool:
     if state.cancelled or await deps.bus.is_cancelled(state.run_id):
         state.cancelled = True
@@ -23,10 +29,34 @@ async def _cancelled(state: RunState, deps: Deps) -> bool:
     return False
 
 
+async def _watch_for_cancel(state: RunState, deps: Deps, res: RunResources) -> None:
+    """Notice a cancel *while* a phase is running, and stop what it is running.
+
+    The checks around each node are not enough on their own: a phase spends most of its
+    time inside one command — an install, a test suite — and a human who asks a run to
+    stop should not wait ten minutes for a suite they no longer care about. `before_tool`
+    catches a cancel between tool calls; this catches one during a call.
+
+    It never ends the run itself. It sets the flag and stops the sandbox; the runner reads
+    the flag and decides, so there is still exactly one place that ends a run.
+    """
+    while True:
+        await asyncio.sleep(CANCEL_POLL_S)
+        if not await deps.bus.is_cancelled(state.run_id):
+            continue
+        state.cancelled = True
+        if res.sandbox is not None:
+            log.info("cancel_killing_sandbox", phase=state.phase.value)
+            with contextlib.suppress(Exception):  # a failed kill must not mask the cancel
+                await res.sandbox.kill_exec()
+        return
+
+
 async def run(state: RunState, deps: Deps, res: RunResources | None = None) -> RunState:
     """Run to a terminal phase. ``res`` carries infrastructure a resume re-attached."""
     res = res or RunResources()
     bind_run(state.run_id)
+    watcher = asyncio.create_task(_watch_for_cancel(state, deps, res))
     try:
         async with session(deps.engine) as s:
             await db.mark_run_started(s, state.run_id)
@@ -36,7 +66,14 @@ async def run(state: RunState, deps: Deps, res: RunResources | None = None) -> R
                 break
             log.info("phase_start", phase=state.phase.value)
             with trace_span(f"phase.{state.phase.value}", run_id=str(state.run_id)):
-                state = await NODES[state.phase](state, deps, res)
+                try:
+                    state = await NODES[state.phase](state, deps, res)
+                except Exception as e:
+                    # A node that blew up because its sandbox was killed under it did not
+                    # fail: it was stopped. Anything else is a real failure.
+                    if state.cancelled:
+                        raise RunCancelled("cancelled while a phase was running") from e
+                    raise
             await save(deps.engine, state)  # the node's work is durable before we move on
 
             if await _cancelled(state, deps):
@@ -71,6 +108,9 @@ async def run(state: RunState, deps: Deps, res: RunResources | None = None) -> R
             await db.finish_run(s, state.run_id, status="failed", error=state.error)
         raise
     finally:
+        watcher.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watcher
         await teardown(state, deps, res)
         clear_run()
     return state

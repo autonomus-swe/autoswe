@@ -26,6 +26,17 @@ class Sandbox(Protocol):
         max_output_bytes: int = 40_000,
     ) -> ExecResult: ...
 
+    async def kill_exec(self) -> None:
+        """Stop whatever is running inside, now.
+
+        Called when a human cancels mid-command. There is no way to interrupt one exec
+        and leave the rest usable — ``docker exec`` gives no handle to signal — so this
+        kills the container. That is acceptable precisely because the only caller is a
+        cancel: the run is over, and waiting out a ten-minute test suite to honour a stop
+        request is worse than losing a sandbox that is about to be torn down anyway.
+        """
+        ...
+
     async def connect_install_network(self) -> None: ...
 
     async def disconnect_network(self) -> None: ...

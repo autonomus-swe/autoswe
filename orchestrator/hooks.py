@@ -7,10 +7,11 @@ from uuid import UUID
 
 from agents.debugger import HYPOTHESIS_KEY
 from contracts import ToolResult, Usage
-from core.errors import RunCancelled
+from core.errors import BudgetExhausted, RunCancelled
 from gateway import budget
 from observability.logging import get_logger
 from orchestrator.approvals import ApprovalGate
+from orchestrator.budgets import ALWAYS_ALLOWED, BudgetGate
 from orchestrator.events import emit
 from storage import repo
 from storage.db import session
@@ -44,6 +45,7 @@ class OrchestratorHooks:
         # `ctx.answers`, again by reference: an approved `ask_user` leaves its answer here
         # because `before_tool` can refuse a call but cannot hand one a value.
         answers: dict[str, str] | None = None,
+        budget: BudgetGate | None = None,
     ) -> None:
         self.run_id = run_id
         self.step_id = step_id
@@ -57,6 +59,7 @@ class OrchestratorHooks:
         self.approvals = approvals
         self.answers = answers if answers is not None else {}
         self.calls = 0  # only used to mint a stable id per call for the approval channel
+        self.budget = budget
         self.usage = Usage()
         self.tool_calls = 0
 
@@ -83,6 +86,25 @@ class OrchestratorHooks:
                 "written afterwards is not a diagnosis. Read with read_file and "
                 "search_code, then submit your hypothesis."
             )
+
+        # Out of budget: land the work rather than start more of it. The transition table
+        # would catch this at the next phase boundary, but a long step can spend twice a
+        # limit before it gets there, so the loop is told here.
+        #
+        # Before the approval checks below, and that ordering is the point: a run that
+        # cannot afford to act on an answer must not spend a human's attention asking for
+        # one. `ask_user` is not mutating, so without naming approvals here it would slip
+        # past and park an unaffordable run on somebody's inbox.
+        if self.budget is not None and (reason := self.budget.exhausted()):
+            if self.budget.spent_its_grace():
+                # Every denial costs a model turn, so a step that will not land is stopped
+                # rather than refused until its iterations run out.
+                raise BudgetExhausted(reason)
+            starts_work = tool is not None and (tool.mutating or tool.requires_approval)
+            if starts_work and name not in ALWAYS_ALLOWED:
+                denial = self.budget.denial(reason, name)
+                log.info("budget_denied_tool", tool=name, reason=reason)
+                return denial
 
         if tool is not None and tool.requires_approval:
             return await self._ask(name, input, kind="question")
@@ -151,6 +173,9 @@ class OrchestratorHooks:
                 latency_ms=latency_ms,
                 stop_reason=getattr(message, "finish_reason", None),
             )
+        if self.budget is not None:
+            # After the row is written, so the reconciliation it may trigger sees this turn.
+            await self.budget.on_turn()
         if self.bus is not None:
             await self.bus.emit(
                 self.run_id,

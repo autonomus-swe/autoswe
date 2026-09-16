@@ -235,8 +235,8 @@ async def test_triage_with_nothing_to_classify_does_not_call_a_model() -> None:
         async def parse(self, req: Any, output: Any) -> Any:
             raise AssertionError("no model call should happen")
 
-    kinds, usage = await tester.TesterAgent().classify_unknown(provider(Provider()), [])
-    assert kinds == {} and usage.cost_usd == 0.0
+    kinds = await tester.TesterAgent().classify_unknown(provider(Provider()), [])
+    assert kinds == {}
 
 
 async def test_a_triage_failure_does_not_fail_the_run() -> None:
@@ -244,7 +244,7 @@ async def test_a_triage_failure_does_not_fail_the_run() -> None:
         async def parse(self, req: Any, output: Any) -> Any:
             raise TimeoutError("the model did not answer")
 
-    kinds, _ = await tester.TesterAgent().classify_unknown(
+    kinds = await tester.TesterAgent().classify_unknown(
         provider(Provider()), [tr.failure("tests/a.py::test_one", "", "exception")]
     )
     assert kinds == {}, "advice is not worth a failed run"
@@ -265,7 +265,7 @@ async def test_triage_ignores_classifications_for_tests_it_did_not_ask_about() -
                 Usage(),
             )
 
-    kinds, _ = await tester.TesterAgent().classify_unknown(
+    kinds = await tester.TesterAgent().classify_unknown(
         provider(Provider()), [tr.failure("tests/a.py::test_one", "", "exception")]
     )
     assert kinds == {"tests/a.py::test_one": "environment"}
@@ -335,9 +335,17 @@ def node_io(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyPat
     async def noop(*a: Any, **k: Any) -> None:
         return None
 
+    async def run_cost(*a: Any, **k: Any) -> Usage:
+        return Usage(cost_usd=0.001)
+
     monkeypatch.setattr(nodes, "_emit", emit)
     monkeypatch.setattr(nodes, "session", lambda _engine: NullSession())
+    # the triage is a model call, so it goes through the hooks and the ledger like any
+    # other; both are redirected here, since neither is what these tests are about
+    monkeypatch.setattr("orchestrator.hooks.session", lambda _engine: NullSession())
+    monkeypatch.setattr("gateway.budget.record_llm_call", noop)
     monkeypatch.setattr("storage.repo.start_step", start_step)
+    monkeypatch.setattr("storage.repo.run_cost", run_cost)
     for name in ("insert_tool_call", "save_artifact", "finish_step", "upsert_tasks"):
         monkeypatch.setattr(f"storage.repo.{name}", noop)
     monkeypatch.setattr(
@@ -504,6 +512,9 @@ async def test_an_unclassifiable_failure_is_triaged_into_a_note(
     from contracts import FailureClassification, Triage
 
     class Provider:
+        provider_name = "test"
+        model = "test/model"
+
         async def parse(self, req: Any, output: Any) -> Any:
             return (
                 Triage(
@@ -522,4 +533,5 @@ async def test_an_unclassifiable_failure_is_triaged_into_a_note(
     assert "environment" in note
     assert out.last_test_report is not None
     assert out.last_test_report.failures[0].kind == "exception", "the report is not relabelled"
+    # read back from the ledger, which is where the hooks wrote it
     assert out.usage.cost_usd == pytest.approx(0.001), "a triage call is still spend"
