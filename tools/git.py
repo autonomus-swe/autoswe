@@ -40,6 +40,21 @@ class GitDiffTool(BaseTool):
         return ToolResult(content=out or "(no diff)")
 
 
+class GitLogTool(BaseTool):
+    name = "git_log"
+    description = (
+        "List the commits this run has made, newest first, as '<short sha> <subject>'. "
+        "Use it to see what has already been done before adding to it."
+    )
+    input_schema = schema({})
+    mutating = False
+    parallel_safe = True
+
+    async def run(self, ctx: RunContext, **kwargs: Any) -> ToolResult:
+        out = await git("log", f"{ctx.base_sha}..HEAD", "--format=%h %s", cwd=ctx.worktree)
+        return ToolResult(content=out.strip() or "(no commits on this branch yet)")
+
+
 class GitCommitTool(BaseTool):
     name = "git_commit"
     description = (

@@ -38,6 +38,7 @@ from orchestrator.events import emit
 from orchestrator.hooks import OrchestratorHooks
 from orchestrator.state import Phase, RunState
 from orchestrator.transition import MAX_DEBUG_ATTEMPTS
+from repo import diff
 from repo import profile as repo_profile
 from repo import worktree as wt
 from repo.clone import ensure_bare_clone, repo_key, resolve_sha
@@ -943,6 +944,12 @@ async def test_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
         state.tasks.by_id(state.current_task_id).status = "done"
         async with session(deps.engine) as s:
             await db.upsert_tasks(s, state.run_id, state.tasks)
+        if state.tasks.next_ready() is None:
+            # The last task is done, so the change is final and worth collecting once.
+            # Stored here rather than in REVIEW because a resumed run should read the diff
+            # it was reviewed against, not recompute one from a worktree that has since
+            # moved — and because the artifact is the answer to "what did this run do".
+            await _store_diff(state, deps, res)
     async with session(deps.engine) as s:
         for item in runs:
             await db.insert_tool_call(
@@ -981,6 +988,40 @@ async def test_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
         },
     )
     return state
+
+
+async def _store_diff(state: RunState, deps: Deps, res: RunResources) -> None:
+    """Collect the run's whole diff and keep it. Never fatal: a run that produced code is
+    not worth failing because the record of it could not be written."""
+    if res.worktree is None:
+        return
+    try:
+        text = await diff.full_diff(res.worktree.path, state.base_sha or "HEAD")
+        files = diff.split_by_file(text)
+    except Exception as e:
+        log.warning("diff_not_collected", error=f"{type(e).__name__}: {e}")
+        return
+    async with session(deps.engine) as s:
+        await db.save_artifact(
+            s,
+            state.run_id,
+            "diff",
+            None,
+            {
+                "text": text,
+                "stat": diff.diff_stat(files),
+                "files": [
+                    {
+                        "path": f.path,
+                        "added": f.added,
+                        "removed": f.removed,
+                        "generated": f.generated,
+                    }
+                    for f in files
+                ],
+            },
+        )
+    log.info("diff_stored", files=len(files), bytes=len(text))
 
 
 async def pr_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
