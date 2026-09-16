@@ -97,6 +97,10 @@ def full_state() -> RunState:
         resume_phase=Phase.DEBUG,
         test_context={"tests/test_ops.py::test_x": "> 3 | assert False"},
         warned={"budget_usd"},
+        flaky_tests={"tests/test_slow.py::test_sometimes"},
+        preexisting_failures={"tests/test_legacy.py::test_old"},
+        fix_rounds={"t1": 1},
+        return_to=Phase.CODE,
     )
 
 
@@ -115,6 +119,10 @@ def test_round_trip_preserves_every_field() -> None:
     assert restored.warned == {"budget_usd"}
     assert restored.resume_phase is Phase.DEBUG
     assert restored.strategy == "alternative"
+    assert restored.flaky_tests == {"tests/test_slow.py::test_sometimes"}
+    assert restored.preexisting_failures == {"tests/test_legacy.py::test_old"}
+    # Phase 4's fields are here already, so a checkpoint written today still loads then
+    assert restored.fix_rounds == {"t1": 1} and restored.return_to is Phase.CODE
 
 
 def test_derived_task_properties_follow_the_graph() -> None:

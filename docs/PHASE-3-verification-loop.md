@@ -31,14 +31,15 @@ Suggested duration: 5–7 days. This phase is the core of the resume claim; the 
 
 ## 1. Exit criteria
 
-- [ ] `TestReport.failures[*].frames` are populated for pytest failures, with `in_repo` correct and `signature` stable when line numbers shift (tests exist).
-- [ ] The Debugger cannot call a mutating tool before `submit_hypothesis` (test exists); every `debugger` step stores its hypothesis in `steps.output`.
-- [ ] Fixture (a) off-by-one: recovered in one debug attempt. Fixture (c) impossible test: three distinct hypotheses, then `ESCALATE` → replan → `ESCALATE` → `awaiting_input`; in unattended mode → `FAILED`. Both are e2e tests.
-- [ ] Same failure signature twice → the next Debugger prompt contains the "alternative strategy" block (test exists).
-- [ ] Pre-existing failing tests recorded in `SETUP` do not block a run (fixture (e), test exists).
-- [ ] Wall-clock, dollar, and token budgets each produce `budget_warning` at 90 % and `ESCALATE` at 100 % (table tests with fake usage).
-- [ ] A bash command on the ASK list pauses the run; `POST /approve` runs it, `POST /reject` returns the reason to the model (integration test).
-- [ ] `transition()` has a table test with at least 25 rows and 100 % branch coverage.
+- [x] `TestReport.failures[*].frames` are populated for pytest failures, with `in_repo` correct and `signature` stable when line numbers shift (tests exist).
+- [x] The Debugger cannot call a mutating tool before `submit_hypothesis` (test exists); every `debugger` step stores its hypothesis in `steps.output`.
+- [~] Fixture (a) off-by-one: recovered in one debug attempt. Fixture (c) impossible test: three distinct hypotheses, then `ESCALATE` → replan → `ESCALATE` → `awaiting_input`; in unattended mode → `FAILED`. Both are e2e tests.
+  **Written, not yet run.** `tests/e2e/test_m3.py` exists and asserts exactly this; it needs a funded API key. The fixtures themselves are verified without a model by `tests/integration/test_chaos_fixtures.py`, so what is unproven is the *agent's* behaviour on them, not the scenarios.
+- [x] Same failure signature twice → the next Debugger prompt contains the "alternative strategy" block (test exists).
+- [x] Pre-existing failing tests recorded in `SETUP` do not block a run (fixture (e), test exists).
+- [x] Wall-clock, dollar, and token budgets each produce `budget_warning` at 90 % and `ESCALATE` at 100 % (table tests with fake usage).
+- [x] A bash command on the ASK list pauses the run; `POST /approve` runs it, `POST /reject` returns the reason to the model (integration test).
+- [x] `transition()` has a table test with at least 25 rows and 100 % branch coverage.
 - [ ] Tag `v0.3.0`.
 
 ---
@@ -321,7 +322,7 @@ uv run autoswe answer <id> "The test is wrong; leave it failing and document why
 
 ## 7. Checklist before Phase 4
 
-- [ ] Exit criteria in §1 all ticked; `evals/results/m3.jsonl` has the five scenarios with attempts and cost.
-- [ ] `RunState` carries `fix_rounds` (dict, default empty) and `return_to` (None) as placeholders — Phase 4 fills them.
-- [ ] You can walk through the transition table row by row and explain why `transition()` is allowed to mutate bookkeeping fields but never do I/O.
+- [~] Exit criteria in §1 all ticked; `evals/results/m3.jsonl` has the five scenarios with attempts and cost. Blocked on a funded key — see `evals/results/README.md`; no numbers are recorded that were not measured.
+- [x] `RunState` carries `fix_rounds` (dict, default empty) and `return_to` (None) as placeholders — Phase 4 fills them.
+- [x] You can walk through the transition table row by row and explain why `transition()` is allowed to mutate bookkeeping fields but never do I/O.
 - [ ] Tag `v0.3.0`.
