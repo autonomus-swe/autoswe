@@ -364,12 +364,28 @@ cmd_status() {
   pid_alive "$WORKER_PID" && ok "worker pid $(cat "$WORKER_PID")" || warn "worker not running"
 
   step "Containers"
-  docker compose ps --format '  {{.Service}}  {{.State}}  {{.Publishers}}' 2>/dev/null || warn "compose not up"
+  local mine
+  mine="$(docker compose ps --format '{{.Service}} {{.State}}' 2>/dev/null | grep -c running || true)"
+  if [[ "${mine:-0}" -gt 0 ]]; then
+    docker compose ps --format '  {{.Service}}  {{.State}}  {{.Publishers}}' 2>/dev/null
+  else
+    warn "this checkout has no containers running"
+  fi
 
   step "Health"
   local body
   body="$(curl -sf --max-time 3 http://127.0.0.1:8000/healthz 2>/dev/null || true)"
-  [[ -n "$body" ]] && ok "$body" || warn "the API is not answering on :8000"
+  if [[ -z "$body" ]]; then
+    warn "the API is not answering on :8000"
+  elif pid_alive "$API_PID"; then
+    ok "$body"
+  else
+    # Reported as a warning, not a tick. A green health line for a process this checkout
+    # did not start describes somebody else's stack, and the whole point of this script
+    # is not to do that.
+    warn "someone is serving :8000, but it is not this checkout — $body"
+    note "probably another working tree; run 'scripts/bringup.sh down' there first"
+  fi
 
   step "Disk used by run state"
   local wt
@@ -402,6 +418,22 @@ cmd_reset() {
 cmd_seed() {
   step "Seeding a run for the console (no model, no quota)"
   note "writes the same rows and publishes the same events a real run does, at a watchable pace"
+
+  # DATABASE_URL is a host and a port, so the seeder lands wherever that resolves. On a
+  # machine with a second checkout that is the other one's database — which is how four
+  # demo runs ended up in a tree that never asked for them.
+  local dsn target
+  dsn="$(env_get DATABASE_URL)"
+  target="$(printf '%s' "$dsn" | sed -E 's|^[^@]*@||')"
+  local running
+  running="$(docker compose ps --format '{{.Service}} {{.State}}' 2>/dev/null | grep -c running || true)"
+  if [[ "${running:-0}" -eq 0 ]]; then
+    bad "this checkout has no database running, so the seed would go to ${target}"
+    note "that is whatever else is listening there — another working tree, most likely."
+    note "bring this one up first: scripts/bringup.sh"
+    return 1
+  fi
+  note "target: ${target}"
   uv run python scripts/seed_demo_run.py "$@"
 }
 
