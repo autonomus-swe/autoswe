@@ -146,14 +146,80 @@ sync_deps() {
 
 # ---------------------------------------------------------------- infra
 
+# Who is listening on a port, when someone is. Used to name a conflict rather than
+# leaving the reader with docker's "port is already allocated".
+port_holder() {
+  local port="$1" line
+  line="$(ss -ltnp 2>/dev/null | grep -E "[:.]${port}[[:space:]]" | head -1)"
+  [[ -n "$line" ]] || return 1
+  # A container publishing the port shows as docker-proxy in ss, so name the container.
+  # Matched on the HOST side of the arrow only: `127.0.0.1:5433->5432/tcp` publishes 5433,
+  # and a looser pattern reads its container-side 5432 and accuses the wrong container —
+  # which is how the first version of this blamed an unrelated container for a port its
+  # own stack was holding.
+  local cid
+  cid="$(docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null | grep -E ":${port}->" | head -1 | cut -f1)"
+  if [[ -n "$cid" ]]; then printf 'container %s' "$cid"; return 0; fi
+  # Not a container. `ss` only names the process for sockets you own, so this is often
+  # blank rather than wrong — say so, and hand over the command that will answer it.
+  local proc="${line##*users:}"
+  if [[ "$proc" == *'("'* ]]; then
+    printf 'process %s' "$(printf '%s' "$proc" | sed -E 's/.*\("([^"]+)".*/\1/')"
+  else
+    printf 'another process (run: sudo ss -ltnp | grep :%s)' "$port"
+  fi
+}
+
+# `docker compose` can fail before it starts anything, for reasons its own message does
+# not explain. Two happen often enough to name.
+diagnose_compose() {
+  local err
+  err="$(docker compose config --quiet 2>&1)" && return 0
+  bad "docker compose cannot read this project"
+  note "$err"
+  if [[ "$err" == *"no configuration file"* ]] && [[ "$ROOT" != "$HOME"/* ]] \
+     && [[ "$(command -v docker)" == /snap/* ]]; then
+    note "the cause is snap-packaged Docker: it is confined and cannot read paths outside"
+    note "your home directory, so the compose file here is invisible to it even though it"
+    note "exists. Move the checkout under $HOME — the same clone works there."
+    note "(the same confinement is why WORKTREES_DIR must live under \$HOME; see .env.example)"
+  fi
+  return 1
+}
+
 infra() {
   step "Infrastructure — Postgres, Redis, the install network"
-
-  make up >/dev/null 2>&1 || { bad "make up failed"; docker compose ps; return; }
 
   local pg redis
   pg="$(env_get POSTGRES_PORT 5432)"
   redis="$(env_get REDIS_PORT 6379)"
+
+  diagnose_compose || return 1
+
+  # Named before `make up` runs, because docker's own message for this is "port is already
+  # allocated" and the reader is then one step from the answer rather than at it.
+  local blocked=0 holder
+  for spec in "postgres:$pg" "redis:$redis"; do
+    local svc="${spec%%:*}" port="${spec##*:}"
+    if holder="$(port_holder "$port")"; then
+      if docker compose ps --format '{{.Service}} {{.State}}' 2>/dev/null | grep -q "$svc running"; then
+        continue  # ours, already up — `make up` is a no-op and that is fine
+      fi
+      bad "port $port ($svc) is already held by $holder"
+      blocked=1
+    fi
+  done
+  if [[ $blocked -ne 0 ]]; then
+    note "either stop whatever holds the port, or set POSTGRES_PORT / REDIS_PORT in .env"
+    note "to something free and match DATABASE_URL / REDIS_URL to them"
+    return 1
+  fi
+
+  if ! make up >/dev/null 2>&1; then
+    bad "make up failed"
+    make up 2>&1 | tail -8
+    return 1
+  fi
 
   local waited=0
   until docker compose ps --format '{{.Service}} {{.State}}' 2>/dev/null | grep -q "postgres running" || [[ $waited -ge 60 ]]; do
@@ -219,7 +285,11 @@ start_api() {
   step "API and console"
   mkdir -p "$RUNDIR"
   if pid_alive "$API_PID"; then
-    ok "already running (pid $(cat "$API_PID"))"
+    ok "already running (pid $(cat "$API_PID")) — started by this checkout"
+  elif curl -sf --max-time 2 http://127.0.0.1:8000/healthz >/dev/null 2>&1; then
+    warn "something is already serving :8000 and this checkout did not start it"
+    note "probably another working tree. Its /healthz is reported below, but it is not ours;"
+    note "stop it first if you meant to run this one: scripts/bringup.sh down (in that tree)"
   else
     nohup uv run uvicorn api.main:app --host 127.0.0.1 --port 8000 >"$API_LOG" 2>&1 &
     echo $! >"$API_PID"
@@ -342,9 +412,16 @@ cmd_logs() {
 
 case "${1-up}" in
   up)
-    preflight; check_env; sync_deps; infra; migrate; sandbox_image; start_api; start_worker; summary ;;
+    preflight; check_env; sync_deps
+    # A hard stop: with no database and no queue, "migrations applied" and a healthy
+    # /healthz would be describing somebody else's stack. A fresh clone whose own
+    # infrastructure failed reported exactly that, which is worse than reporting nothing.
+    infra || { printf '\n%sInfrastructure did not come up, so nothing after it was checked.%s\n' "$RED" "$OFF"; exit 1; }
+    migrate; sandbox_image; start_api; start_worker; summary ;;
   infra-only)
-    preflight; check_env; sync_deps; infra; migrate; summary ;;
+    preflight; check_env; sync_deps
+    infra || { printf '\n%sInfrastructure did not come up.%s\n' "$RED" "$OFF"; exit 1; }
+    migrate; summary ;;
   status) cmd_status ;;
   down)   cmd_down ;;
   reset)  cmd_reset ;;
