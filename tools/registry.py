@@ -7,7 +7,7 @@ from tools.base import BaseTool
 from tools.bash import BashTool
 from tools.editor import EditorTool
 from tools.fs import ReadFileTool
-from tools.git import GitCommitTool, GitDiffTool, GitStatusTool
+from tools.git import GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool
 from tools.search import SearchCodeTool
 from tools.tests import RunTestsTool
 
@@ -21,6 +21,7 @@ REGISTRY: dict[str, BaseTool] = {
         SearchCodeTool(),
         GitStatusTool(),
         GitDiffTool(),
+        GitLogTool(),
         GitCommitTool(),
         AskUserTool(),
     )
@@ -55,8 +56,10 @@ ROLE_TOOLS: dict[str, list[str]] = {
     ],
     "analyzer": ["read_file", "search_code", "git_status", "git_diff"],
     "planner": ["read_file", "search_code", "git_status", "git_diff"],
-    "review": ["read_file", "search_code", "git_status", "git_diff"],
-    "review_pre": ["read_file", "search_code", "git_status", "git_diff"],
+    # The Reviewer reads history as well as the diff: "what did this run already try"
+    # is a different question from "what does the diff say", and both inform a finding.
+    "review": ["read_file", "search_code", "git_status", "git_diff", "git_log"],
+    "review_pre": ["read_file", "search_code", "git_status", "git_diff", "git_log"],
     "decomposer": [],
     "tester": [],
     "pr_writer": ["read_file", "search_code", "git_status", "git_diff"],

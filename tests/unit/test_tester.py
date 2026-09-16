@@ -26,6 +26,10 @@ from tools import test_report as tr
 
 pytestmark = pytest.mark.unit
 
+# Run ids whose diff the node collected. A list rather than an attribute bolted onto the
+# module under test: the fixture clears it, so each test sees only its own calls.
+DIFF_CALLS: list[Any] = []
+
 
 def fail(
     test_id: str,
@@ -338,6 +342,12 @@ def node_io(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyPat
     async def run_cost(*a: Any, **k: Any) -> Usage:
         return Usage(cost_usd=0.001)
 
+    DIFF_CALLS.clear()
+
+    async def store_diff(state: Any, deps: Any, res: Any) -> None:
+        DIFF_CALLS.append(state.run_id)
+
+    monkeypatch.setattr(nodes, "_store_diff", store_diff)
     monkeypatch.setattr(nodes, "_emit", emit)
     monkeypatch.setattr(nodes, "session", lambda _engine: NullSession())
     # the triage is a model call, so it goes through the hooks and the ledger like any
@@ -535,3 +545,38 @@ async def test_an_unclassifiable_failure_is_triaged_into_a_note(
     assert out.last_test_report.failures[0].kind == "exception", "the report is not relabelled"
     # read back from the ledger, which is where the hooks wrote it
     assert out.usage.cost_usd == pytest.approx(0.001), "a triage call is still spend"
+
+
+async def test_the_diff_is_collected_once_the_last_task_passes(
+    node_io: pytest.MonkeyPatch,
+) -> None:
+    """The change is final at that point, and a resumed REVIEW should read the diff it was
+    reviewed against rather than recompute one from a worktree that has moved."""
+    tool = ScriptedTool({"tests/a.py": rep([]), "": rep([])})
+    out, _ = await run_node(node_io, tool, state_for("tests/a.py"))
+
+    assert out.tasks is not None and out.tasks.by_id("t1").status == "done"
+    assert DIFF_CALLS == [out.run_id], "no diff collected when the run is about to be reviewed"
+
+
+async def test_the_diff_is_not_collected_while_tasks_remain(
+    node_io: pytest.MonkeyPatch,
+) -> None:
+    """Mid-run the diff is a moving target; collecting it would only cost time."""
+    spec_two = TaskSpec(
+        id="t2",
+        title="t2",
+        description="d",
+        depends_on=[],
+        files=["b.py"],
+        acceptance_criteria=["works"],
+        test_selector="tests/b.py",
+    )
+    s = state_for("tests/a.py")
+    assert s.tasks is not None
+    s.tasks.tasks.append(Task(spec=spec_two))
+
+    tool = ScriptedTool({"tests/a.py": rep([]), "": rep([])})
+    await run_node(node_io, tool, s)
+
+    assert DIFF_CALLS == [], "t2 is still waiting"
