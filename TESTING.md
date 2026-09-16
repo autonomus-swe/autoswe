@@ -68,6 +68,11 @@ cp .env.example .env         # then fill in the three required values, see below
 ./scripts/bringup.sh
 ```
 
+**Already have the repository? Skip the clone.** The line above is for a first read. A
+second checkout on one machine needs its own `POSTGRES_PORT` / `REDIS_PORT` and matching
+`DATABASE_URL` / `REDIS_URL`, or it collides with the first — and cloning *inside* an
+existing checkout also breaks `mypy`, which then sees two copies of every module.
+
 Every command in this document runs **from the repository root** — the directory holding
 `pyproject.toml`. One directory up there is no project for `uv` to find, so `uv run pytest`
 picks up a bare interpreter and dies on `ModuleNotFoundError: No module named 'structlog'`,
