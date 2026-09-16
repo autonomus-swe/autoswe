@@ -107,6 +107,12 @@ class RunState(StateModel):
 
     review: ReviewReport | None = None  # Phase 4
     security: SecurityReport | None = None  # Phase 4
+    # Phase 4 placeholders, here now so a checkpoint written today still loads then: a
+    # run resumed across an upgrade reads its state back through this model, and a field
+    # that appears later would default silently rather than round-trip. `fix_rounds`
+    # counts review-fix passes per task; `return_to` is where a fix pass goes back to.
+    fix_rounds: dict[str, int] = Field(default_factory=dict)
+    return_to: Phase | None = None
 
     pr_url: str | None = None
     error: str | None = None

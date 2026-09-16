@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.3.0 — Phase 3: the verification loop
+
+A failing test is now something the run reasons about rather than something it reports. It
+parses the failure into frames and a stable signature, forms a hypothesis before it edits,
+notices when an attempt changed nothing, and stops in a way a human can act on.
+
+Added
+- Test reports with stack frames, the source line at each, and a signature that survives
+  an edit: test id, failure class, exception type, and the topmost frame in repository
+  code — never a line number, because a fix moves them.
+- The Debugger, and a gate that refuses every mutating tool until it has called
+  `submit_hypothesis`. A diagnosis written after the edit describes the edit.
+- No-progress detection: the same report signature twice means the last hypothesis
+  changed nothing, and the next prompt says so and rules that class of fix out.
+- `ESCALATE`, with a way out of every stuck state — replan the task into smaller ones,
+  ask a human, or end the run — and never the same attempt again.
+- A baseline test run, so failures the repository already had are not the agent's. Never
+  applied to the tests a task was written against, and not applied at all when the task
+  named none: the tests a goal is about are failing before it starts.
+- Flaky detection: a test that fails in the suite and passes alone is recorded and
+  reported rather than silently forgiven, because one re-run cannot tell flaky from
+  order-dependent.
+- `ask_user`, tool approvals, and an ASK list that matches on what a command does rather
+  than which tool ran it. `POST /runs/{id}/approve` and `/reject`, `autoswe approve` and
+  `autoswe reject`. Time parked on a human is subtracted from the wall clock.
+- Budgets enforced from `llm_calls` at every step boundary and every tenth model turn,
+  and inside the tool loop as well: out of budget, an agent may commit and submit but not
+  start new work. `budget_warning` once per run at 90 %.
+- A cancel that lands during a long command, not just between them.
+- Five chaos fixtures — off-by-one, missing import, impossible test, network, pre-existing
+  failure — with a test that verifies each still fails the way its README says.
+
+Fixed
+- The failure message handed to the Debugger was pytest's advice ("Use -v to get more
+  diff") rather than the comparison that explains the failure.
+- Every traceback frame was duplicated, because the crash entry reports an absolute path
+  where the traceback reports a relative one.
+- A collection failure carried no frames at all and was classified `exception`; it is now
+  `import`, with the frames parsed out of the printed representation.
+- `run_structured` did not record its usage, so the Tester's triage and the Decomposer's
+  re-plan were spend the run could not see — which matters now that the ledger is what
+  budgets are enforced from.
+
+Known gaps
+- `evals/results/m3.jsonl` is not populated: the end-to-end runs need a funded API key.
+  `evals/results/README.md` says how to produce it.
+
 ## 0.2.0 — Phase 2: plan and state
 
 A run now understands a repository before it edits it. It profiles the repository, plans,
