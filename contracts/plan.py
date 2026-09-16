@@ -37,6 +37,10 @@ class TaskGraphSpec(LLMModel):
 
 
 TaskStatus = Literal["pending", "in_progress", "done", "failed"]
+# Where a task came from. Runtime metadata on `Task` rather than a field on `TaskSpec`,
+# because `TaskSpec` is what the Decomposer writes: putting `kind` there would put it in
+# the schema the model fills in, and where a task came from is not the model's to decide.
+TaskKind = Literal["feature", "fix"]
 
 
 class Task(StateModel):
@@ -44,6 +48,7 @@ class Task(StateModel):
 
     spec: TaskSpec
     status: TaskStatus = "pending"
+    kind: TaskKind = "feature"
     attempts: int = 0
     replanned: bool = False
     # HEAD before the Coder started, so an exhausted task can be rewound to a clean

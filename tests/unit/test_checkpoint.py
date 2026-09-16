@@ -99,8 +99,9 @@ def full_state() -> RunState:
         warned={"budget_usd"},
         flaky_tests={"tests/test_slow.py::test_sometimes"},
         preexisting_failures={"tests/test_legacy.py::test_old"},
-        fix_rounds={"t1": 1},
-        return_to=Phase.CODE,
+        fix_rounds={"review": 1},
+        return_to=Phase.REVIEW,
+        known_issues=["[major] src/a.py:9 — size is not checked (fails when: size=0)"],
     )
 
 
@@ -122,7 +123,10 @@ def test_round_trip_preserves_every_field() -> None:
     assert restored.flaky_tests == {"tests/test_slow.py::test_sometimes"}
     assert restored.preexisting_failures == {"tests/test_legacy.py::test_old"}
     # Phase 4's fields are here already, so a checkpoint written today still loads then
-    assert restored.fix_rounds == {"t1": 1} and restored.return_to is Phase.CODE
+    assert restored.fix_rounds == {"review": 1} and restored.return_to is Phase.REVIEW
+    assert restored.known_issues == [
+        "[major] src/a.py:9 — size is not checked (fails when: size=0)"
+    ], "a run resumed mid-fix-round must still know what it gave up on"
 
 
 def test_derived_task_properties_follow_the_graph() -> None:

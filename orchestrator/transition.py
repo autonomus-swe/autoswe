@@ -60,9 +60,13 @@ def transition(s: RunState) -> Phase:
             # escalate_node has already decided: CODE, AWAITING_INPUT, or FAILED.
             return s.resume_phase or Phase.FAILED
         case Phase.REVIEW:
-            # Fix rounds arrive in the next change. For now a review is advisory: its
-            # findings are recorded and the run proceeds, which is honest about what is
-            # built rather than pretending a gate exists.
+            # A waiting fix task *is* the grant: `review_node` owns the round budget and
+            # appends the task when it decides there is one to spend. Asking about the task
+            # rather than re-counting the rounds is what keeps the two from disagreeing.
+            if s.review and s.review.blocking and s.tasks and s.tasks.next_ready():
+                return Phase.CODE
+            # Blocking with no task waiting means the budget is gone; the findings are on
+            # `known_issues` and the pull request will carry them and be a draft.
             return Phase.PR
         case Phase.PR:
             # The v3 sketch in the phase doc returns DONE unconditionally here. Keeping
@@ -83,6 +87,13 @@ def _after_test(s: RunState) -> Phase:
         # first failure, not a continuation of this one.
         s.previous_failure_signature = None
         s.strategy = None
+        # A fix task was granted by whichever gate asked for it, and its tests have just
+        # passed: go back to that gate rather than on to the next one. Checked before
+        # `next_ready` because a fix round is finished when its own task is, not when the
+        # graph is — and popped as it is read, so one grant buys one hop.
+        if s.return_to is not None:
+            back, s.return_to = s.return_to, None
+            return back
         if s.tasks and s.tasks.next_ready():
             return Phase.CODE
         # Every task done means the change is final, so it gets reviewed before it is

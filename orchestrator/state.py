@@ -113,6 +113,10 @@ class RunState(StateModel):
     # counts review-fix passes per task; `return_to` is where a fix pass goes back to.
     fix_rounds: dict[str, int] = Field(default_factory=dict)
     return_to: Phase | None = None
+    # Findings the run could not resolve inside its fix budget. The pull request carries
+    # them verbatim and is opened as a draft when the list is non-empty — a run that gave
+    # up on a finding says so rather than pushing quietly.
+    known_issues: list[str] = Field(default_factory=list)
 
     pr_url: str | None = None
     error: str | None = None
