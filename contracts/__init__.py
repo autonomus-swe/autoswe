@@ -4,7 +4,15 @@ from contracts.budget import Budget, Usage
 from contracts.common import LLMModel, StateModel
 from contracts.debug import DebugHypothesis
 from contracts.events import Event, EventType
-from contracts.plan import ImplementationPlan, Task, TaskGraph, TaskGraphSpec, TaskSpec, TaskStatus
+from contracts.plan import (
+    ImplementationPlan,
+    Task,
+    TaskGraph,
+    TaskGraphSpec,
+    TaskKind,
+    TaskSpec,
+    TaskStatus,
+)
 from contracts.pr import PullRequestDescription
 from contracts.repo import RepoFacts, RepoProfile
 from contracts.review import ReviewCandidates, ReviewFinding, ReviewReport, Severity
@@ -46,6 +54,7 @@ __all__ = [
     "Task",
     "TaskGraph",
     "TaskGraphSpec",
+    "TaskKind",
     "TaskResult",
     "TaskSpec",
     "TaskStatus",

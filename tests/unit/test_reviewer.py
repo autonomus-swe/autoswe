@@ -351,3 +351,53 @@ def test_the_reviewer_has_no_way_to_change_anything() -> None:
     assert {"read_file", "search_code", "git_diff", "git_log"} <= {
         t.name for t in tools_for("review")
     }
+
+
+# ---- the fix round, and the budget that bounds it ------------------------------------
+
+
+def test_a_fix_task_is_an_ordinary_task() -> None:
+    """It gets the debug attempts, the test gate and the escalation path every task gets.
+    A fix round that could not fail would be a fix round worth nothing."""
+    findings = [finding(severity="blocking", line=9), finding(severity="major", line=2)]
+    task = reviewer.fix_task(findings, 1)
+
+    assert task.id == "fix-review-1"
+    assert task.files == ["src/a.py"], "the files the findings named, deduped and sorted"
+    assert task.test_selector == "", "the whole suite: a fix can break anything"
+    assert any("rebutted" in c for c in task.acceptance_criteria), (
+        "a rebuttal has to be an acceptable answer, or the Coder will invent a change"
+    )
+
+
+def test_the_findings_reach_the_coder_grouped_by_file() -> None:
+    """A fix round opens files, not findings, and three notes on one function are one edit."""
+    findings = [
+        finding(file="src/b.py", line=3, summary="second file"),
+        finding(file="src/a.py", line=9, summary="later line"),
+        finding(file="src/a.py", line=2, summary="earlier line"),
+    ]
+    body = reviewer.render_findings(findings)
+
+    assert body.index("## src/a.py") < body.index("## src/b.py"), "files sorted"
+    assert body.index("earlier line") < body.index("later line"), "lines sorted within a file"
+    assert "fails when:" in body, "the failure scenario travels with the finding"
+    assert "rebuttal is a valid answer" in body
+
+
+def test_only_findings_worth_a_round_go_into_the_fix_task() -> None:
+    """Sending a nit back through coding and testing spends a round on formatting."""
+    findings = [finding(severity="blocking"), finding(severity="nit", line=99, category="style")]
+    body = reviewer.render_findings([f for f in findings if f.severity in ("blocking", "major")])
+    assert "line 10" in body and "line 99" not in body
+
+
+def test_unresolved_findings_say_what_they_are() -> None:
+    """A pull request that says "2 known issues" without saying what they are is worse than
+    one that says nothing."""
+    lines = reviewer.unresolved([finding(severity="blocking"), finding(severity="nit", line=3)])
+
+    assert len(lines) == 1, "a nit is not a known issue"
+    assert "src/a.py:10" in lines[0]
+    assert "[blocking]" in lines[0]
+    assert "fails when:" in lines[0], "the reader needs the failure, not just the summary"

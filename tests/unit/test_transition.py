@@ -9,7 +9,7 @@ without running a model.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -18,6 +18,8 @@ from contracts import (
     Budget,
     ImplementationPlan,
     RepoProfile,
+    ReviewFinding,
+    ReviewReport,
     Task,
     TaskGraph,
     TaskResult,
@@ -157,10 +159,75 @@ def test_a_passing_test_with_no_work_left_goes_to_review() -> None:
     assert transition(s) == Phase.REVIEW
 
 
-def test_review_leads_to_the_pull_request() -> None:
-    """Advisory for now: findings are recorded and the run proceeds. Fix rounds are next,
-    and this row changes when they land — which is the point of having it."""
-    assert transition(state(phase=Phase.REVIEW)) == Phase.PR
+# ---- the fix loop --------------------------------------------------------------------
+
+
+def review(blocking: bool, severities: tuple[str, ...] = ("blocking",)) -> ReviewReport:
+    return ReviewReport(
+        findings=[
+            ReviewFinding(
+                file="src/a.py",
+                line=i,
+                severity=cast("Any", sev),
+                category="c",
+                summary="s",
+                failure_scenario="f",
+            )
+            for i, sev in enumerate(severities, 1)
+        ],
+        blocking=blocking,
+    )
+
+
+def test_a_clean_review_goes_to_the_pull_request() -> None:
+    s = state(phase=Phase.REVIEW, review=review(False, ("minor",)), tasks=graph("t1"))
+    assert transition(s) == Phase.PR
+
+
+def test_a_blocking_review_with_a_fix_task_waiting_goes_back_to_code() -> None:
+    """The waiting task *is* the grant: review_node decided there was a round to spend."""
+    tasks = graph("t1")
+    tasks.by_id("t1").status = "done"
+    tasks.tasks.append(Task(spec=spec("fix-review-1"), kind="fix"))
+    s = state(phase=Phase.REVIEW, review=review(True), tasks=tasks)
+    assert transition(s) == Phase.CODE
+
+
+def test_a_blocking_review_with_no_task_waiting_proceeds_anyway() -> None:
+    """The budget is gone. The findings are on known_issues and the pull request carries
+    them — a PR that names what is wrong with it beats one that never arrives."""
+    tasks = graph("t1")
+    tasks.by_id("t1").status = "done"
+    s = state(phase=Phase.REVIEW, review=review(True), tasks=tasks)
+    assert transition(s) == Phase.PR
+
+
+def test_a_review_that_never_ran_does_not_block() -> None:
+    """`state.review` is None when the run changed nothing, so REVIEW recorded nothing."""
+    assert transition(state(phase=Phase.REVIEW, tasks=graph("t1"))) == Phase.PR
+
+
+def test_the_fix_tasks_tests_passing_goes_back_to_the_gate_that_asked() -> None:
+    """A fix round is finished when its own task is, not when the graph is."""
+    tasks = graph("t1", "t2")  # t2 still pending: without return_to this would be CODE
+    tasks.by_id("t1").status = "done"
+    s = state(
+        phase=Phase.TEST,
+        tasks=tasks,
+        last_test_report=report(True),
+        return_to=Phase.REVIEW,
+    )
+    assert transition(s) == Phase.REVIEW
+    assert s.return_to is None, "one grant buys one hop"
+
+
+def test_a_second_pass_through_test_after_the_hop_resumes_the_graph() -> None:
+    """Having spent the hop, TEST behaves normally again."""
+    tasks = graph("t1", "t2")
+    tasks.by_id("t1").status = "done"
+    s = state(phase=Phase.TEST, tasks=tasks, last_test_report=report(True), return_to=Phase.REVIEW)
+    assert transition(s) == Phase.REVIEW
+    assert transition(s) == Phase.CODE, "t2 is still waiting"
 
 
 def test_passing_clears_the_debug_memory() -> None:

@@ -25,7 +25,14 @@ from typing import Any, ClassVar
 
 from agents.base import Agent, fence
 from agents.submit import submit_tool
-from contracts import ImplementationPlan, ReviewCandidates, ReviewFinding, ReviewReport, TaskGraph
+from contracts import (
+    ImplementationPlan,
+    ReviewCandidates,
+    ReviewFinding,
+    ReviewReport,
+    TaskGraph,
+    TaskSpec,
+)
 from core.errors import AgentError
 from gateway.provider import Hooks, LLMProvider, RunOutcome
 from observability.logging import get_logger
@@ -256,6 +263,61 @@ RUBRIC = "\n".join(
         "| nit | formatting or preference |",
     ]
 )
+
+
+def render_findings(findings: list[ReviewFinding]) -> str:
+    """The findings as a task description the Coder can work from.
+
+    Grouped by file, because a fix round opens files rather than findings, and a reviewer's
+    three notes on one function are one edit.
+    """
+    by_file: dict[str, list[ReviewFinding]] = {}
+    for f in findings:
+        by_file.setdefault(f.file, []).append(f)
+    out = ["A review of your change raised these. Fix each one, or say in "]
+    out[0] += "`notes_for_reviewer` why it is not a problem — a rebuttal is a valid answer."
+    for path in sorted(by_file):
+        out.append(f"\n## {path}")
+        for f in sorted(by_file[path], key=lambda x: x.line):
+            out.append(
+                f"- **line {f.line}** [{f.severity}] {f.summary}\n"
+                f"  fails when: {f.failure_scenario}"
+            )
+    return "\n".join(out)
+
+
+def fix_task(findings: list[ReviewFinding], round_n: int, kind: str = "review") -> TaskSpec:
+    """A task from the findings, for the Coder to take through CODE and TEST like any other.
+
+    Deliberately an ordinary task: it gets the debug attempts, the test gate and the
+    escalation path every task gets. A fix round that could not fail would be a fix round
+    worth nothing.
+    """
+    return TaskSpec(
+        id=f"fix-{kind}-{round_n}",
+        title=f"Address {kind} findings (round {round_n})",
+        description=render_findings(findings),
+        depends_on=[],
+        files=sorted({f.file for f in findings}),
+        acceptance_criteria=[
+            "Each listed finding is fixed, or rebutted in notes_for_reviewer with a reason",
+            "Existing tests still pass, and new behaviour has a test that would catch it",
+        ],
+        test_selector="",
+    )
+
+
+def unresolved(findings: list[ReviewFinding]) -> list[str]:
+    """Findings as `known_issues` lines, for when the fix budget ran out.
+
+    One line each, carrying the severity and the failure — a pull request that says
+    "2 known issues" without saying what they are is worse than one that says nothing.
+    """
+    return [
+        f"[{f.severity}] {f.file}:{f.line} — {f.summary} (fails when: {f.failure_scenario})"
+        for f in findings
+        if f.severity in ("blocking", "major")
+    ]
 
 
 def artifact(

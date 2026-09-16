@@ -1092,6 +1092,7 @@ async def review_node(state: RunState, deps: Deps, res: RunResources) -> RunStat
                 )
 
     assert report is not None
+    granted = await _grant_fix_round(state, deps, report)
     await _emit(
         deps,
         state.run_id,
@@ -1106,9 +1107,40 @@ async def review_node(state: RunState, deps: Deps, res: RunResources) -> RunStat
                 for sev in ("blocking", "major", "minor", "nit")
                 if any(f.severity == sev for f in report.findings)
             },
+            "fix_round": granted,
         },
     )
     return state
+
+
+async def _grant_fix_round(state: RunState, deps: Deps, report: ReviewReport) -> int | None:
+    """Append a fix task when the review blocks and the budget allows. Returns the round.
+
+    This function owns the round budget, and it is the only thing that does. The phase
+    document checked it here *and* again in `transition`, with `<` in one place and `<=` in
+    the other — which happened to work because a third condition covered the difference.
+    Instead, the existence of a ready fix task is the grant: `transition` asks whether one
+    is waiting and never counts rounds itself, so the two cannot disagree.
+    """
+    if not report.blocking or state.tasks is None:
+        return None
+    used = state.fix_rounds.get("review", 0)
+    worth_fixing = [f for f in report.findings if f.severity in ("blocking", "major")]
+    if used >= state.budget.max_fix_rounds:
+        # Out of rounds. The findings go on the record and the run proceeds — a pull
+        # request that names what is wrong with it beats one that never arrives.
+        state.known_issues.extend(reviewer.unresolved(worth_fixing))
+        log.info("fix_rounds_exhausted", used=used, known_issues=len(state.known_issues))
+        return None
+
+    round_n = used + 1
+    state.tasks.tasks.append(Task(spec=reviewer.fix_task(worth_fixing, round_n), kind="fix"))
+    state.fix_rounds["review"] = round_n
+    state.return_to = Phase.REVIEW
+    async with session(deps.engine) as s:
+        await db.upsert_tasks(s, state.run_id, state.tasks)
+    log.info("fix_round_granted", round=round_n, findings=len(worth_fixing))
+    return round_n
 
 
 async def pr_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
