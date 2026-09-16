@@ -2,6 +2,13 @@
 /* autoswe run console. No build step: plain modules, fetch and EventSource. */
 
 const PHASES = ["setup", "analyze", "plan", "decompose", "code", "test", "pr", "done"];
+// Phase 3 added three phases that are excursions rather than stages: a run in DEBUG has
+// not left TEST behind, it is going round again. They are drawn as a chip of their own,
+// anchored where they happen. The reason this matters more than cosmetics: the rail used
+// `PHASES.indexOf(run.phase)`, which is -1 for any phase not in the list, and then no
+// chip matched "now" and none matched "past" either — so the whole rail went blank
+// exactly while the run was doing the most interesting thing it can do.
+const OFF_RAIL = { debug: "test", escalate: "test", awaiting_input: "plan" };
 const TERMINAL = new Set(["done", "failed", "cancelled"]);
 const KEY_STORAGE = "autoswe.apikey";
 
@@ -143,7 +150,7 @@ function renderDetail(d) {
       </div>
     </div>
 
-    <div class="phases">${PHASES.map((p) => phaseChip(p, r, failed)).join("")}</div>
+    <div class="phases">${renderRail(r, failed)}</div>
 
     <dl class="stats">
       ${stat("tasks", `${d.tasks.filter((t) => t.status === "done").length} / ${d.tasks.length}`)}
@@ -193,14 +200,27 @@ function renderDetail(d) {
 
 const stat = (label, value) => `<div class="stat"><dt>${label}</dt><dd>${value}</dd></div>`;
 
-function phaseChip(phase, run, failed) {
-  const at = PHASES.indexOf(run.phase);
-  const mine = PHASES.indexOf(phase);
-  let cls = "phase";
-  if (failed && phase === run.phase) cls += " fail";
-  else if (mine === at) cls += " now";
-  else if (mine >= 0 && at >= 0 && mine < at) cls += " past";
-  return `<span class="${cls}">${phase}</span>`;
+function renderRail(run, failed) {
+  // The excursion, when there is one, is spliced in after the stage it belongs to, so
+  // `indexOf` below finds the run's phase whatever it is and the rail keeps its meaning.
+  const anchor = OFF_RAIL[run.phase];
+  const rail = anchor
+    ? [...PHASES.slice(0, PHASES.indexOf(anchor) + 1), run.phase,
+       ...PHASES.slice(PHASES.indexOf(anchor) + 1)]
+    : PHASES;
+  // A terminal run reports phase "failed", which is a status and not a stage: mark the
+  // last stage it actually reached rather than leaving every chip inert.
+  const at = rail.indexOf(run.phase);
+  return rail
+    .map((phase, i) => {
+      let cls = "phase";
+      if (failed && i === at) cls += " fail";
+      else if (i === at) cls += " now";
+      else if (at >= 0 && i < at) cls += " past";
+      else if (OFF_RAIL[phase]) cls += " off-rail";
+      return `<span class="${cls}">${phase}</span>`;
+    })
+    .join("");
 }
 
 function renderTask(t) {

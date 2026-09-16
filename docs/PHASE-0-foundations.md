@@ -647,7 +647,9 @@ make up && make migrate
 make check && make test-int
 uv run python -c "from core.settings import get_settings; print(get_settings().api_keys)"
 # now break it on purpose:
-env -u DATABASE_URL uv run python -c "from core.settings import get_settings; get_settings()"; echo "exit=$?"
+env REDIS_URL=redis://localhost:6379/0 API_KEYS=dev-key-change-me uv run python -c "from core.settings import load_settings; load_settings(None)"; echo "exit=$?"
+# `env -u DATABASE_URL` does not demonstrate this: pydantic-settings reads .env from
+# disk, so the variable returns and the process starts. env_file=None is the real test.
 # → FATAL: missing or invalid settings: DATABASE_URL ; exit=2
 ```
 

@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from core.errors import AutosweError, SandboxError
+from gateway.pricing import priced
 from observability.logging import get_logger
 from orchestrator.checkpoint import load_latest
 from orchestrator.deps import Deps
@@ -46,9 +47,25 @@ async def initial_state(engine: Any, run_id: UUID) -> RunState:
 async def load_state(deps: Deps, run_id: UUID) -> tuple[RunState, bool]:
     """``(state, resumed)`` — the checkpoint when there is one, else a fresh state."""
     state = await load_latest(deps.engine, run_id)
-    if state is not None:
-        return state, True
-    return await initial_state(deps.engine, run_id), False
+    resumed = state is not None
+    if state is None:
+        state = await initial_state(deps.engine, run_id)
+    # Derived here, on every load, rather than defaulted on the model. `RunState` declares
+    # `cost_measurable = True` and said it was "set once from the pricing table" — and
+    # nothing set it, so a run on an unpriced model kept the dollar dimension in its
+    # budget and read 0 % of it forever. The guard that was supposed to admit "we cannot
+    # measure this" never fired once.
+    #
+    # Re-derived on resume too, deliberately: a checkpoint carries whatever was true when
+    # it was written, and the model behind a resumed run can have changed under it.
+    state.cost_measurable = priced(deps.provider.model, deps.settings.llm_base_url)
+    if not state.cost_measurable:
+        log.warning(
+            "cost_not_measurable",
+            model=deps.provider.model,
+            note="the dollar budget cannot bound this run; the wall clock is the only limit",
+        )
+    return state, resumed
 
 
 async def reattach(state: RunState, deps: Deps, res: RunResources, worker_id: str) -> None:

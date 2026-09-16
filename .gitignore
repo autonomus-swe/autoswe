@@ -11,7 +11,12 @@ __pycache__/
 .coverage
 htmlcov/
 .adlc/session/
-evals/results/
+# Eval results are the numbers the project quotes about itself, so they belong in the
+# repository — this used to ignore the whole directory, which hid the README the CHANGELOG
+# and both phase documents point at. Scratch runs go to AUTOSWE_EVAL_RESULTS instead.
+evals/results/*.tmp
+# scripts/bringup.sh keeps the API and worker pids and their logs here
+.run/
 dist/
 build/
 *.egg-info/
