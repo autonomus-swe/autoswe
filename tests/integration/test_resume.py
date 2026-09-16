@@ -240,6 +240,12 @@ async def test_load_state_derives_whether_spend_can_be_measured(
     because a checkpoint carries whatever was true when it was written.
     """
     deps = _deps(migrated_pg_url, redis_url, str(host_tmp), ScriptedAgents())
+    # Pinned rather than inherited: `_settings` reads the process environment, so a
+    # machine with LLM_BASE_URL pointing at localhost would make every model free and
+    # this test would assert the machine instead of the derivation.
+    deps.settings = deps.settings.model_copy(
+        update={"llm_base_url": "https://openrouter.ai/api/v1"}
+    )
     async with session(deps.engine) as s:
         run_id = await db.create_run(
             s,
@@ -249,13 +255,22 @@ async def test_load_state_derives_whether_spend_can_be_measured(
             budget=Budget(),
         )
     try:
-        # the scripted provider's model is "scripted/agents" on a non-local base url,
-        # so it is not in the pricing table and not free — exactly the unmeasurable case
+        # "scripted/agents" is not in the pricing table and the endpoint is not local or
+        # free — exactly the case where spend cannot be measured
         state, resumed = await load_state(deps, run_id)
         assert not resumed
         assert state.cost_measurable is False, deps.provider.model
 
         deps.provider.model = "claude-opus-5"  # a priced model, same run
+        state, _ = await load_state(deps, run_id)
+        assert state.cost_measurable is True
+
+        # and a local endpoint makes any model measurable, because there a zero is a
+        # measurement rather than a missing price
+        deps.provider.model = "qwen2.5:7b"
+        deps.settings = deps.settings.model_copy(
+            update={"llm_base_url": "http://localhost:11434/v1"}
+        )
         state, _ = await load_state(deps, run_id)
         assert state.cost_measurable is True
     finally:

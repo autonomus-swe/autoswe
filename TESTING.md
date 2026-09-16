@@ -7,6 +7,39 @@ difference is in the text.
 Read Part 0 and Part 1 to see it alive in ten minutes. Read Part 6 before you plan
 anything: it is the list of what is missing, and it is longer than the list of what works.
 
+### None of this calls a model, except Part 5
+
+**Parts 0 to 4 make no request to any LLM and cost nothing.** That is deliberate, and it is
+checkable rather than a promise — every provider in the unit and integration tiers is a
+subclass that overrides `_complete`, the single method that would make the HTTP call, so
+the whole suite runs against a dead endpoint:
+
+```bash
+# nothing listening on port 1, and both provider keys removed from the environment
+env -u LLM_API_KEY -u ANTHROPIC_API_KEY LLM_BASE_URL=http://127.0.0.1:1/v1 \
+  uv run pytest -m "unit or integration"
+# 547 passed, 7 deselected in 172s
+```
+
+Everything green with no endpoint to call. The dead `LLM_BASE_URL` is the load-bearing
+half: any real request would fail to connect.
+
+The consequence cuts both ways, and it is the honest headline of this document:
+
+| what Parts 0-4 prove | what they cannot prove |
+|---|---|
+| the machinery — every boundary, parser, gate, budget and transition | that a model uses it well |
+| that a failing test becomes frames, a signature and a class | that the Debugger reads them and forms a useful theory |
+| that a hypothesis is required before an edit | that the hypothesis is any good |
+| that the transition table routes every state (100% of branches) | that a real run converges rather than escalating |
+
+**Part 5 is the only part that calls a model**, and it is the one thing still unproven: no
+model available here gets past DECOMPOSE. See Part 6's last section.
+
+One number in Part 4 did come from a live model run and is labelled where it appears — the
+cancel timing, because the 14-second tail *is* a model call unwinding and a scripted
+provider would not have shown it.
+
 ---
 
 ## Where the product is
@@ -118,7 +151,7 @@ suite still passes and the sandbox integration tests skip.
 
 ---
 
-## Part 1 — see it alive, no model needed
+## Part 1 — see it alive (no model, no spend)
 
 The interesting states of a run are awkward to reach on demand, so there is a seeder that
 writes the same rows and publishes the same events the orchestrator does.
@@ -222,7 +255,7 @@ configuration with every secret masked.
 
 ---
 
-## Part 2 — the automated suites
+## Part 2 — the automated suites (no model, no spend)
 
 ```bash
 make lint && make type && make test && make test-int
@@ -236,9 +269,14 @@ Success: no issues found in 143 source files   # mypy --strict
  93 passed, 453 deselected               # integration, ~2m30s
 ```
 
-The integration suite is not a mock: it runs a real Docker sandbox, a real Postgres from
-testcontainers, and a real Redis. **No test skips** on a machine with Docker and the
-sandbox image. If you see skips, the image is missing.
+The integration suite is not a mock where it matters: a real Docker sandbox, a real
+Postgres from testcontainers, a real Redis, real git worktrees. **No test skips** on a
+machine with Docker and the sandbox image — if you see skips, the image is missing.
+
+The one thing it *does* fake is the model. Every provider in both tiers is a subclass
+overriding `_complete`, so the loop, the hooks, the tool dispatch and the structured-output
+handling are all real while the turn itself is scripted. That is what makes 547 tests
+runnable in three minutes for nothing — and what leaves the agent's judgement untested.
 
 Secrets, across the whole history rather than the working tree:
 
@@ -253,7 +291,7 @@ shells — CLI bodies, the SSE loop, worker bootstrap — which is why Part 1 ex
 
 ---
 
-## Part 3 — the guarantees you should doubt
+## Part 3 — the guarantees you should doubt (no model, no spend)
 
 These are the claims that matter, so each one is a command rather than a paragraph.
 
@@ -494,7 +532,7 @@ first, so a forbidden command never reaches it.
 
 ---
 
-## Part 4 — the verification loop (Phase 3)
+## Part 4 — the verification loop, Phase 3 (no model, except where labelled)
 
 ### A failure signature survives an edit
 
@@ -633,7 +671,9 @@ network cut:
 
 ### A cancel lands mid-command
 
-With the worker running and a run in flight:
+**The one measurement in this part taken from a live model run** — a scripted provider
+returns instantly, so it could never show the tail below. With the worker running against
+a real model and a run in flight:
 
 ```bash
 uv run autoswe cancel "$RUN"
@@ -651,7 +691,7 @@ unwinding** — see Part 6.
 
 ---
 
-## Part 5 — a real run, against a real model
+## Part 5 — a real run, against a real model (**this one spends**)
 
 ```bash
 export AUTOSWE_API_KEY=$(grep -m1 ^API_KEYS= .env | cut -d= -f2- | cut -d, -f1)
