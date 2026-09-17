@@ -89,7 +89,12 @@ async def run(state: RunState, deps: Deps, res: RunResources | None = None) -> R
             status = "cancelled" if state.cancelled else "failed"
             state.error = state.error or "a phase produced no usable result"
             async with session(deps.engine) as s:
-                await db.finish_run(s, state.run_id, status=status, error=state.error)
+                # `pr_url` is passed even though the status is not "done": an escalated run
+                # with commits opens a draft, and omitting it here would write NULL over
+                # the URL that path just set — losing the only pointer to the work.
+                await db.finish_run(
+                    s, state.run_id, status=status, pr_url=state.pr_url, error=state.error
+                )
             await _finished(deps, state, status)
         elif state.phase is Phase.DONE:
             await _finished(deps, state, "done")
@@ -99,13 +104,17 @@ async def run(state: RunState, deps: Deps, res: RunResources | None = None) -> R
         state.phase, state.error = Phase.FAILED, str(e) or "cancelled"
         log.info("run_cancelled", reason=state.error)
         async with session(deps.engine) as s:
-            await db.finish_run(s, state.run_id, status="cancelled", error=state.error)
+            await db.finish_run(
+                s, state.run_id, status="cancelled", pr_url=state.pr_url, error=state.error
+            )
         await _finished(deps, state, "cancelled")
     except Exception as e:
         state.phase, state.error = Phase.FAILED, f"{type(e).__name__}: {e}"
         log.error("run_failed", error=state.error)
         async with session(deps.engine) as s:
-            await db.finish_run(s, state.run_id, status="failed", error=state.error)
+            await db.finish_run(
+                s, state.run_id, status="failed", pr_url=state.pr_url, error=state.error
+            )
         raise
     finally:
         watcher.cancel()

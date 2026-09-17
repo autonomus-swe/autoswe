@@ -82,6 +82,10 @@ class FakeDeps:
         self._steps = steps or []
         self.provider = object()
         self.settings = None
+        # A real Deps always has this. None means "no GitHub client", which is what stops
+        # `_fail` from trying to open a draft pull request in these tests — relying on the
+        # worktree check short-circuiting first would make the fake a trap.
+        self.github = None
 
 
 @pytest.fixture(autouse=True)
