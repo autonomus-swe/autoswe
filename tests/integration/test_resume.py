@@ -32,11 +32,19 @@ from repo.clone import repo_key
 from storage import repo as db
 from storage.db import make_engine, session
 from storage.redis import RedisBus
+
+# Imported for its side effect: it is declared `autouse=True`, so pulling it into this
+# module's namespace registers it here too. A resumed run reaches SECURITY, and without
+# this it would run the real scanners — 60s of sandbox work whose result depends on the
+# rule packs in the image, in a test about checkpointing. It passed either way today,
+# which is the problem: it was one rule-pack change away from failing for a reason that
+# has nothing to do with resume.
 from tests.integration.test_full_run import (
     GOAL,
     IMAGE,
     ScriptedAgents,
     StubGitHub,
+    _deterministic_scanners,  # noqa: F401
     requires_docker,
 )
 

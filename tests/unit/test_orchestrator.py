@@ -20,12 +20,13 @@ from contracts import (
 )
 from orchestrator.nodes import (
     HARNESS_PACKAGES,
+    NODES,
     RunResources,
     install_command,
     synthetic_task,
     teardown,
 )
-from orchestrator.state import Phase, RunState, status_for
+from orchestrator.state import TERMINAL, Phase, RunState, status_for
 from orchestrator.transition import transition
 from tests.fakes import FakeSandbox
 
@@ -144,11 +145,21 @@ def test_test_phase_returns_to_code_while_tasks_remain_then_goes_to_review() -> 
     assert transition(s) == Phase.REVIEW
 
 
-def test_transition_rejects_phases_without_a_node() -> None:
-    """SECURITY is declared and not yet routed. tests/unit/test_transition.py keeps the
-    authoritative list; this is the smoke check that the guard exists at all."""
-    with pytest.raises(ValueError, match="no transition"):
-        transition(state(phase=Phase.SECURITY))
+def test_every_phase_the_machine_can_enter_has_a_node_and_a_way_out() -> None:
+    """This replaces a check that SECURITY was *unrouted*, which Phase 4 made false.
+
+    With the last declared phase routed, the `raise ValueError` at the end of `transition`
+    is no longer reachable from the enum. That guard is worth keeping for the next phase
+    added — and this asserts the thing that makes it unreachable, which is the property
+    actually worth having: every phase a run can enter has a node to run and a row to
+    leave by. tests/unit/test_transition.py keeps the authoritative per-phase table.
+    """
+    for phase in Phase:
+        if phase in TERMINAL:
+            continue
+        assert phase in NODES, f"{phase} is reachable with nothing to run"
+        s = state(phase=phase, tasks=graph("t1"), last_test_report=report(True))
+        assert isinstance(transition(s), Phase), f"{phase} has no transition row"
 
 
 def test_status_mapping() -> None:

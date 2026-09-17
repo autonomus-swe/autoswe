@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
-from agents import reviewer, tester
+from agents import reviewer, security, tester
 from agents.analyzer import AnalyzerAgent
 from agents.coder import CoderAgent
 from agents.debugger import DebuggerAgent
@@ -24,13 +24,14 @@ from contracts import (
     RepoFacts,
     ReviewFinding,
     ReviewReport,
+    SecurityReport,
     Task,
     TaskGraph,
     TaskGraphSpec,
     TaskSpec,
     TestReport,
 )
-from core.errors import AgentError, BudgetExhausted, SandboxError
+from core.errors import AgentError, BudgetExhausted, RepoError, SandboxError
 from gateway.routing import route_for
 from observability.logging import bind_run, get_logger
 from orchestrator.approvals import ApprovalGate
@@ -45,12 +46,13 @@ from repo import profile as repo_profile
 from repo import worktree as wt
 from repo.clone import ensure_bare_clone, repo_key, resolve_sha
 from repo.gitcmd import git
-from repo.github import open_pr, pr_body, push_branch
+from repo.github import gitleaks_gate, open_pr, pr_body, push_branch
 from repo.repomap import render_map
 from repo.worktree import Worktree
 from sandbox.base import Sandbox
 from storage import repo as db
 from storage.db import session
+from tools import scanners
 from tools.base import RunContext
 from tools.tests import RunTestsTool
 
@@ -1092,7 +1094,16 @@ async def review_node(state: RunState, deps: Deps, res: RunResources) -> RunStat
                 )
 
     assert report is not None
-    granted = await _grant_fix_round(state, deps, report)
+    worth_fixing = [f for f in report.findings if f.severity in ("blocking", "major")]
+    granted = await _grant_fix_round(
+        state,
+        deps,
+        kind="review",
+        phase=Phase.REVIEW,
+        blocked=report.blocking,
+        spec=lambda n: reviewer.fix_task(worth_fixing, n),
+        unresolved=lambda: reviewer.unresolved(worth_fixing),
+    )
     await _emit(
         deps,
         state.run_id,
@@ -1113,39 +1124,141 @@ async def review_node(state: RunState, deps: Deps, res: RunResources) -> RunStat
     return state
 
 
-async def _grant_fix_round(state: RunState, deps: Deps, report: ReviewReport) -> int | None:
-    """Append a fix task when the review blocks and the budget allows. Returns the round.
+async def _grant_fix_round(
+    state: RunState,
+    deps: Deps,
+    *,
+    kind: str,
+    phase: Phase,
+    blocked: bool,
+    spec: Callable[[int], TaskSpec],
+    unresolved: Callable[[], list[str]],
+) -> int | None:
+    """Append a fix task when a gate blocks and that gate's budget allows. Returns the round.
 
     This function owns the round budget, and it is the only thing that does. The phase
-    document checked it here *and* again in `transition`, with `<` in one place and `<=` in
-    the other — which happened to work because a third condition covered the difference.
-    Instead, the existence of a ready fix task is the grant: `transition` asks whether one
-    is waiting and never counts rounds itself, so the two cannot disagree.
+    document checked it in `review_node` *and* again in `transition`, with `<` in one place
+    and `<=` in the other — which happened to work because a third condition covered the
+    difference. Instead, the existence of a ready fix task is the grant: `transition` asks
+    whether one is waiting and never counts rounds itself, so the two cannot disagree.
+
+    Taken generic for the security gate rather than copied. A second copy of a budget is how
+    the original defect got in, and two gates counting rounds in two functions would be the
+    same mistake with a different pair of comparisons. `kind` keys the counter, so the gates
+    have separate budgets while sharing the one piece of code that spends them.
     """
-    if not report.blocking or state.tasks is None:
+    if not blocked or state.tasks is None:
         return None
-    used = state.fix_rounds.get("review", 0)
-    worth_fixing = [f for f in report.findings if f.severity in ("blocking", "major")]
+    used = state.fix_rounds.get(kind, 0)
     if used >= state.budget.max_fix_rounds:
         # Out of rounds. The findings go on the record and the run proceeds — a pull
         # request that names what is wrong with it beats one that never arrives.
-        state.known_issues.extend(reviewer.unresolved(worth_fixing))
-        log.info("fix_rounds_exhausted", used=used, known_issues=len(state.known_issues))
+        state.known_issues.extend(unresolved())
+        log.info("fix_rounds_exhausted", kind=kind, used=used, known_issues=len(state.known_issues))
         return None
 
     round_n = used + 1
-    state.tasks.tasks.append(Task(spec=reviewer.fix_task(worth_fixing, round_n), kind="fix"))
-    state.fix_rounds["review"] = round_n
-    state.return_to = Phase.REVIEW
+    state.tasks.tasks.append(Task(spec=spec(round_n), kind="fix"))
+    state.fix_rounds[kind] = round_n
+    state.return_to = phase
     async with session(deps.engine) as s:
         await db.upsert_tasks(s, state.run_id, state.tasks)
-    log.info("fix_round_granted", round=round_n, findings=len(worth_fixing))
+    log.info("fix_round_granted", kind=kind, round=round_n)
     return round_n
+
+
+async def security_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
+    """Four scanners, then one model reading what they found against the files.
+
+    The scanners are the enumerating pass — the same division of labour as the Reviewer's
+    two passes, except the cheap half here is mechanical and therefore free to be noisy.
+
+    A scanner pass that cannot run at all is not silently a clean result: `run_all` turns
+    each failure into an `info` finding naming the tool, so a broken scanner appears in the
+    report as a thing not looked for rather than as nothing found.
+    """
+    files = await _review_diff(state, deps, res)
+    if not files or res.sandbox is None or res.worktree is None:
+        # Nothing changed, or no sandbox to scan in. Recording an empty report rather than
+        # skipping keeps the artifact set the same shape for every run.
+        state.security = SecurityReport(findings=[], critical=False, checklist={})
+        log.info("security_skipped", files=len(files), sandbox=res.sandbox is not None)
+        await _emit(deps, state.run_id, "security_report", {"findings": 0, "critical": False})
+        return state
+
+    found = await scanners.run_all(res.sandbox, res.worktree.path, state.base_sha or "HEAD", files)
+
+    step_id, hooks, ctx = await _begin(state, deps, res, "security", Phase.SECURITY)
+    report = None
+    error = None
+    try:
+        report, _outcome = await security.SecurityAgent().run(
+            deps.provider, ctx, state.goal, found, files, hooks
+        )
+        state.security = report
+    except Exception as e:
+        # Unlike the Reviewer's pre-pass, this half is not expendable: losing it would
+        # leave raw scanner output with nobody's judgement on it, and every unverified
+        # finding gates. So the run fails here rather than blocking on unread noise.
+        error = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        await _end(state, deps, step_id, hooks, report, error, None)
+        if report is not None:
+            async with session(deps.engine) as s:
+                await db.save_artifact(
+                    s,
+                    state.run_id,
+                    "security",
+                    None,
+                    security.artifact(report, security.applicable(files)),
+                )
+
+    assert report is not None
+    gating = security.gating(report.findings)
+    granted = await _grant_fix_round(
+        state,
+        deps,
+        kind="security",
+        phase=Phase.SECURITY,
+        blocked=report.critical,
+        spec=lambda n: security.fix_task(gating, n),
+        unresolved=lambda: security.unresolved(report.findings),
+    )
+    await _emit(
+        deps,
+        state.run_id,
+        "security_report",
+        {
+            "findings": len(report.findings),
+            "critical": report.critical,
+            "scanner_findings": len(found),
+            "gating": len(gating),
+            "by_tool": {
+                tool: sum(1 for f in report.findings if f.tool == tool)
+                for tool in sorted({f.tool for f in report.findings})
+            },
+            "fix_round": granted,
+        },
+    )
+    return state
 
 
 async def pr_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     assert res.worktree is not None
     report = state.last_test_report
+    # Before the push, not after: a secret that reaches a forge is not recalled by a force
+    # push, and this is the one finding that gets worse by being transmitted. A run that
+    # committed one ends here, with the finding on the record for a human to rotate.
+    leaks = gitleaks_gate(state.security.findings if state.security else [])
+    if leaks:
+        where = ", ".join(sorted({f"{f.file}:{f.line}" for f in leaks}))
+        log.error("push_refused_secret", count=len(leaks), files=where)
+        raise RepoError(
+            f"refusing to push: {len(leaks)} secret(s) committed by this run ({where}). "
+            "The value is withheld deliberately — rotate the credential and remove it from "
+            "the branch's history before pushing."
+        )
     await push_branch(res.worktree.path, state.work_branch, deps.git_token())
     state.pushed = True
     diff_stat = await git("diff", "--stat", state.base_sha or "HEAD", cwd=res.worktree.path)
@@ -1186,6 +1299,7 @@ NODES: dict[Phase, Node] = {
     Phase.ESCALATE: escalate_node,
     Phase.TEST: test_node,
     Phase.REVIEW: review_node,
+    Phase.SECURITY: security_node,
     Phase.PR: pr_node,
 }
 

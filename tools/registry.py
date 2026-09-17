@@ -60,12 +60,18 @@ ROLE_TOOLS: dict[str, list[str]] = {
     # is a different question from "what does the diff say", and both inform a finding.
     "review": ["read_file", "search_code", "git_status", "git_diff", "git_log"],
     "review_pre": ["read_file", "search_code", "git_status", "git_diff", "git_log"],
+    # Read-only, and `bash` is deliberately absent even though a security reviewer would
+    # find it convenient: this role is the one reading attacker-controlled strings out of a
+    # diff, so it is the last one that should be able to run them.
+    "security": ["read_file", "search_code", "git_status", "git_diff", "git_log"],
     "decomposer": [],
     "tester": [],
     "pr_writer": ["read_file", "search_code", "git_status", "git_diff"],
 }
 
-READ_ONLY_ROLES = frozenset({"analyzer", "planner", "review", "review_pre", "pr_writer"})
+READ_ONLY_ROLES = frozenset(
+    {"analyzer", "planner", "review", "review_pre", "security", "pr_writer"}
+)
 
 
 def tools_for(role: str) -> list[BaseTool]:

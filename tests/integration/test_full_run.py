@@ -20,7 +20,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.pool import NullPool
 
-from contracts import Budget, Usage
+from agents import security
+from contracts import Budget, SecurityFinding, Usage
 from contracts.plan import ImplementationPlan, TaskGraph
 from contracts.repo import RepoProfile
 from core.settings import Settings, load_settings
@@ -156,6 +157,11 @@ class ScriptedAgents(OpenAICompatProvider):
                 return self._done()
             self.roles.append("review")
             return call("v", "submit_review", REVIEW_REPORT)
+        if "submit_security" in offered:
+            if "security" in self.roles:
+                return self._done()
+            self.roles.append("security")
+            return call("s", "submit_security", SECURITY_REPORT)
         if "submit_result" in offered:
             if "coder" not in self.roles:
                 self.roles.append("coder")
@@ -228,6 +234,56 @@ REVIEW_REPORT = {
     "findings": REVIEW_CANDIDATES["findings"],
     "blocking": False,
 }
+# The scanners themselves are exercised against a real sandbox in
+# tests/integration/test_scanners.py. Here they are stubbed, for two reasons. Their output
+# depends on the rule packs baked into the image, so this test would assert whatever semgrep
+# happens to think today; and a `high` finding inside the diff would *correctly* grant a fix
+# round and send the run back to CODE, which would make the audit trail below a function of
+# a vendored rule pack. What this test is for is the pipeline: that SECURITY runs between
+# REVIEW and PR, and that what it decides reaches the record.
+SCANNER_FINDINGS = [
+    # Inherited: worth listing, and not this run's to answer for.
+    SecurityFinding(
+        tool="bandit",
+        rule="B324",
+        file="fixture/legacy.py",
+        line=12,
+        severity="high",
+        message="md5 used where a password hash is expected",
+        verified_by_llm=False,
+        false_positive=False,
+        rationale="",
+        in_diff=False,
+    ),
+    # A scanner that could not run says so, and an `info` finding cannot gate.
+    SecurityFinding(
+        tool="pip-audit",
+        rule="scan-failed",
+        file="",
+        line=0,
+        severity="info",
+        message="pip-audit did not run: the fixture has no lockfile",
+        verified_by_llm=False,
+        false_positive=False,
+        rationale="",
+        in_diff=False,
+    ),
+]
+SECURITY_REPORT = {
+    "findings": [
+        {
+            **f.model_dump(mode="json"),
+            "verified_by_llm": True,
+            "rationale": "opened the file: it predates this change",
+        }
+        for f in SCANNER_FINDINGS
+    ],
+    # Deliberately wrong. Neither finding can gate — one is outside the diff, the other is
+    # `info` — so the run reaching DONE is the end-to-end proof that the harness recomputes
+    # this rather than reading the model's answer.
+    "critical": True,
+    "checklist": dict.fromkeys(security.CHECKLIST_KEYS, True),
+}
 TASK_GRAPH = {
     "tasks": [
         {
@@ -256,6 +312,16 @@ class StubGitHub:
     def create_pull(self, **kw: Any) -> Any:
         self.created.append(kw)
         return type("PR", (), {"html_url": "https://github.com/acme/demo/pull/7"})()
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_scanners(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stubbed for every run in this module. See SCANNER_FINDINGS for why."""
+
+    async def run_all(*a: Any, **kw: Any) -> list[SecurityFinding]:
+        return list(SCANNER_FINDINGS)
+
+    monkeypatch.setattr("tools.scanners.run_all", run_all)
 
 
 @pytest.fixture
@@ -332,10 +398,20 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
         "coder",
         "review_pre",  # the cheap pass enumerates
         "review",  # the expensive one verifies
+        "security",  # and the scan runs before anything is pushed
     ]
     assert {"bash", "run_tests", "git_commit", "read_file", "search_code"} <= provider.seen_tools
-    # and the reviewer was offered no way to change anything
-    assert {"submit_review", "git_log"} <= provider.seen_tools
+    # and neither read-only role was offered a way to change anything
+    assert {"submit_review", "submit_security", "git_log"} <= provider.seen_tools
+    # The fake submitted `critical: true`; the harness recomputed it from the severities.
+    # One finding is outside the diff and the other is `info`, so neither can gate — and
+    # the run reaching DONE is what proves the model's own boolean was not read.
+    assert final.security is not None
+    assert final.security.critical is False, "the model said critical and the harness disagreed"
+    assert [f.tool for f in final.security.findings if f.tool != "checklist"] == [
+        "bandit",
+        "pip-audit",
+    ]
 
     # the branch reached the origin with the right content and untouched tests
     assert state.work_branch in await git("branch", "--list", state.work_branch, cwd=origin_repo)
@@ -377,6 +453,8 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
         # the reviewer's verification pass. The cheap pass before it has no tools at all,
         # so it leaves an llm_calls row and no tool_calls row.
         "submit_review",
+        # the security pass, between the review and the push
+        "submit_security",
     ]
     assert llm_turns >= 8
     assert artifact is not None and artifact.content["passed"] is True
@@ -392,6 +470,7 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
         "agent_finished",
         "tool_call",
         "test_report",
+        "security_report",
         "pr_opened",
         "run_finished",
     } <= set(events), sorted(set(events))
@@ -657,15 +736,11 @@ class StallsThenLoops(ScriptedAgents):
     """A coder that never submits, so the run stays inside one node's tool loop."""
 
     async def _complete(self, **kw: Any) -> ChatTurn:
+        # Only the coder's behaviour differs; every other role falls through to the parent,
+        # which is the one place that decides what each submits. This used to carry its own
+        # copy of the review branch, which was a second place for that to drift — and would
+        # have needed a third copy when SECURITY arrived.
         offered = {t["function"]["name"] for t in kw.get("tools", [])}
-        if "submit_review" in offered:
-            # Guarded like the analyzer and planner above: submit once, then end the turn.
-            # Without this the fake re-submits every turn until max_iterations, which is
-            # what a real model does not do — and it hides how many turns a phase took.
-            if "review" in self.roles:
-                return self._done()
-            self.roles.append("review")
-            return call("v", "submit_review", REVIEW_REPORT)
         if "submit_result" in offered:
             return call("x", "str_replace_based_edit_tool", {"command": "view", "path": "."})
         return await super()._complete(**kw)

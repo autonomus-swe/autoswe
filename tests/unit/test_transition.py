@@ -20,6 +20,8 @@ from contracts import (
     RepoProfile,
     ReviewFinding,
     ReviewReport,
+    SecurityFinding,
+    SecurityReport,
     Task,
     TaskGraph,
     TaskResult,
@@ -179,9 +181,10 @@ def review(blocking: bool, severities: tuple[str, ...] = ("blocking",)) -> Revie
     )
 
 
-def test_a_clean_review_goes_to_the_pull_request() -> None:
+def test_a_clean_review_goes_to_the_security_scan() -> None:
+    """REVIEW is no longer the last gate: the change is scanned before it is pushed."""
     s = state(phase=Phase.REVIEW, review=review(False, ("minor",)), tasks=graph("t1"))
-    assert transition(s) == Phase.PR
+    assert transition(s) == Phase.SECURITY
 
 
 def test_a_blocking_review_with_a_fix_task_waiting_goes_back_to_code() -> None:
@@ -195,16 +198,89 @@ def test_a_blocking_review_with_a_fix_task_waiting_goes_back_to_code() -> None:
 
 def test_a_blocking_review_with_no_task_waiting_proceeds_anyway() -> None:
     """The budget is gone. The findings are on known_issues and the pull request carries
-    them — a PR that names what is wrong with it beats one that never arrives."""
+    them — a PR that names what is wrong with it beats one that never arrives.
+
+    It proceeds to the security scan rather than straight to the pull request: a run that
+    gave up on a correctness finding has not earned the right to skip being scanned.
+    """
     tasks = graph("t1")
     tasks.by_id("t1").status = "done"
     s = state(phase=Phase.REVIEW, review=review(True), tasks=tasks)
-    assert transition(s) == Phase.PR
+    assert transition(s) == Phase.SECURITY
 
 
 def test_a_review_that_never_ran_does_not_block() -> None:
     """`state.review` is None when the run changed nothing, so REVIEW recorded nothing."""
-    assert transition(state(phase=Phase.REVIEW, tasks=graph("t1"))) == Phase.PR
+    assert transition(state(phase=Phase.REVIEW, tasks=graph("t1"))) == Phase.SECURITY
+
+
+# ---- the security gate ---------------------------------------------------------------
+
+
+def security(critical: bool, severities: tuple[str, ...] = ("critical",)) -> SecurityReport:
+    return SecurityReport(
+        findings=[
+            SecurityFinding(
+                tool="semgrep",
+                rule="r",
+                file="src/a.py",
+                line=i,
+                severity=cast("Any", sev),
+                message="m",
+                verified_by_llm=True,
+                false_positive=False,
+                rationale="checked",
+                in_diff=True,
+            )
+            for i, sev in enumerate(severities, 1)
+        ],
+        critical=critical,
+        checklist={},
+    )
+
+
+def test_a_clean_scan_goes_to_the_pull_request() -> None:
+    s = state(phase=Phase.SECURITY, security=security(False, ("low",)), tasks=graph("t1"))
+    assert transition(s) == Phase.PR
+
+
+def test_a_critical_finding_with_a_fix_task_waiting_goes_back_to_code() -> None:
+    """The same shape as the review gate: the waiting task *is* the grant."""
+    tasks = graph("t1")
+    tasks.by_id("t1").status = "done"
+    tasks.tasks.append(Task(spec=spec("fix-security-1"), kind="fix"))
+    s = state(phase=Phase.SECURITY, security=security(True), tasks=tasks)
+    assert transition(s) == Phase.CODE
+
+
+def test_a_critical_finding_with_no_task_waiting_still_reaches_a_pull_request() -> None:
+    """The fix budget is gone. `pr_node` is what refuses to push a committed secret —
+    the phase machine's job is to reach an outcome, not to sit in a loop."""
+    tasks = graph("t1")
+    tasks.by_id("t1").status = "done"
+    s = state(phase=Phase.SECURITY, security=security(True), tasks=tasks)
+    assert transition(s) == Phase.PR
+
+
+def test_a_scan_that_never_ran_does_not_block() -> None:
+    """`state.security` is None when the run changed nothing, or when there was no sandbox
+    to scan in. Blocking on a scan that did not happen would strand the run."""
+    assert transition(state(phase=Phase.SECURITY, tasks=graph("t1"))) == Phase.PR
+
+
+def test_a_security_fix_rounds_tests_passing_goes_back_to_the_security_gate() -> None:
+    """`return_to` carries the gate that asked, so the two gates cannot steal each other's
+    hop — a security fix returns to SECURITY, not to REVIEW."""
+    tasks = graph("t1", "t2")
+    tasks.by_id("t1").status = "done"
+    s = state(
+        phase=Phase.TEST,
+        tasks=tasks,
+        last_test_report=report(True),
+        return_to=Phase.SECURITY,
+    )
+    assert transition(s) == Phase.SECURITY
+    assert s.return_to is None, "one grant buys one hop"
 
 
 def test_the_fix_tasks_tests_passing_goes_back_to_the_gate_that_asked() -> None:
@@ -434,8 +510,9 @@ def test_three_failures_then_escalation_is_the_whole_debug_budget() -> None:
 
 
 # Phases with no transition row yet. Each one is a phase the enum declares and the machine
-# cannot leave, so the list shrinking is how this phase's progress shows up here.
-UNROUTED = {Phase.SECURITY}
+# cannot leave, so the list shrinking is how this phase's progress shows up here. Phase 4
+# emptied it: every phase the enum declares is now routed.
+UNROUTED: set[Phase] = set()
 
 
 def test_every_phase_is_routed_except_the_ones_not_built_yet() -> None:

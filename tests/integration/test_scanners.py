@@ -13,7 +13,6 @@ passed for the wrong reason.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -25,6 +24,7 @@ from contracts import SecurityFinding
 from repo import diff as d
 from repo.gitcmd import git
 from sandbox.docker import DockerSandbox
+from tests.fakes import planted_secret
 from tools import scanners
 
 pytestmark = pytest.mark.integration
@@ -62,21 +62,6 @@ requires_docker = pytest.mark.skipif(
 requires_gitleaks = pytest.mark.skipif(
     not __import__("shutil").which("gitleaks"), reason="gitleaks is not on PATH"
 )
-
-
-def planted_secret(tag: str) -> str:
-    """A key gitleaks will flag, derived rather than written down.
-
-    Written as a literal it trips this repository's own pre-commit gitleaks hook — which is
-    the hook being right: it cannot tell a fixture from a real key, and allowlisting the
-    file so the fixture could live in it would hide a real one pasted here later. Deriving
-    it keeps the source clean and the value deterministic, so the test cannot flake.
-
-    Forty hex characters clear the `generic-api-key` entropy threshold; verified against
-    gitleaks directly rather than assumed, because the other thing this file knows about
-    gitleaks — the allowlist in the docstring above — was also not guessable.
-    """
-    return hashlib.sha256(f"autoswe-scanner-test-{tag}".encode()).hexdigest()[:40]
 
 
 @pytest.fixture

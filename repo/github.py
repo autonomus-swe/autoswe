@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Any, Protocol
 
+from contracts import SecurityFinding
 from core.errors import RepoError
 from repo.gitcmd import git, git_auth_env
 
@@ -25,6 +26,24 @@ def parse_repo_url(repo_url: str) -> tuple[str, str]:
     if len(segments) < 2:
         raise RepoError(f"cannot read owner/name from repository location: {repo_url}")
     return segments[-2], segments[-1]
+
+
+def gitleaks_gate(findings: list[SecurityFinding]) -> list[SecurityFinding]:
+    """The findings that must stop a push, before anything leaves this machine.
+
+    A secret is the one finding that gets worse the moment the branch is pushed: a force
+    push does not remove it from a forge that has already indexed it, and a pull request
+    body would carry it into a notification email. So this gate is not "block the run" like
+    the others — it is "do not transmit", and it runs before `push_branch`.
+
+    Every gitleaks finding counts, not only the ones tagged `in_diff`. gitleaks is already
+    scoped with ``--log-opts base..HEAD``, so anything it reports is in a commit this run
+    made; requiring the diff tag as well would mean a line-mapping miss could let a real
+    secret through, and that is the wrong direction to be wrong in. Failures to *run* are
+    `scan-failed` and do not block a push — a scanner that did not run has found nothing,
+    and refusing every push on a broken scanner would make the tool impossible to keep.
+    """
+    return [f for f in findings if f.tool == "gitleaks" and f.rule != "scan-failed"]
 
 
 async def push_branch(worktree: Path, branch: str, token: str | None = None) -> None:

@@ -1,7 +1,12 @@
 "use strict";
 /* autoswe run console. No build step: plain modules, fetch and EventSource. */
 
-const PHASES = ["setup", "analyze", "plan", "decompose", "code", "test", "pr", "done"];
+// REVIEW and SECURITY are stages, not excursions: a change passes through both on its way
+// to a pull request. They were missing here, which is the same blank-rail bug described
+// below — it just took until a run actually reached REVIEW to show. `test_console.py`
+// now asserts every phase the machine can report has a chip, so the next one added fails
+// a test rather than silently emptying the rail.
+const PHASES = ["setup", "analyze", "plan", "decompose", "code", "test", "review", "security", "pr", "done"];
 // Phase 3 added three phases that are excursions rather than stages: a run in DEBUG has
 // not left TEST behind, it is going round again. They are drawn as a chip of their own,
 // anchored where they happen. The reason this matters more than cosmetics: the rail used
