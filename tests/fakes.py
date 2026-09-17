@@ -1,7 +1,8 @@
-"""Shared fakes for unit tests: an in-memory sandbox and a RunContext factory."""
+"""Shared fakes for unit tests: an in-memory sandbox, a RunContext factory, a test key."""
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -10,6 +11,22 @@ from contracts import ExecResult
 from tools.base import RunContext
 
 Handler = Callable[[str], ExecResult]
+
+
+def planted_secret(tag: str) -> str:
+    """A key gitleaks will flag, derived rather than written down.
+
+    Written as a literal it trips this repository's own pre-commit gitleaks hook — which is
+    the hook being right: it cannot tell a fixture from a real key. Allowlisting the files
+    that need one would hide a real key pasted there later, so this derives it instead:
+    deterministic, no literal in any source file, and verified against gitleaks to actually
+    trip `generic-api-key` rather than assumed to. Forty hex characters clear its entropy
+    threshold.
+
+    Lives here because two test modules need one, and the second copy is how I walked into
+    the same blocked commit twice.
+    """
+    return hashlib.sha256(f"autoswe-scanner-test-{tag}".encode()).hexdigest()[:40]
 
 
 def ok(stdout: str = "", exit_code: int = 0, **kw: object) -> ExecResult:

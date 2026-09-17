@@ -1,10 +1,15 @@
-"""Fix rounds: a blocking review sends the change back, twice at most, then says so.
+"""Fix rounds: a blocking gate sends the change back, twice at most, then says so.
 
 The thing worth testing is the budget, and specifically that **one place owns it**. The
 phase document checked the rounds in `review_node` and again in `transition`, with `<` in
 one and `<=` in the other; it happened to work because a third condition covered the gap.
 Here the waiting fix task *is* the grant, so the two cannot disagree — and these tests are
 what would catch it if they ever did.
+
+Phase 4 added a second gate with the same shape. `_grant_fix_round` was taken generic
+rather than copied, because a second copy of a budget is how the original defect got in;
+`kind` keys the counter, so the gates have separate budgets and one piece of code spends
+both.
 """
 
 from __future__ import annotations
@@ -14,7 +19,16 @@ from uuid import uuid4
 
 import pytest
 
-from contracts import Budget, ReviewFinding, ReviewReport, Task, TaskGraph, TaskSpec
+from agents import reviewer
+from contracts import (
+    Budget,
+    ReviewFinding,
+    ReviewReport,
+    SecurityReport,
+    Task,
+    TaskGraph,
+    TaskSpec,
+)
 from orchestrator import nodes
 from orchestrator.state import Phase, RunState
 from orchestrator.transition import transition
@@ -82,7 +96,21 @@ def _no_db(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def grant(s: RunState, report: ReviewReport) -> int | None:
-    return await nodes._grant_fix_round(s, cast("Any", FakeDeps()), report)
+    """The review gate's call, spelled out exactly as `review_node` makes it.
+
+    Not hidden behind a helper in `nodes`, because the point of these tests is that one
+    function owns the budget: if the call site changes shape, this has to change with it.
+    """
+    worth_fixing = [f for f in report.findings if f.severity in ("blocking", "major")]
+    return await nodes._grant_fix_round(
+        s,
+        cast("Any", FakeDeps()),
+        kind="review",
+        phase=Phase.REVIEW,
+        blocked=report.blocking,
+        spec=lambda n: reviewer.fix_task(worth_fixing, n),
+        unresolved=lambda: reviewer.unresolved(worth_fixing),
+    )
 
 
 # ---- the budget --------------------------------------------------------------------
@@ -127,6 +155,37 @@ async def test_the_second_round_is_granted_and_the_third_is_not() -> None:
     assert s.tasks is not None and len(s.tasks.tasks) == 3, "no third fix task"
 
 
+async def test_the_two_gates_count_their_rounds_separately() -> None:
+    """One function spends both budgets; `kind` keys the counter.
+
+    A run that spent two rounds fixing correctness has not thereby forfeited its chance to
+    fix a hole one of those fixes introduced — and the security gate arrives *after* the
+    review gate, so a shared counter would mean the second gate is usually already broke.
+    """
+    s = state_after_review()
+    report = ReviewReport(findings=[finding()], blocking=True)
+
+    assert await grant(s, report) == 1
+    s.tasks.tasks[-1].status = "done"  # type: ignore[union-attr]
+    assert await grant(s, report) == 2, "review's budget of two, spent"
+    s.tasks.tasks[-1].status = "done"  # type: ignore[union-attr]
+    assert await grant(s, report) is None
+
+    security_round = await nodes._grant_fix_round(
+        s,
+        cast("Any", FakeDeps()),
+        kind="security",
+        phase=Phase.SECURITY,
+        blocked=True,
+        spec=lambda n: spec(f"fix-security-{n}"),
+        unresolved=lambda: [],
+    )
+
+    assert security_round == 1, "the security gate starts with its own two rounds"
+    assert s.fix_rounds == {"review": 2, "security": 1}
+    assert s.return_to is Phase.SECURITY, "and it goes back to the gate that asked"
+
+
 async def test_a_budget_of_zero_never_grants_a_round() -> None:
     """Configurable, and the configuration is respected rather than assumed."""
     s = state_after_review(budget=Budget(max_fix_rounds=0))
@@ -151,7 +210,7 @@ async def test_only_findings_worth_a_round_are_sent_back() -> None:
 
 
 async def test_the_whole_loop_from_blocking_review_to_pull_request() -> None:
-    """REVIEW → CODE → TEST → REVIEW → PR, walked with the real transition function.
+    """REVIEW → CODE → TEST → REVIEW → SECURITY → PR, with the real transition function.
 
     The point is the hand-off: each phase's decision is made by the code that owns it, and
     they have to agree without sharing a counter.
@@ -173,11 +232,16 @@ async def test_the_whole_loop_from_blocking_review_to_pull_request() -> None:
     assert transition(s) == Phase.REVIEW
     assert s.return_to is None, "the hop is spent"
 
-    # second review: clean this time
+    # second review: clean this time, which hands off to the scan rather than the PR
     s.phase = Phase.REVIEW
     clean = ReviewReport(findings=[], blocking=False)
     s.review = clean
     assert await grant(s, clean) is None
+    assert transition(s) == Phase.SECURITY
+
+    # a clean scan is the last gate
+    s.phase = Phase.SECURITY
+    s.security = SecurityReport(findings=[], critical=False, checklist={})
     assert transition(s) == Phase.PR
     assert s.known_issues == [], "nothing was left unresolved"
 
@@ -203,5 +267,11 @@ async def test_a_run_that_never_stops_blocking_still_reaches_a_pull_request() ->
     s.phase = Phase.REVIEW
     s.review = blocking
     assert await grant(s, blocking) is None
-    assert transition(s) == Phase.PR
+    assert transition(s) == Phase.SECURITY
     assert s.known_issues, "and it says what it gave up on"
+
+    # Out of review rounds does not mean out of the machine: the change is still scanned,
+    # with the security gate's own budget untouched by what the review gate spent.
+    s.phase = Phase.SECURITY
+    s.security = SecurityReport(findings=[], critical=False, checklist={})
+    assert transition(s) == Phase.PR

@@ -67,6 +67,17 @@ def transition(s: RunState) -> Phase:
                 return Phase.CODE
             # Blocking with no task waiting means the budget is gone; the findings are on
             # `known_issues` and the pull request will carry them and be a draft.
+            return Phase.SECURITY
+        case Phase.SECURITY:
+            # The same shape as REVIEW, with its own budget: `fix_rounds` is keyed by gate,
+            # so a run that spent its review rounds still gets security rounds. They buy
+            # different things, and a change that needed two rounds of correctness fixes has
+            # not thereby forfeited its chance to fix a hole one of those fixes introduced.
+            if s.security and s.security.critical and s.tasks and s.tasks.next_ready():
+                return Phase.CODE
+            # Out of rounds with findings outstanding: they are on `known_issues`, the pull
+            # request will be a draft that names them, and `pr_node` still refuses to push
+            # at all if one of them is a committed secret.
             return Phase.PR
         case Phase.PR:
             # The v3 sketch in the phase doc returns DONE unconditionally here. Keeping
@@ -96,9 +107,9 @@ def _after_test(s: RunState) -> Phase:
             return back
         if s.tasks and s.tasks.next_ready():
             return Phase.CODE
-        # Every task done means the change is final, so it gets reviewed before it is
-        # pushed. Phase 4 puts SECURITY between REVIEW and PR; until then REVIEW is the
-        # last gate, and a run with nothing to review records an empty report and moves on.
+        # Every task done means the change is final, so it is reviewed and then scanned
+        # before it is pushed. A run with nothing to review records an empty report and
+        # moves on, so the artifact set is the same shape for every run.
         return Phase.REVIEW
 
     if s.attempts.get(s.current_task_id or "", 0) >= MAX_DEBUG_ATTEMPTS:
