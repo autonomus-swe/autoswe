@@ -8,7 +8,10 @@ from typing import Any, Protocol
 
 from contracts import SecurityFinding
 from core.errors import RepoError
+from observability.logging import get_logger
 from repo.gitcmd import git, git_auth_env
+
+log = get_logger(__name__)
 
 
 def parse_repo_url(repo_url: str) -> tuple[str, str]:
@@ -79,6 +82,7 @@ async def open_pr(
     body: str,
     client: GitHubClient,
     draft: bool = False,
+    labels: list[str] | None = None,
 ) -> str:
     """Return the PR URL, reusing an open PR for ``head`` if one exists (idempotent)."""
     import asyncio
@@ -90,6 +94,15 @@ async def open_pr(
         for pr in repo.get_pulls(state="open", head=f"{owner}:{head}"):
             return str(pr.html_url)
         pr = repo.create_pull(title=title, body=body, head=head, base=base, draft=draft)
+        if labels:
+            # After creation, not part of it: `create_pull` takes no labels, and a label
+            # that does not exist in the repository is a 422 on a pull request that has
+            # already been opened. Losing the pull request over a missing label would be
+            # the wrong trade, so this is best-effort and says so when it fails.
+            try:
+                pr.add_to_labels(*labels)
+            except Exception as e:
+                log.warning("pr_labels_failed", labels=labels, error=f"{type(e).__name__}: {e}")
         return str(pr.html_url)
 
     try:

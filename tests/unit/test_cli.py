@@ -91,3 +91,94 @@ def test_describe_summarises_every_event_the_run_emits(
 
 def test_describe_never_raises_on_a_payload_it_has_not_seen() -> None:
     assert _describe("something_new", {}) == ""
+
+
+# ---- `autoswe artifacts` ----------------------------------------------------------------
+
+
+def _invoke(monkeypatch: pytest.MonkeyPatch, args: list[str], responses: dict[str, object]) -> str:
+    """Run the `artifacts` command against a stubbed HTTP client, return its stdout.
+
+    Stubbed at the client rather than at `_check`, because the behaviour worth pinning is
+    the content-type branch: the diff comes back as text/plain and everything else as JSON,
+    and a command that called `.json()` on a patch would report a parse error instead of
+    printing it.
+    """
+    import typer.testing
+
+    from cli import main
+
+    class Response:
+        def __init__(self, payload: object) -> None:
+            self.payload = payload
+            is_text = isinstance(payload, str)
+            self.headers = {"content-type": "text/plain" if is_text else "application/json"}
+            self.text = payload if isinstance(payload, str) else ""
+            self.status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> object:
+            return self.payload
+
+    class Client:
+        def __enter__(self) -> Client:
+            return self
+
+        def __exit__(self, *a: object) -> None:
+            return None
+
+        def get(self, path: str) -> Response:
+            assert path in responses, f"the command asked for {path}, which is not stubbed"
+            return Response(responses[path])
+
+    monkeypatch.setattr(main, "_client", lambda api, key: Client())
+    result = typer.testing.CliRunner().invoke(main.app, ["artifacts", *args])
+    assert result.exit_code == 0, result.output
+    return result.output
+
+
+def test_artifacts_lists_kinds_with_sizes(monkeypatch: pytest.MonkeyPatch) -> None:
+    out = _invoke(
+        monkeypatch,
+        ["run-1"],
+        {
+            "/runs/run-1/artifacts": [
+                {"kind": "diff", "size": 324, "created_at": "2026-09-18T01:00:00Z"},
+                {"kind": "security", "size": 91, "created_at": "2026-09-18T01:01:00Z"},
+            ]
+        },
+    )
+
+    assert "diff" in out and "324" in out
+    assert "security" in out and "91" in out
+
+
+def test_artifacts_prints_json_that_jq_can_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The phase document's own example is `autoswe artifacts <id> security | jq .checklist`,
+    so the output has to parse as JSON and not as a Python repr."""
+    import json
+
+    out = _invoke(
+        monkeypatch,
+        ["run-1", "security"],
+        {"/runs/run-1/artifacts/security": {"checklist": {"no_secrets": True}}},
+    )
+
+    assert json.loads(out) == {"checklist": {"no_secrets": True}}
+
+
+def test_artifacts_prints_a_diff_as_the_patch_it_is(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Served as text/plain so it can be piped to `git apply`. JSON-escaping every line of
+    a patch helps nobody."""
+    out = _invoke(
+        monkeypatch, ["run-1", "diff"], {"/runs/run-1/artifacts/diff": "--- a\n+++ b\n+x = 1\n"}
+    )
+
+    assert out.startswith("--- a\n+++ b\n")
+
+
+def test_artifacts_says_so_when_a_run_wrote_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty list printing nothing at all reads as a broken command."""
+    assert "no artifacts" in _invoke(monkeypatch, ["run-1"], {"/runs/run-1/artifacts": []})

@@ -1,8 +1,10 @@
 """CLI entrypoint. Phase 1 adds ``run`` and ``status``; Phase 2 adds ``watch``,
-``answer`` and ``cancel``; Phase 3 adds ``approve`` and ``reject``."""
+``answer`` and ``cancel``; Phase 3 adds ``approve`` and ``reject``; Phase 4 adds
+``artifacts``."""
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Iterable, Iterator
@@ -25,7 +27,13 @@ def _client(api: str, key: str | None) -> Any:
     return httpx.Client(base_url=api.rstrip("/"), headers={"X-API-Key": token}, timeout=30.0)
 
 
-def _check(response: Any) -> Any:
+def _raise(response: Any) -> None:
+    """Turn an HTTP error into a CLI error, with the server's detail if it sent one.
+
+    Split out from `_check` because not every endpoint returns JSON — the `diff` artifact
+    is served as text/plain so it can be piped to `git apply`, and calling `.json()` on it
+    would report a parse error instead of the 404 the server actually sent.
+    """
     import httpx
 
     try:
@@ -38,6 +46,10 @@ def _check(response: Any) -> Any:
             detail = e.response.text[:200]
         typer.echo(f"error: {e.response.status_code} {detail}", err=True)
         raise typer.Exit(1) from e
+
+
+def _check(response: Any) -> Any:
+    _raise(response)
     return response.json()
 
 
@@ -148,8 +160,6 @@ def watch(
     key: Annotated[str | None, typer.Option(help="API key (or AUTOSWE_API_KEY).")] = None,
 ) -> None:
     """Follow a run's events until it finishes. Exits non-zero if the run did not pass."""
-    import json
-
     import httpx
 
     last_id = ""
@@ -239,3 +249,39 @@ def cancel(
 
 if __name__ == "__main__":
     app()
+
+
+@app.command()
+def artifacts(
+    run_id: Annotated[str, typer.Argument(help="Run id printed by `autoswe run`.")],
+    # Not an enumerated list: the kinds a run writes grow with the pipeline, and a list
+    # here would go stale silently. Running without one prints what this run actually has.
+    kind: Annotated[
+        str | None, typer.Argument(help="Which artifact. Omit to list what the run wrote.")
+    ] = None,
+    api: Annotated[str, typer.Option(help="Control-plane base URL.")] = DEFAULT_API,
+    key: Annotated[str | None, typer.Option(help="API key (or AUTOSWE_API_KEY).")] = None,
+) -> None:
+    """List a run's artifacts, or print one of them.
+
+    Everything the run learned that was too large for an event. The listing carries sizes
+    rather than content because a `diff` can be megabytes and deciding whether to fetch one
+    should not require fetching it.
+    """
+    with _client(api, key) as client:
+        if kind is None:
+            rows = _check(client.get(f"/runs/{run_id}/artifacts"))
+            if not rows:
+                typer.echo("no artifacts")
+                return
+            for row in rows:
+                typer.echo(f"{row['kind']:16} {row['size']:>9}  {row['created_at']}")
+            return
+        response = client.get(f"/runs/{run_id}/artifacts/{kind}")
+        _raise(response)
+    # `diff` is served as text/plain so it can go straight to `git apply`; everything else
+    # is JSON, printed as JSON so it can go straight to `jq`.
+    if response.headers.get("content-type", "").startswith("text/plain"):
+        typer.echo(response.text)
+    else:
+        typer.echo(json.dumps(response.json(), indent=2))

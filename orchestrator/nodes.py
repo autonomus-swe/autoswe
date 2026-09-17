@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
-from agents import reviewer, security, tester
+from agents import pr_writer, reviewer, security, tester
 from agents.analyzer import AnalyzerAgent
 from agents.coder import CoderAgent
 from agents.debugger import DebuggerAgent
@@ -41,12 +41,12 @@ from orchestrator.events import emit
 from orchestrator.hooks import OrchestratorHooks
 from orchestrator.state import Phase, RunState
 from orchestrator.transition import MAX_DEBUG_ATTEMPTS
-from repo import diff
+from repo import diff, pr_body
 from repo import profile as repo_profile
 from repo import worktree as wt
 from repo.clone import ensure_bare_clone, repo_key, resolve_sha
 from repo.gitcmd import git
-from repo.github import gitleaks_gate, open_pr, pr_body, push_branch
+from repo.github import gitleaks_gate, open_pr, push_branch
 from repo.repomap import render_map
 from repo.worktree import Worktree
 from sandbox.base import Sandbox
@@ -1244,47 +1244,154 @@ async def security_node(state: RunState, deps: Deps, res: RunResources) -> RunSt
     return state
 
 
-async def pr_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
+async def _body_facts(state: RunState, deps: Deps, res: RunResources) -> pr_body.BodyFacts:
+    """Every number the pull request will carry, collected from the run's own records."""
     assert res.worktree is not None
-    report = state.last_test_report
-    # Before the push, not after: a secret that reaches a forge is not recalled by a force
-    # push, and this is the one finding that gets worse by being transmitted. A run that
-    # committed one ends here, with the finding on the record for a human to rotate.
-    leaks = gitleaks_gate(state.security.findings if state.security else [])
-    if leaks:
-        where = ", ".join(sorted({f"{f.file}:{f.line}" for f in leaks}))
-        log.error("push_refused_secret", count=len(leaks), files=where)
-        raise RepoError(
-            f"refusing to push: {len(leaks)} secret(s) committed by this run ({where}). "
-            "The value is withheld deliberately — rotate the credential and remove it from "
-            "the branch's history before pushing."
+    diff_stat = await git("diff", "--stat", state.base_sha or "HEAD", cwd=res.worktree.path)
+    return pr_body.BodyFacts(
+        run_id=str(state.run_id),
+        goal=state.goal,
+        diff_stat=diff_stat,
+        plan=state.plan,
+        tasks=state.tasks,
+        review=state.review,
+        security=state.security,
+        test_report=state.last_test_report,
+        flaky_tests=set(state.flaky_tests),
+        preexisting_failures=set(state.preexisting_failures),
+        known_issues=list(state.known_issues),
+        fix_rounds=dict(state.fix_rounds),
+        debug_attempts=sum(state.attempts.values()),
+        cost_usd=state.usage.cost_usd,
+        elapsed_s=state.elapsed_s(),
+        escalation_reason=state.escalation_reason,
+    )
+
+
+async def _refuse_secrets(state: RunState, deps: Deps, res: RunResources) -> None:
+    """Scan for a committed secret and refuse the push if there is one.
+
+    Run here rather than trusted from the SECURITY phase, for two reasons the phase
+    document names and one it does not:
+
+    - A fix round can introduce a secret *after* the scan that cleared the run.
+    - `security_node` records an empty report when there is no sandbox — but gitleaks runs
+      on the worker and needs no sandbox, so a resumed run that lost its sandbox would
+      otherwise push having never been scanned for secrets at all.
+    - It costs one subprocess (measured: ~100ms) immediately before the one step in this
+      pipeline that cannot be undone.
+
+    What the SECURITY phase found is folded in rather than replaced: a fresh scan that
+    fails to run produces a `scan-failed` finding, which cannot gate, and a secret already
+    found should not be forgotten because of it.
+    """
+    assert res.worktree is not None
+    fresh = await scanners.run_gitleaks(res.worktree.path, state.base_sha or "HEAD")
+    known = state.security.findings if state.security else []
+    leaks = gitleaks_gate([*fresh, *known])
+    if not leaks:
+        return
+    where = sorted({f"{f.file}:{f.line}" for f in leaks})
+    log.error("push_refused_secret", count=len(leaks), files=where)
+    # On the record before the exception, because the run is about to end and the artifact
+    # is what a human will open to find out what to rotate. Safe to store: `--redact` and
+    # the parser between them mean no finding here holds the value.
+    async with session(deps.engine) as s:
+        await db.save_artifact(
+            s,
+            state.run_id,
+            "gitleaks",
+            None,
+            {"findings": [f.model_dump(mode="json") for f in leaks]},
         )
+    state.error = "secrets detected"
+    raise RepoError(
+        f"refusing to push: {len(leaks)} secret(s) committed by this run "
+        f"({', '.join(where)}). The value is withheld deliberately — rotate the credential "
+        "and remove it from the branch's history before pushing."
+    )
+
+
+async def pr_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
+    """Scan, push, describe, open.
+
+    The order is the design. The secret scan is before the push because a push cannot be
+    undone; the push is before the writer because a branch on the remote is worth having
+    even if the description fails; and the description is written from facts the harness
+    already holds, so a writer that fails costs prose and nothing else.
+    """
+    assert res.worktree is not None
+    await _refuse_secrets(state, deps, res)
     await push_branch(res.worktree.path, state.work_branch, deps.git_token())
     state.pushed = True
-    diff_stat = await git("diff", "--stat", state.base_sha or "HEAD", cwd=res.worktree.path)
-    summary = (
-        f"{report.total - report.failed - report.errors} passed in {report.duration_s:.2f}s"
-        if report
-        else "not run"
-    )
     if deps.github is None:
         raise RuntimeError("no GitHub client: set GITHUB_TOKEN so the run can open a pull request")
+
+    facts = await _body_facts(state, deps, res)
+    commits = await git(
+        "log",
+        "--oneline",
+        f"--max-count={pr_writer.MAX_COMMITS}",
+        f"{state.base_sha}..HEAD" if state.base_sha else "HEAD",
+        cwd=res.worktree.path,
+    )
+    results = {task_id: r.summary for task_id, r in state.task_results.items()}
+
+    step_id, hooks, _ctx = await _begin(state, deps, res, "pr_writer", Phase.PR)
+    description = None
+    error: str | None = None
+    try:
+        description = await pr_writer.PRWriterAgent().run(
+            deps.provider, facts, commits, results, hooks
+        )
+    except Exception as e:
+        # The work is done and pushed. Losing the pull request because a prose model was
+        # unavailable would be the wrong trade, so the harness writes a duller one from
+        # the same facts — which is also the clearest demonstration of how little the
+        # writer is trusted with.
+        error = f"{type(e).__name__}: {e}"
+        log.warning("pr_writer_failed", error=error, note="falling back to a generated body")
+        description = pr_writer.fallback(facts)
+    finally:
+        await _end(state, deps, step_id, hooks, description, error, None)
+
+    body = pr_body.render(description, facts)
+    draft = pr_body.is_draft(facts)
     state.pr_url = await open_pr(
         state.repo_url,
         head=state.work_branch,
         base=state.base_branch,
-        title=f"{state.goal[:70]}",
-        body=pr_body(
-            goal=state.goal,
-            diff_stat=diff_stat,
-            test_summary=summary,
-            run_id=str(state.run_id),
-        ),
+        title=pr_body.title(description, facts),
+        body=body,
         client=deps.github,
+        draft=draft,
+        labels=["autoswe", "needs-review"],
     )
     async with session(deps.engine) as s:
+        await db.save_artifact(
+            s,
+            state.run_id,
+            "pr",
+            state.pr_url,
+            {
+                "description": description.model_dump(mode="json"),
+                "body": body,
+                "draft": draft,
+                "written_by": "fallback" if error else "pr_writer",
+            },
+        )
         await db.finish_run(s, state.run_id, status="done", pr_url=state.pr_url)
-    await _emit(deps, state.run_id, "pr_opened", {"pr_url": state.pr_url})
+    await _emit(
+        deps,
+        state.run_id,
+        "pr_opened",
+        {
+            "pr_url": state.pr_url,
+            "draft": draft,
+            "known_issues": len(state.known_issues),
+            "written_by": "fallback" if error else "pr_writer",
+        },
+    )
     return state
 
 

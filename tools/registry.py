@@ -66,7 +66,12 @@ ROLE_TOOLS: dict[str, list[str]] = {
     "security": ["read_file", "search_code", "git_status", "git_diff", "git_log"],
     "decomposer": [],
     "tester": [],
-    "pr_writer": ["read_file", "search_code", "git_status", "git_diff"],
+    # Empty on purpose, and the emptiness is the security property rather than an omission.
+    # This role's output is published to a forge and copied into notification email, so a
+    # writer that could open files could quote one — and the files it would most want to
+    # quote are the ones a scanner just flagged. It is handed the facts instead
+    # (`agents/pr_writer.py`), which is also why it needs no loop to gather them.
+    "pr_writer": [],
 }
 
 READ_ONLY_ROLES = frozenset(
