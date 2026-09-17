@@ -210,3 +210,127 @@ async def test_reads_do_not_spend_the_write_budget(api: tuple[httpx.AsyncClient,
     assert (
         await client.post(f"/runs/{MISSING}/cancel", headers={"X-API-Key": KEY})
     ).status_code == 404
+
+
+# ---- artifacts -------------------------------------------------------------------------
+
+
+async def _run_with_artifacts(engine: AsyncEngine) -> UUID:
+    """A run with one of each interesting artifact kind, written the way a real run does."""
+    from contracts import Budget
+    from storage import repo as db
+    from storage.db import session
+
+    async with session(engine) as s:
+        run_id = await db.create_run(
+            s,
+            repo_url="https://github.com/acme/demo",
+            base_branch="main",
+            goal="Implement subtract",
+            budget=Budget(),
+            provider="scripted",
+        )
+        await db.save_artifact(s, run_id, "diff", None, {"text": "--- a\n+++ b\n+x = 1\n"})
+        await db.save_artifact(s, run_id, "test_report", None, {"passed": False, "total": 1})
+        # Twice, so "the latest of that kind" is a claim the test can actually check.
+        await db.save_artifact(s, run_id, "test_report", None, {"passed": True, "total": 41})
+        await db.save_artifact(s, run_id, "security", None, {"checklist": {"no_secrets": True}})
+    return run_id
+
+
+async def test_artifacts_require_a_key(
+    api: tuple[httpx.AsyncClient, FakeArq], engine: AsyncEngine
+) -> None:
+    client, _ = api
+    run_id = await _run_with_artifacts(engine)
+
+    for path in (f"/runs/{run_id}/artifacts", f"/runs/{run_id}/artifacts/diff"):
+        res = await client.get(path)
+        assert res.status_code == 401, path
+
+
+async def test_the_listing_carries_sizes_and_not_content(
+    api: tuple[httpx.AsyncClient, FakeArq], engine: AsyncEngine
+) -> None:
+    """A `diff` can be megabytes. Deciding whether to fetch one should not require
+    fetching it."""
+    client, _ = api
+    run_id = await _run_with_artifacts(engine)
+
+    res = await client.get(f"/runs/{run_id}/artifacts", headers={"X-API-Key": KEY})
+
+    assert res.status_code == 200
+    rows = res.json()
+    assert [r["kind"] for r in rows] == ["diff", "test_report", "test_report", "security"], (
+        "in the order the run wrote them, both test reports kept"
+    )
+    assert all(r["size"] > 0 for r in rows)
+    assert all("content" not in r for r in rows)
+
+
+async def test_fetching_a_kind_returns_the_latest_of_it(
+    api: tuple[httpx.AsyncClient, FakeArq], engine: AsyncEngine
+) -> None:
+    """A run that went round the TEST loop twice has two reports, and "what did it end up
+    with" is the question this answers. The listing is where the sequence is visible."""
+    client, _ = api
+    run_id = await _run_with_artifacts(engine)
+
+    res = await client.get(f"/runs/{run_id}/artifacts/test_report", headers={"X-API-Key": KEY})
+
+    assert res.status_code == 200
+    assert res.json() == {"passed": True, "total": 41}, "the second write, not the first"
+
+
+async def test_the_diff_comes_back_as_text_so_it_can_be_applied(
+    api: tuple[httpx.AsyncClient, FakeArq], engine: AsyncEngine
+) -> None:
+    """JSON-escaping every line of a patch helps nobody: the caller pipes this to
+    `git apply` or reads it."""
+    client, _ = api
+    run_id = await _run_with_artifacts(engine)
+
+    res = await client.get(f"/runs/{run_id}/artifacts/diff", headers={"X-API-Key": KEY})
+
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("text/plain")
+    assert res.text.startswith("--- a\n+++ b\n")
+
+
+async def test_a_missing_run_and_a_missing_kind_are_told_apart(
+    api: tuple[httpx.AsyncClient, FakeArq], engine: AsyncEngine
+) -> None:
+    """ "No such run" and "that run produced no security report" are different answers, and
+    the second one is a real state — a run can fail before SECURITY."""
+    client, _ = api
+    run_id = await _run_with_artifacts(engine)
+    missing = UUID("00000000-0000-0000-0000-000000000000")
+
+    absent = await client.get(f"/runs/{missing}/artifacts", headers={"X-API-Key": KEY})
+    assert absent.status_code == 404 and absent.json()["detail"] == "run not found"
+
+    no_kind = await client.get(f"/runs/{run_id}/artifacts/pr", headers={"X-API-Key": KEY})
+    assert no_kind.status_code == 404 and "no 'pr' artifact" in no_kind.json()["detail"]
+
+
+async def test_a_run_that_wrote_nothing_lists_nothing_rather_than_failing(
+    api: tuple[httpx.AsyncClient, FakeArq], engine: AsyncEngine
+) -> None:
+    client, _ = api
+    from contracts import Budget
+    from storage import repo as db
+    from storage.db import session
+
+    async with session(engine) as s:
+        run_id = await db.create_run(
+            s,
+            repo_url="https://github.com/acme/demo",
+            base_branch="main",
+            goal="g",
+            budget=Budget(),
+            provider="scripted",
+        )
+
+    res = await client.get(f"/runs/{run_id}/artifacts", headers={"X-API-Key": KEY})
+
+    assert res.status_code == 200 and res.json() == []

@@ -370,3 +370,16 @@ async def latest_artifact(s: AsyncSession, run_id: uuid.UUID, kind: str) -> Arti
         .limit(1)
     )
     return res.scalar_one_or_none()
+
+
+async def list_artifacts(s: AsyncSession, run_id: uuid.UUID) -> list[ArtifactRow]:
+    """Every artifact a run wrote, oldest first — one row per write, not per kind.
+
+    Deliberately not deduplicated to the latest of each kind. A run writes `test_report`
+    once per TEST phase and `security` once per scan, and "how many times did this run
+    have to go round" is exactly what the sequence answers.
+    """
+    res = await s.execute(
+        select(ArtifactRow).where(ArtifactRow.run_id == run_id).order_by(ArtifactRow.seq)
+    )
+    return list(res.scalars())

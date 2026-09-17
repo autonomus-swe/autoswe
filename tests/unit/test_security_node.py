@@ -1,11 +1,11 @@
-"""The security phase as the orchestrator runs it, and the one gate that is not a gate.
+"""The security phase as the orchestrator runs it.
 
-Every other gate in this project blocks the *run*: findings go on `known_issues`, the fix
-budget gets spent, and a draft pull request that names what is wrong is a better outcome
-than none. A committed secret is the exception, because it is the only finding that gets
-worse by being transmitted — a force push does not un-index a branch a forge has already
-seen, and a pull request body carries it into notification email. So that one refuses to
-push at all, and these tests assert the refusal happens *before* anything is sent.
+Two rows, and both are about a scan that could not happen rather than one that found
+nothing — because those must not look alike to anything downstream.
+
+The push refusal that used to live here moved to `test_pr_node.py` when the gate started
+re-scanning immediately before the push instead of reading the phase's result back. That
+is where the refusal belongs: it is a property of pushing, not of scanning.
 """
 
 from __future__ import annotations
@@ -16,12 +16,10 @@ from uuid import uuid4
 
 import pytest
 
-from contracts import Budget, SecurityFinding, SecurityReport, Task, TaskGraph, TaskSpec
-from core.errors import RepoError
-from orchestrator.nodes import RunResources, pr_node, security_node
+from contracts import Budget, SecurityFinding, Task, TaskGraph, TaskSpec
+from orchestrator.nodes import RunResources, security_node
 from orchestrator.state import Phase, RunState
 from repo.worktree import Worktree
-from tests.fakes import planted_secret
 
 pytestmark = pytest.mark.unit
 
@@ -132,88 +130,6 @@ def resources(tmp_path: Path) -> RunResources:
     return RunResources(
         worktree=Worktree(path=tmp_path, branch="agent/x", bare=tmp_path, run_id="r")
     )
-
-
-# ---- the push refusal -------------------------------------------------------------------
-
-
-async def test_a_committed_secret_stops_the_push_before_it_happens(
-    tmp_path: Path, sent: Recorder
-) -> None:
-    """The order is the point. A check after the push would be a check of a published key."""
-    s = state(
-        phase=Phase.PR,
-        security=SecurityReport(findings=[leak()], critical=True, checklist={}),
-    )
-
-    with pytest.raises(RepoError, match="refusing to push"):
-        await pr_node(s, cast("Any", FakeDeps()), resources(tmp_path))
-
-    assert sent.pushed == [], "nothing was pushed"
-    assert sent.prs == [], "and no pull request was opened"
-
-
-async def test_the_refusal_names_the_file_and_never_the_value(
-    tmp_path: Path, sent: Recorder
-) -> None:
-    """The error goes into a log, a step record and an API response. All three are places
-    the value must not reach."""
-    secret = planted_secret("refusal")
-    found = leak().model_copy(update={"message": f"a key was committed (value withheld) {secret}"})
-    s = state(
-        phase=Phase.PR, security=SecurityReport(findings=[found], critical=True, checklist={})
-    )
-
-    with pytest.raises(RepoError) as caught:
-        await pr_node(s, cast("Any", FakeDeps()), resources(tmp_path))
-
-    assert "config.py:7" in str(caught.value), "a human has to know what to rotate"
-    assert secret not in str(caught.value)
-    assert "rotate" in str(caught.value)
-
-
-async def test_a_run_with_no_secret_pushes_and_opens_its_pull_request(
-    tmp_path: Path, sent: Recorder
-) -> None:
-    """The control. Without this the refusal test would pass on a node that never pushes."""
-    s = state(
-        phase=Phase.PR,
-        security=SecurityReport(
-            findings=[
-                SecurityFinding(
-                    tool="bandit",
-                    rule="B324",
-                    file="src/a.py",
-                    line=6,
-                    severity="high",
-                    message="weak hash",
-                    verified_by_llm=True,
-                    false_positive=False,
-                    rationale="reachable",
-                    in_diff=True,
-                )
-            ],
-            critical=True,
-            checklist={},
-        ),
-    )
-
-    out = await pr_node(s, cast("Any", FakeDeps()), resources(tmp_path))
-
-    assert sent.pushed == ["agent/x"], "a bandit finding blocks the run, not the transmission"
-    assert out.pr_url == "https://github.com/a/b/pull/1"
-
-
-async def test_a_run_that_never_scanned_is_not_blocked_from_pushing(
-    tmp_path: Path, sent: Recorder
-) -> None:
-    """`state.security` is None when the run changed nothing or had no sandbox. Refusing
-    then would strand every such run with no way to produce an outcome."""
-    s = state(phase=Phase.PR, security=None)
-
-    await pr_node(s, cast("Any", FakeDeps()), resources(tmp_path))
-
-    assert sent.pushed == ["agent/x"]
 
 
 # ---- the node itself ---------------------------------------------------------------------

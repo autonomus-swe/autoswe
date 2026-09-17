@@ -183,6 +183,9 @@ class ScriptedAgents(OpenAICompatProvider):
             return output.model_validate(REVIEW_CANDIDATES), Usage(
                 input_tokens=400, output_tokens=60
             )
+        if output.__name__ == "PullRequestDescription":
+            self.roles.append("pr_writer")
+            return output.model_validate(PR_DESCRIPTION), Usage(input_tokens=500, output_tokens=120)
         self.roles.append("decomposer")
         return output.model_validate(TASK_GRAPH), Usage(input_tokens=200, output_tokens=40)
 
@@ -269,6 +272,19 @@ SCANNER_FINDINGS = [
         in_diff=False,
     ),
 ]
+PR_DESCRIPTION = {
+    "title": "feat(ops): add subtract and slugify",
+    "summary": "Adds the two functions tests/test_ops.py expects.",
+    "changes": ["subtract returns a - b", "slugify lowercases and hyphenates"],
+    # Deliberately wrong, in the direction a real writer errs: it says the suite is clean
+    # without qualification. The rendered body carries the harness's counts beside this
+    # line, so a reader can see the difference — which is the point of the split.
+    "testing": "The whole suite passes.",
+    # Deliberately non-empty while the run has none, and deliberately soft. `render` uses
+    # the state's list, so neither survives into the body.
+    "known_issues": ["nothing serious, will tidy up later"],
+    "rollback": "Revert the merge commit.",
+}
 SECURITY_REPORT = {
     "findings": [
         {
@@ -302,6 +318,7 @@ TASK_GRAPH = {
 class StubGitHub:
     def __init__(self) -> None:
         self.created: list[dict[str, Any]] = []
+        self.labelled: list[str] = []
 
     def get_repo(self, full_name: str) -> StubGitHub:
         return self
@@ -311,7 +328,19 @@ class StubGitHub:
 
     def create_pull(self, **kw: Any) -> Any:
         self.created.append(kw)
-        return type("PR", (), {"html_url": "https://github.com/acme/demo/pull/7"})()
+        stub = self
+
+        class PR:
+            html_url = "https://github.com/acme/demo/pull/7"
+
+            def add_to_labels(self, *labels: str) -> None:
+                # Applied after creation, because `create_pull` takes none. Recorded so the
+                # test can tell "labels were applied" from "labelling failed and was
+                # swallowed" — `open_pr` treats a label failure as best-effort, so without
+                # this the two would look the same.
+                stub.labelled.extend(labels)
+
+        return PR()
 
 
 @pytest.fixture(autouse=True)
@@ -399,6 +428,7 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
         "review_pre",  # the cheap pass enumerates
         "review",  # the expensive one verifies
         "security",  # and the scan runs before anything is pushed
+        "pr_writer",  # last, with the branch already on the remote
     ]
     assert {"bash", "run_tests", "git_commit", "read_file", "search_code"} <= provider.seen_tools
     # and neither read-only role was offered a way to change anything
@@ -412,6 +442,27 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
         "bandit",
         "pip-audit",
     ]
+
+    # ---- the pull request the run actually opened ----
+    opened = github.created[0]
+    assert opened["draft"] is False, "a clean run with nothing unresolved is not a draft"
+    assert github.labelled == ["autoswe", "needs-review"]
+    assert opened["title"] == "feat(ops): add subtract and slugify", "the writer's title"
+    body = opened["body"]
+    # The writer said "The whole suite passes." with no qualification, and wrote a soft
+    # known-issues line the run does not have. Both are visible here as the split working:
+    # the prose is rendered as written, the numbers are the harness's, and the state's
+    # (empty) known-issues list is what reaches the section.
+    assert "The whole suite passes." in body, "prose rendered as written"
+    assert "3 passed, 0 failed" in body, "and the real counts beside it"
+    assert "will tidy up later" not in body, "the model's invented known issue is not rendered"
+    assert "## Known issues" in body and "None." in body
+    assert "md5 used where a password hash is expected" in body, "the scan is in the body"
+    assert "Pre-existing" in body, "and says the finding was not this run's"
+    assert "opened the file: it predates this change" not in body, (
+        "the model-written rationale stays in the artifact and off the forge"
+    )
+    assert str(run_id) in body
 
     # the branch reached the origin with the right content and untouched tests
     assert state.work_branch in await git("branch", "--list", state.work_branch, cwd=origin_repo)
@@ -455,6 +506,8 @@ async def test_full_run_edits_tests_commits_pushes_and_opens_a_pr(
         "submit_review",
         # the security pass, between the review and the push
         "submit_security",
+        # The PR Writer leaves no tool_calls row: it has no tools, by design, because its
+        # output is published and a writer that could read files could quote one.
     ]
     assert llm_turns >= 8
     assert artifact is not None and artifact.content["passed"] is True

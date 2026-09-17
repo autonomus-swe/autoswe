@@ -146,6 +146,16 @@ class EventView(BaseModel):
     ts: datetime
 
 
+class ArtifactView(BaseModel):
+    """One artifact row, without its content. `size` is of the serialised JSON, because
+    that is what a caller fetching it will receive."""
+
+    kind: str
+    path: str | None
+    created_at: datetime
+    size: int
+
+
 class RunDetail(BaseModel):
     """Everything the UI needs for one run in a single request."""
 
