@@ -421,3 +421,158 @@ async def test_the_title_comes_from_the_writer_and_is_capped_by_the_harness(
     from repo import pr_body
 
     assert len(sent.prs[0]["title"]) == pr_body.MAX_TITLE
+
+
+# ---- the escalation path ------------------------------------------------------------------
+
+
+async def _escalate(
+    deps: Any, res: RunResources, *, reason: str = "debug_attempts_exhausted", **kw: Any
+) -> RunState:
+    """Take a run through `_fail`, which is the single point where it becomes FAILED."""
+    import orchestrator.nodes as nodes
+
+    s = state(phase=Phase.ESCALATE, escalation_reason=reason, **kw)
+    return await nodes._fail(s, deps, res, "task t1 failed 3 times after a replan")
+
+
+async def test_a_failed_run_with_commits_opens_a_draft_rather_than_losing_them(
+    tmp_path: Path, sent: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run that got three tasks in and died on the fourth has produced work somebody can
+    finish. The alternative is a branch in a worktree that teardown deletes."""
+    import orchestrator.nodes as nodes
+
+    async def has_commits(*a: Any, **kw: Any) -> str:
+        return "abc1234 feat: the part that worked"
+
+    monkeypatch.setattr(nodes, "git", has_commits)
+    deps = FakeDeps()
+
+    out = await _escalate(deps, resources(tmp_path))
+
+    assert out.resume_phase is Phase.FAILED, "it still failed"
+    assert out.pr_url == "https://github.com/a/b/pull/7", "and the work is reachable"
+    (opened,) = sent.prs
+    assert opened["draft"] is True
+    assert opened["title"].startswith("[WIP] "), "the title is where a list view reads it"
+    assert "This run did not complete: debug_attempts_exhausted" in opened["body"]
+
+
+async def test_a_failed_run_with_no_commits_opens_nothing(
+    tmp_path: Path, sent: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pull request with no commits in it is a notification, not a contribution. The
+    artifacts still carry what the run learned."""
+    import orchestrator.nodes as nodes
+
+    async def no_commits(*a: Any, **kw: Any) -> str:
+        return "\n"
+
+    monkeypatch.setattr(nodes, "git", no_commits)
+
+    out = await _escalate(FakeDeps(), resources(tmp_path))
+
+    assert out.pr_url is None
+    assert sent.pushed == [] and sent.prs == []
+
+
+async def test_a_secret_stops_the_draft_too(
+    tmp_path: Path, sent: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The escalation path goes through the same scan, because it is the same push. This is
+    the reason it shares `_push_and_open` rather than carrying its own copy — the path less
+    likely to be exercised is the one that must not be the one missing the gate."""
+    import orchestrator.nodes as nodes
+
+    async def has_commits(*a: Any, **kw: Any) -> str:
+        return "abc1234 feat: with a key in it"
+
+    monkeypatch.setattr(nodes, "git", has_commits)
+    sent.gitleaks = [leak()]
+
+    out = await _escalate(FakeDeps(), resources(tmp_path))
+
+    assert sent.pushed == [] and sent.prs == []
+    assert out.pr_url is None
+    assert any(kind == "gitleaks" for kind, _ in sent.artifacts), "on the record to rotate"
+
+
+async def test_a_pull_request_failure_never_masks_the_runs_own_failure(
+    tmp_path: Path, sent: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`state.error` already holds the diagnosis. A GitHub outage must not replace "task t1
+    failed 3 times" with "connection refused" — the first is why the run failed and the
+    second is why a courtesy failed."""
+    import orchestrator.nodes as nodes
+
+    async def has_commits(*a: Any, **kw: Any) -> str:
+        return "abc1234 feat: the part that worked"
+
+    async def explode(*a: Any, **kw: Any) -> str:
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(nodes, "git", has_commits)
+    monkeypatch.setattr(nodes, "open_pr", explode)
+
+    out = await _escalate(FakeDeps(), resources(tmp_path))
+
+    assert out.resume_phase is Phase.FAILED
+    assert out.error == "task t1 failed 3 times after a replan"
+    assert "connection refused" not in (out.error or "")
+    assert out.pr_url is None
+
+
+async def test_no_github_client_is_a_logged_skip_rather_than_a_crash(
+    tmp_path: Path, sent: Recorder
+) -> None:
+    """A run configured without a token should fail for its own reason, not for this one."""
+    deps = FakeDeps()
+    deps.github = None
+
+    out = await _escalate(deps, resources(tmp_path))
+
+    assert out.resume_phase is Phase.FAILED and out.pr_url is None
+
+
+async def test_the_draft_carries_the_hypotheses_that_were_already_tried(
+    tmp_path: Path, sent: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The point of the draft. Somebody picking this up needs to know which theories have
+    already been ruled out, and it is not visible anywhere else they would look."""
+    import orchestrator.nodes as nodes
+    from contracts import DebugHypothesis
+
+    async def has_commits(*a: Any, **kw: Any) -> str:
+        return "abc1234 feat: the part that worked"
+
+    async def tried(deps: Any, run_id: Any, task_id: str) -> list[DebugHypothesis]:
+        return [
+            DebugHypothesis(
+                failure_class="assertion",
+                root_cause="the fixture returns a tuple, not a list",
+                plan="convert at the boundary",
+                confidence=0.6,
+            )
+        ]
+
+    monkeypatch.setattr(nodes, "git", has_commits)
+    monkeypatch.setattr(nodes, "_previous_hypotheses", tried)
+    tasks = TaskGraph(tasks=[Task(spec=spec("t1"), status="failed")])
+
+    await _escalate(FakeDeps(), resources(tmp_path), tasks=tasks)
+
+    body = sent.prs[0]["body"]
+    assert "## What was already tried" in body
+    assert "the fixture returns a tuple, not a list" in body
+    assert "convert at the boundary" in body
+
+
+async def test_a_completed_run_carries_no_hypotheses_section(
+    tmp_path: Path, sent: Recorder
+) -> None:
+    """On a run that succeeded these are noise, and the section would invite a reader to
+    look for a problem that was solved."""
+    await pr_node(state(), cast("Any", FakeDeps()), resources(tmp_path))
+
+    assert "## What was already tried" not in sent.prs[0]["body"]

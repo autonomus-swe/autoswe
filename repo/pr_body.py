@@ -28,6 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from contracts import (
+    DebugHypothesis,
     ImplementationPlan,
     PullRequestDescription,
     ReviewReport,
@@ -77,6 +78,11 @@ class BodyFacts:
     cost_usd: float = 0.0
     elapsed_s: float = 0.0
     escalation_reason: str | None = None
+    # task id -> what the Debugger believed, in the order it believed it. Only populated
+    # for a run that escalated: on a run that succeeded these are noise, and on one that
+    # did not they are the most useful thing in the body — somebody picking the work up
+    # needs to know which four theories have already been tried and failed.
+    hypotheses: dict[str, list[DebugHypothesis]] = field(default_factory=dict)
 
 
 def _cell(text: str, limit: int = MAX_CELL) -> str:
@@ -231,6 +237,32 @@ def _plan_section(plan: ImplementationPlan | None, tasks: TaskGraph | None) -> s
     return _details("Plan", "\n".join(lines))
 
 
+def _hypotheses_section(facts: BodyFacts) -> str:
+    """What the Debugger tried, per task, for whoever picks this up.
+
+    Not collapsed behind a summary count like the other sections: on an escalated run this
+    is the point of the pull request. A reader's first question is "what has already been
+    ruled out", and the answer should not require a click.
+    """
+    if not facts.hypotheses:
+        return ""
+    lines = []
+    for task_id in sorted(facts.hypotheses):
+        tried = facts.hypotheses[task_id]
+        if not tried:
+            continue
+        lines.append(f"\n**`{task_id}`** — {len(tried)} attempt{'s' if len(tried) != 1 else ''}\n")
+        for i, h in enumerate(tried, 1):
+            lines.append(
+                f"{i}. [{h.failure_class}, confidence {h.confidence:.2f}] "
+                f"{_cell(h.root_cause, 300)}\n"
+                f"   tried: {_cell(h.plan, 300)}"
+            )
+    if not lines:
+        return ""
+    return "## What was already tried\n" + "\n".join(lines)
+
+
 def _details(summary: str, body: str) -> str:
     """Collapsed by default. A body that opens to four screens of tables gets skimmed, and
     the point of these sections is that somebody reads the two lines above them."""
@@ -260,6 +292,10 @@ def render(description: PullRequestDescription, facts: BodyFacts) -> str:
 
     parts.append("## Testing\n")
     parts.append(description.testing.strip() or "(not described)")
+
+    hypotheses = _hypotheses_section(facts)
+    if hypotheses:
+        parts.append(hypotheses)
 
     sections = [
         _plan_section(facts.plan, facts.tasks),

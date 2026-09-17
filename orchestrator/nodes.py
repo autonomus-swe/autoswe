@@ -773,7 +773,7 @@ async def escalate_node(state: RunState, deps: Deps, res: RunResources) -> RunSt
 
     # A budget is not a problem the run can solve by trying differently.
     if reason.startswith("budget_"):
-        return await _fail(state, deps, f"{reason}: the run ran out of its allowance")
+        return await _fail(state, deps, res, f"{reason}: the run ran out of its allowance")
 
     # The Coder produced nothing. That is one failed attempt, not a verdict on the task.
     if reason == "coder_no_result" and task_obj is not None:
@@ -785,7 +785,7 @@ async def escalate_node(state: RunState, deps: Deps, res: RunResources) -> RunSt
         reason = "debug_attempts_exhausted"
 
     if reason != "debug_attempts_exhausted" or task_obj is None:
-        return await _fail(state, deps, f"escalated with no way forward: {reason}")
+        return await _fail(state, deps, res, f"escalated with no way forward: {reason}")
 
     # First exhaustion: rewind and split. Three attempts have left the worktree carrying
     # three half-fixes, so a replan starting from that is planning against noise.
@@ -800,17 +800,64 @@ async def escalate_node(state: RunState, deps: Deps, res: RunResources) -> RunSt
     # Already replanned. A human is the only remaining source of new information.
     if state.unattended:
         return await _fail(
-            state, deps, f"task {task_obj.id} failed {MAX_DEBUG_ATTEMPTS} times after a replan"
+            state,
+            deps,
+            res,
+            f"task {task_obj.id} failed {MAX_DEBUG_ATTEMPTS} times after a replan",
         )
 
     state.resume_phase = Phase.AWAITING_INPUT
     return state
 
 
-async def _fail(state: RunState, deps: Deps, error: str) -> RunState:
+async def _fail(state: RunState, deps: Deps, res: RunResources, error: str) -> RunState:
+    """End the run, and open a draft pull request if it got far enough to have commits."""
     state.resume_phase = Phase.FAILED
     state.error = error
+    await _draft_pr_for_a_failed_run(state, deps, res)
     return state
+
+
+async def _draft_pr_for_a_failed_run(state: RunState, deps: Deps, res: RunResources) -> None:
+    """A failed run with commits opens a draft `[WIP]` pull request rather than losing them.
+
+    The argument for doing this at all: a run that got three tasks in and died on the
+    fourth has produced work somebody can finish, and the alternative is a branch in a
+    worktree that teardown deletes. The body says plainly that the run did not complete, so
+    the offer is not mistaken for a claim.
+
+    **Never masks the real failure.** `state.error` already holds the diagnosis, and a
+    GitHub outage or a missing token must not replace it with its own. Every failure here
+    is logged and swallowed — including the secret gate, which means a failed run that also
+    committed a credential ends with no pull request and the `gitleaks` artifact on record.
+    """
+    if res.worktree is None or deps.github is None:
+        log.info("no_draft_pr", reason="no worktree or no GitHub client")
+        return
+    try:
+        commits = await git(
+            "log",
+            "--oneline",
+            f"{state.base_sha}..HEAD" if state.base_sha else "HEAD",
+            cwd=res.worktree.path,
+        )
+    except Exception as e:
+        log.warning("no_draft_pr", reason=f"could not read the log: {type(e).__name__}: {e}")
+        return
+    if not commits.strip():
+        # Nothing to review. The artifacts still carry what the run learned, and a pull
+        # request with no commits in it is a notification rather than a contribution.
+        log.info("no_draft_pr", reason="the run made no commits")
+        return
+    try:
+        state.pr_url = await _push_and_open(state, deps, res)
+        log.info("draft_pr_opened", pr_url=state.pr_url, commits=len(commits.strip().split("\n")))
+    except Exception as e:
+        log.warning(
+            "draft_pr_failed",
+            error=f"{type(e).__name__}: {e}",
+            note="the run's own failure is what gets reported",
+        )
 
 
 async def _rewind_task(state: RunState, res: RunResources, task_obj: Any) -> None:
@@ -1248,6 +1295,18 @@ async def _body_facts(state: RunState, deps: Deps, res: RunResources) -> pr_body
     """Every number the pull request will carry, collected from the run's own records."""
     assert res.worktree is not None
     diff_stat = await git("diff", "--stat", state.base_sha or "HEAD", cwd=res.worktree.path)
+    # Only for a run that escalated. On one that succeeded these are noise; on one that
+    # did not they are what somebody picking the work up needs most. Read from the steps
+    # table rather than the state, which is where `_previous_hypotheses` keeps them.
+    hypotheses: dict[str, list[DebugHypothesis]] = {}
+    if state.escalation_reason and state.tasks:
+        for task in state.tasks.tasks:
+            if task.status != "failed" and task.id != state.current_task_id:
+                continue
+            tried = await _previous_hypotheses(deps, state.run_id, task.id)
+            if tried:
+                hypotheses[task.id] = tried
+
     return pr_body.BodyFacts(
         run_id=str(state.run_id),
         goal=state.goal,
@@ -1265,6 +1324,7 @@ async def _body_facts(state: RunState, deps: Deps, res: RunResources) -> pr_body
         cost_usd=state.usage.cost_usd,
         elapsed_s=state.elapsed_s(),
         escalation_reason=state.escalation_reason,
+        hypotheses=hypotheses,
     )
 
 
@@ -1312,13 +1372,18 @@ async def _refuse_secrets(state: RunState, deps: Deps, res: RunResources) -> Non
     )
 
 
-async def pr_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
-    """Scan, push, describe, open.
+async def _push_and_open(state: RunState, deps: Deps, res: RunResources) -> str:
+    """Scan, push, describe, open. Returns the pull request URL.
 
     The order is the design. The secret scan is before the push because a push cannot be
     undone; the push is before the writer because a branch on the remote is worth having
     even if the description fails; and the description is written from facts the harness
     already holds, so a writer that fails costs prose and nothing else.
+
+    Shared by the two ways a run ends with a pull request — a completed one and an
+    escalated one — rather than copied into each. A second copy of "scan, then push" is a
+    second place for the secret gate to be forgotten, and the escalation path is the one
+    less likely to be exercised in testing.
     """
     assert res.worktree is not None
     await _refuse_secrets(state, deps, res)
@@ -1337,7 +1402,9 @@ async def pr_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     )
     results = {task_id: r.summary for task_id, r in state.task_results.items()}
 
-    step_id, hooks, _ctx = await _begin(state, deps, res, "pr_writer", Phase.PR)
+    # `state.phase`, not a literal: this also runs from ESCALATE, and a step that
+    # claims to be in PR when it was not makes the audit trail lie.
+    step_id, hooks, _ctx = await _begin(state, deps, res, "pr_writer", state.phase)
     description = None
     error: str | None = None
     try:
@@ -1357,7 +1424,7 @@ async def pr_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
 
     body = pr_body.render(description, facts)
     draft = pr_body.is_draft(facts)
-    state.pr_url = await open_pr(
+    url = await open_pr(
         state.repo_url,
         head=state.work_branch,
         base=state.base_branch,
@@ -1372,7 +1439,7 @@ async def pr_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
             s,
             state.run_id,
             "pr",
-            state.pr_url,
+            url,
             {
                 "description": description.model_dump(mode="json"),
                 "body": body,
@@ -1380,18 +1447,26 @@ async def pr_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
                 "written_by": "fallback" if error else "pr_writer",
             },
         )
-        await db.finish_run(s, state.run_id, status="done", pr_url=state.pr_url)
     await _emit(
         deps,
         state.run_id,
         "pr_opened",
         {
-            "pr_url": state.pr_url,
+            "pr_url": url,
             "draft": draft,
             "known_issues": len(state.known_issues),
             "written_by": "fallback" if error else "pr_writer",
+            "escalated": bool(state.escalation_reason),
         },
     )
+    return url
+
+
+async def pr_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
+    """The completed path: a run that reached PR with its work done."""
+    state.pr_url = await _push_and_open(state, deps, res)
+    async with session(deps.engine) as s:
+        await db.finish_run(s, state.run_id, status="done", pr_url=state.pr_url)
     return state
 
 

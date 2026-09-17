@@ -858,3 +858,213 @@ async def test_cancel_stops_a_run_inside_a_tool_loop_and_removes_the_container(
     # the worktree is kept on purpose: nothing was pushed, so the work is still
     # recoverable. teardown only removes it once the branch is safely on the remote.
     assert (Path(d.worktrees_dir()) / str(run_id)).exists()
+
+
+# The second task regresses its own test. `SOLUTION` (above) is what the first task
+# commits — a green suite — and this is what every pass after it writes: `subtract` intact,
+# `slugify` broken.
+#
+# It has to be this shape because of how TEST works. The selector is run first, but the
+# full suite runs after it whenever the selector passes, so a task cannot finish while any
+# other test is red. And the baseline cannot excuse the difference: the fixture's original
+# `ops.py` defines only `add`, so the baseline run fails to *import* the test module and
+# records a collection error rather than ids for `test_subtract` and `test_slugify`. That
+# is what made the obvious version of this fake fail on task one, for a reason that had
+# nothing to do with escalation.
+BROKEN_SLUGIFY = """def add(a: int, b: int) -> int:
+    return a + b
+
+
+def subtract(a: int, b: int) -> int:
+    return a - b
+
+
+def slugify(text: str) -> str:
+    return text
+"""
+
+TWO_TASKS = {
+    "tasks": [
+        {
+            "id": "t1",
+            "title": "Implement subtract and slugify",
+            "description": "Add both to fixture/ops.py",
+            "depends_on": [],
+            "files": ["fixture/ops.py"],
+            "acceptance_criteria": ["tests/test_ops.py passes"],
+            "test_selector": "tests/test_ops.py",
+        },
+        {
+            "id": "t2",
+            "title": "Make slugify handle unicode",
+            "description": "Extend slugify; it must keep passing its test",
+            "depends_on": ["t1"],
+            "files": ["fixture/ops.py"],
+            "acceptance_criteria": ["tests/test_ops.py::test_slugify passes"],
+            "test_selector": "tests/test_ops.py::test_slugify",
+        },
+    ]
+}
+# The replan of t2. One task with a fresh id, because `_replan_task` splices the
+# replacements in where the old task was — handing it the original two-task graph would
+# create a second `t1` and `by_id` would stop meaning anything.
+REPLAN_T2 = {
+    "tasks": [
+        {
+            "id": "t2.1",
+            "title": "Handle unicode in slugify, in smaller steps",
+            "description": "Normalise, then hyphenate",
+            "depends_on": [],
+            "files": ["fixture/ops.py"],
+            "acceptance_criteria": ["tests/test_ops.py::test_slugify passes"],
+            "test_selector": "tests/test_ops.py::test_slugify",
+        }
+    ]
+}
+
+
+class FinishesOneTaskThenStalls(ScriptedAgents):
+    """Commits a finished, green first task, then breaks its own test on the second.
+
+    Shaped this way because of how escalation interacts with Phase 3's rewind:
+    `_rewind_task` resets the *failing* task to its own start sha before replanning, so a
+    single-task run that exhausts has all of its commits discarded — correctly, since they
+    are three abandoned half-fixes. An escalated run therefore has commits only when an
+    earlier task succeeded, which is the case a draft pull request is actually for: work
+    somebody can finish.
+
+    The existing stuck-run test has a coder that touches nothing, so it escalates with an
+    empty log and opens no pull request. That path is right and it is not this one.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.passes = 0
+        self.decomposed = False
+        self.coder_script = []
+
+    def _pass(self) -> list[ChatTurn]:
+        self.passes += 1
+        # The first pass finishes the work and leaves the suite green, so task one is
+        # `done` and its commit is behind task two's start sha — which is what survives
+        # the rewind when task two exhausts.
+        content = SOLUTION if self.passes == 1 else BROKEN_SLUGIFY
+        return [
+            # The view is not padding. `create` refuses to overwrite a file the agent has
+            # not read (`tools/editor.py::_create`), so without it the edit returns exit 1,
+            # the file keeps only `add`, and the suite fails on an ImportError — which is
+            # how this fake spent three runs failing for a reason unrelated to escalation.
+            call(
+                "0",
+                "str_replace_based_edit_tool",
+                {"command": "view", "path": "fixture/ops.py"},
+            ),
+            call(
+                "1",
+                "str_replace_based_edit_tool",
+                {"command": "create", "path": "fixture/ops.py", "file_text": content},
+            ),
+            call("2", "git_commit", {"message": f"feat(ops): attempt {self.passes}"}),
+            call(
+                "3",
+                "submit_result",
+                {
+                    "summary": f"attempt {self.passes}",
+                    "files_touched": ["fixture/ops.py"],
+                    "how_to_test": "uv run pytest -q",
+                    "notes_for_reviewer": ["unicode handling is not right yet"],
+                },
+            ),
+        ]
+
+    async def parse(self, req: Any, output: type[Any]) -> tuple[Any, Usage]:
+        if output.__name__ == "TaskGraphSpec":
+            graph = TWO_TASKS if not self.decomposed else REPLAN_T2
+            self.decomposed = True
+            self.roles.append("decomposer")
+            return output.model_validate(graph), Usage(input_tokens=200, output_tokens=40)
+        return await super().parse(req, output)
+
+    async def _complete(self, **kw: Any) -> ChatTurn:
+        offered = {t["function"]["name"] for t in kw.get("tools", [])}
+        # The Debugger is offered submit_result too; the parent plays it, and it
+        # deliberately fixes nothing.
+        if "submit_hypothesis" in offered:
+            return await super()._complete(**kw)
+        if "submit_result" in offered:
+            if "coder" not in self.roles:
+                self.roles.append("coder")
+            # A fresh CODE phase arrives as [system, user] and nothing else. Refilling on
+            # that, rather than whenever the script empties, is what stops this fake from
+            # editing and submitting sixty times until `max_iterations` — which is not
+            # what a model does, and the noise hid why this test was failing.
+            if len(kw.get("messages") or []) <= 2:
+                self.coder_script = self._pass()
+            return self.coder_script.pop(0) if self.coder_script else self._done()
+        return await super()._complete(**kw)
+
+
+@requires_docker
+async def test_an_escalated_run_with_commits_opens_a_draft_that_says_it_did_not_finish(
+    deps: tuple[Deps, ScriptedAgents, StubGitHub], origin_repo: Path
+) -> None:
+    """The other half of the stuck path, and the one that matters to a human.
+
+    A run that committed a finished task and then ran out of attempts on the next one has
+    produced something somebody can pick up. Ending with the branch in a worktree that
+    teardown deletes throws that away, so it is pushed and opened as a draft that says
+    plainly it did not complete.
+
+    Everything here is real except the model: a real worktree, real commits, a real push to
+    the origin repository — and the run still ends `failed`.
+    """
+    d, _, github = deps
+    provider = FinishesOneTaskThenStalls()
+    d = replace(d, provider=provider)
+    async with session(d.engine) as s:
+        run_id = await db.create_run(
+            s,
+            repo_url=str(origin_repo),
+            base_branch="main",
+            goal=GOAL,
+            budget=Budget(),
+            provider="scripted",
+        )
+    state = RunState(
+        run_id=run_id,
+        goal=GOAL,
+        repo_url=str(origin_repo),
+        base_branch="main",
+        work_branch=f"agent/{run_id}",
+        unattended=True,
+    )
+
+    final = await run(state, d)
+
+    assert final.phase is Phase.FAILED, "it failed, and that is not in question"
+    assert final.error, "with its own diagnosis"
+    assert final.pr_url, f"but the work is reachable: {final.error}"
+
+    # the branch really reached the origin, with the finished task's commit on it
+    assert state.work_branch in await git("branch", "--list", state.work_branch, cwd=origin_repo)
+    log = await git("log", "--oneline", f"main..{state.work_branch}", cwd=origin_repo)
+    assert "feat(ops): attempt" in log, log
+    committed = await git("show", f"{state.work_branch}:fixture/ops.py", cwd=origin_repo)
+    assert "return a - b" in committed, "the task that succeeded is in the branch"
+
+    (opened,) = github.created
+    assert opened["draft"] is True
+    assert opened["title"].startswith("[WIP] "), "where a list view and an email read it"
+    body = opened["body"]
+    assert "This run did not complete:" in body
+    assert "## What was already tried" in body, "the hypotheses are why this draft is useful"
+
+    # `pr_url` survives the run finishing as failed. The runner passes it through now;
+    # without that, the only pointer to the pushed work would be written over with NULL.
+    async with session(d.engine) as s:
+        row = await db.get_run(s, run_id)
+        artifacts = [a.kind for a in await db.list_artifacts(s, run_id)]
+    assert row is not None
+    assert row.status == "failed" and row.pr_url == final.pr_url
+    assert row.error == final.error, "the run's failure, not a pull-request failure"
+    assert "pr" in artifacts, "and the body that was published is on the record"

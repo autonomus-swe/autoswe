@@ -466,3 +466,25 @@ def test_the_plan_section_lists_the_tasks_with_their_statuses() -> None:
 
     assert "`t1` [done] do t1" in body
     assert "`t2` [failed] do t2" in body
+
+
+def test_a_task_with_no_hypotheses_is_skipped_rather_than_given_an_empty_heading() -> None:
+    """A run can escalate on a task the Debugger never reached — a Coder that produced
+    nothing, for instance. An empty `**t1** — 0 attempts` heading would read as a record of
+    something, and there is nothing to record."""
+    from contracts import DebugHypothesis
+
+    tried = DebugHypothesis(
+        failure_class="assertion", root_cause="off by one", plan="add one", confidence=0.5
+    )
+
+    both = pr_body.render(
+        description(), facts(hypotheses={"t1": [], "t2": [tried]}, escalation_reason="stuck")
+    )
+    assert "`t2`" in both and "`t1`" not in both
+
+    # and a run where no task has any gets no section at all
+    none = pr_body.render(
+        description(), facts(hypotheses={"t1": [], "t2": []}, escalation_reason="stuck")
+    )
+    assert "## What was already tried" not in none
