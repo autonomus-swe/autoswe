@@ -13,7 +13,14 @@ from typing import Any, cast
 import pytest
 
 from agents import reviewer
-from contracts import ReviewCandidates, ReviewFinding, ReviewReport, TaskGraph, Usage
+from contracts import (
+    ReviewCandidates,
+    ReviewFinding,
+    ReviewRejection,
+    ReviewReport,
+    TaskGraph,
+    Usage,
+)
 from contracts.plan import ImplementationPlan, Task, TaskSpec
 from core.errors import AgentError
 from gateway.provider import LLMProvider
@@ -176,7 +183,17 @@ async def test_what_the_verifier_rejected_is_recorded_not_discarded() -> None:
         model = "test/model"
 
         async def run_tools(self, req: Any, tools: Any, ctx: Any, hooks: Any) -> Any:
-            ctx.submitted[reviewer.REVIEW_KEY] = ReviewReport(findings=[real], blocking=False)
+            ctx.submitted[reviewer.REVIEW_KEY] = ReviewReport(
+                findings=[real],
+                blocking=False,
+                rejections=[
+                    ReviewRejection(
+                        file="src/b.py",
+                        line=99,
+                        reason="src/b.py:99 is a test fixture, not a caller",
+                    )
+                ],
+            )
             return type("O", (), {"stop_reason": "end_turn", "turns": 3, "usage": Usage()})()
 
         async def parse(self, req: Any, output: Any) -> Any:
@@ -185,6 +202,7 @@ async def test_what_the_verifier_rejected_is_recorded_not_discarded() -> None:
     report, dropped, _ = await ReviewerFor(
         ReviewReport(findings=[real], blocking=False), [real, noise]
     ).run_with(Provider())
+    # The runner returns the report the provider submitted, rejections included.
 
     assert [f.file for f in report.findings] == ["src/a.py"]
     assert [f.file for f in dropped] == ["src/b.py"]
@@ -192,7 +210,40 @@ async def test_what_the_verifier_rejected_is_recorded_not_discarded() -> None:
     stored = reviewer.artifact(report, dropped)
     assert stored["report"]["findings"][0]["file"] == "src/a.py"
     assert stored["dropped"][0]["file"] == "src/b.py"
-    assert "reason" in stored["dropped"][0], "a rejection without a reason is not a rejection"
+    # The reason itself, not just the key. This assertion used to be `"reason" in ...`,
+    # which an empty string satisfies — and an empty string was exactly what it got, since
+    # nothing populated it and the contract had no field for the model to write it in.
+    assert stored["dropped"][0]["reason"] == "src/b.py:99 is a test fixture, not a caller"
+    assert stored["rejections_explained"] == 1
+
+
+def test_a_candidate_dropped_without_a_reason_is_marked_as_such() -> None:
+    """ "Rejected, and here is why" and "silently dropped" are different facts about how
+    much this review can be trusted. A blank string made them look identical, which is
+    what the artifact looked like before `ReviewReport.rejections` existed."""
+    noise = finding(file="src/b.py", line=99)
+    report = ReviewReport(findings=[], blocking=False)  # no rejections stated
+
+    stored = reviewer.artifact(report, [noise])
+
+    assert stored["dropped"][0]["reason"] == reviewer.NO_REASON
+    assert stored["rejections_explained"] == 0
+
+
+def test_a_rejection_with_a_blank_reason_does_not_count_as_explained() -> None:
+    """A model can satisfy the schema with `reason: "   "`. That is not an explanation,
+    and counting it as one would put the number back to being unreadable."""
+    noise = finding(file="src/b.py", line=99)
+    report = ReviewReport(
+        findings=[],
+        blocking=False,
+        rejections=[ReviewRejection(file="src/b.py", line=99, reason="   ")],
+    )
+
+    stored = reviewer.artifact(report, [noise])
+
+    assert stored["dropped"][0]["reason"] == reviewer.NO_REASON
+    assert stored["rejections_explained"] == 0
 
 
 async def test_a_reviewer_that_submits_nothing_is_an_error_not_an_empty_review() -> None:
@@ -401,3 +452,43 @@ def test_unresolved_findings_say_what_they_are() -> None:
     assert "src/a.py:10" in lines[0]
     assert "[blocking]" in lines[0]
     assert "fails when:" in lines[0], "the reader needs the failure, not just the summary"
+
+
+def test_the_prompt_tells_the_model_where_to_put_a_rejection() -> None:
+    """The instruction and the contract have to agree, and nothing was checking.
+
+    `ReviewReport.rejections` exists so the model has somewhere to write the reason the
+    artifact stores. If the prompt stops naming the field, every rejection silently becomes
+    `NO_REASON` and no other test notices — the artifact still has the key, the run still
+    completes, and the review is quietly worth less.
+
+    This is not hypothetical. While this file was being written an agent rewrote that
+    paragraph to say a rejected candidate "is simply left out", which is the behaviour the
+    field exists to replace, and nothing failed.
+    """
+    from agents.base import Agent
+
+    class _Review(Agent):
+        role = "review"
+        prompt_file = "review"
+
+    prompt = _Review().system_prompt(rubric=reviewer.RUBRIC)
+
+    assert "`rejections`" in prompt, "the field the reason travels on"
+    assert "`reason`" in prompt
+    # Matched on the phrase rather than on "not a rejection", which carries markdown
+    # emphasis in the prompt and would make this test about asterisks.
+    assert "out of both lists" in prompt, "and that omitting a candidate is not a rejection"
+
+
+def test_the_submitted_schema_has_somewhere_to_put_a_rejection() -> None:
+    """The other half of the same agreement: the prompt can ask all it likes, but the tool
+    schema is what the model is actually able to return."""
+    from agents.submit import submit_tool
+
+    schema = submit_tool("submit_review", ReviewReport, reviewer.REVIEW_KEY).input_schema
+
+    assert "rejections" in schema["properties"], sorted(schema["properties"])
+    assert "rejections" not in schema.get("required", []), (
+        "optional, so a model that returns only findings still validates"
+    )

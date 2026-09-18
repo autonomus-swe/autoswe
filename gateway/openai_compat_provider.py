@@ -493,14 +493,16 @@ class OpenAICompatProvider:
             return f"ERROR: unknown tool {call.name!r}; available: {sorted(by_name)}"
         reason = await hooks.before_tool(tool.name, args)
         if reason:
-            res = ToolResult(content=f"denied: {reason}", is_error=True)
+            res = ToolResult(content=f"denied: {reason}", is_error=True, denied_by="harness")
             res = await hooks.after_tool(tool.name, args, res, 0)
             return self._render(res)
         t0 = time.monotonic()
         try:
             res = await tool(ctx, **args)
         except PolicyViolation as e:
-            res = ToolResult(content=f"denied: {e}", is_error=True)
+            # Recorded as a denial rather than an error: `check_bash` and `confine` raise
+            # before the sandbox is touched, so nothing ran, and the ledger has to say so.
+            res = ToolResult(content=f"denied: {e}", is_error=True, denied_by="policy")
         except Exception as e:  # a tool bug must not kill the run
             log.warning("tool_exception", tool=tool.name, error=f"{type(e).__name__}: {e}")
             res = ToolResult(content=f"tool error: {type(e).__name__}: {e}", is_error=True)

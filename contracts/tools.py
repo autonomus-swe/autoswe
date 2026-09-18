@@ -26,3 +26,12 @@ class ToolResult(StateModel):
     content: str
     is_error: bool = False
     artifact: dict[str, Any] | None = None
+    # Who refused this call, when it was refused rather than run. `None` means it ran.
+    #
+    # It exists because the ledger could not previously tell the two apart: a forbidden
+    # command and a command that ran and failed were both recorded `exit_code=1`, so
+    # "did anything on the DENY list actually execute" was unanswerable from the audit
+    # trail — which is the one question the trail exists to answer after a prompt
+    # injection. `"policy"` is `tools/policy.py` refusing a forbidden command;
+    # `"harness"` is a gate in `before_tool` (budget spent, hypothesis not yet stated).
+    denied_by: str | None = None

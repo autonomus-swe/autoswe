@@ -235,6 +235,14 @@ async def _run_with_artifacts(engine: AsyncEngine) -> UUID:
         # Twice, so "the latest of that kind" is a claim the test can actually check.
         await db.save_artifact(s, run_id, "test_report", None, {"passed": True, "total": 41})
         await db.save_artifact(s, run_id, "security", None, {"checklist": {"no_secrets": True}})
+        # The two the exit criterion names that this fixture used to omit — which is why
+        # the PR description's only HTTP assertion was a negative one (a 404 for 'pr').
+        await db.save_artifact(
+            s, run_id, "review", None, {"report": {"findings": []}, "dropped": []}
+        )
+        await db.save_artifact(
+            s, run_id, "pr", "https://example/pull/1", {"description": {"title": "feat: x"}}
+        )
     return run_id
 
 
@@ -261,9 +269,14 @@ async def test_the_listing_carries_sizes_and_not_content(
 
     assert res.status_code == 200
     rows = res.json()
-    assert [r["kind"] for r in rows] == ["diff", "test_report", "test_report", "security"], (
-        "in the order the run wrote them, both test reports kept"
-    )
+    assert [r["kind"] for r in rows] == [
+        "diff",
+        "test_report",
+        "test_report",
+        "security",
+        "review",
+        "pr",
+    ], "in the order the run wrote them, both test reports kept"
     assert all(r["size"] > 0 for r in rows)
     assert all("content" not in r for r in rows)
 
@@ -309,8 +322,11 @@ async def test_a_missing_run_and_a_missing_kind_are_told_apart(
     absent = await client.get(f"/runs/{missing}/artifacts", headers={"X-API-Key": KEY})
     assert absent.status_code == 404 and absent.json()["detail"] == "run not found"
 
-    no_kind = await client.get(f"/runs/{run_id}/artifacts/pr", headers={"X-API-Key": KEY})
-    assert no_kind.status_code == 404 and "no 'pr' artifact" in no_kind.json()["detail"]
+    # A kind the pipeline never writes. Using 'pr' here made the PR description's only
+    # HTTP assertion a 404, which is the opposite of what the criterion asks.
+    no_kind = await client.get(f"/runs/{run_id}/artifacts/neverwritten", headers={"X-API-Key": KEY})
+    assert no_kind.status_code == 404
+    assert "no 'neverwritten' artifact" in no_kind.json()["detail"]
 
 
 async def test_a_run_that_wrote_nothing_lists_nothing_rather_than_failing(
@@ -334,3 +350,28 @@ async def test_a_run_that_wrote_nothing_lists_nothing_rather_than_failing(
     res = await client.get(f"/runs/{run_id}/artifacts", headers={"X-API-Key": KEY})
 
     assert res.status_code == 200 and res.json() == []
+
+
+async def test_all_five_named_kinds_come_back(
+    api: tuple[httpx.AsyncClient, FakeArq], engine: AsyncEngine
+) -> None:
+    """The exit criterion names five: diff, test reports, review, security, PR description.
+
+    Asserted together because the endpoint is kind-generic — nothing in it knows the list —
+    so the only thing that can go wrong is a producer writing under a name no caller would
+    guess. The PR description is stored under kind `pr` with the description nested at
+    `content["description"]`, which is exactly the sort of thing this pins.
+    """
+    client, _ = api
+    run_id = await _run_with_artifacts(engine)
+
+    for kind in ("test_report", "review", "security", "pr"):
+        res = await client.get(f"/runs/{run_id}/artifacts/{kind}", headers={"X-API-Key": KEY})
+        assert res.status_code == 200, kind
+        assert res.json(), kind
+
+    text = await client.get(f"/runs/{run_id}/artifacts/diff", headers={"X-API-Key": KEY})
+    assert text.status_code == 200 and text.text.startswith("--- a")
+
+    pr = await client.get(f"/runs/{run_id}/artifacts/pr", headers={"X-API-Key": KEY})
+    assert pr.json()["description"]["title"] == "feat: x", "the description, where it lives"

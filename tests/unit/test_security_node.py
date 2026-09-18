@@ -84,6 +84,7 @@ class Recorder:
     def __init__(self) -> None:
         self.pushed: list[str] = []
         self.prs: list[str] = []
+        self.artifacts: list[tuple[str, Any]] = []
 
 
 @pytest.fixture
@@ -116,6 +117,9 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> Recorder:
     async def noop(*a: Any, **kw: Any) -> None:
         return None
 
+    async def save_artifact(s: Any, run_id: Any, kind: str, path: Any, content: Any) -> None:
+        rec.artifacts.append((kind, content))
+
     monkeypatch.setattr(nodes, "push_branch", push_branch)
     monkeypatch.setattr(nodes, "open_pr", open_pr)
     monkeypatch.setattr(nodes, "_emit", emit)
@@ -123,6 +127,7 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> Recorder:
     monkeypatch.setattr(nodes, "session", lambda _engine: NullSession())
     monkeypatch.setattr("storage.repo.finish_run", noop)
     monkeypatch.setattr("storage.repo.upsert_tasks", noop)
+    monkeypatch.setattr("storage.repo.save_artifact", save_artifact)
     return rec
 
 
@@ -152,6 +157,11 @@ async def test_a_run_that_changed_nothing_records_an_empty_report(
 
     assert out.security is not None
     assert out.security.findings == [] and out.security.critical is False
+    # Written as an artifact, not only onto the state. Otherwise
+    # `GET /runs/{id}/artifacts/security` 404s for a run that changed nothing, and a caller
+    # cannot tell "scanned, nothing found" from "never scanned".
+    (kind, content) = sent.artifacts[0]
+    assert kind == "security" and content["report"]["findings"] == []
 
 
 async def test_no_sandbox_is_a_recorded_skip_rather_than_a_crash(
@@ -172,3 +182,4 @@ async def test_no_sandbox_is_a_recorded_skip_rather_than_a_crash(
     out = await security_node(state(), cast("Any", FakeDeps()), res)
 
     assert out.security is not None and out.security.critical is False
+    assert [k for k, _ in sent.artifacts] == ["security"], "still on the record"

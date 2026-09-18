@@ -320,14 +320,37 @@ def unresolved(findings: list[ReviewFinding]) -> list[str]:
     ]
 
 
+NO_REASON = "(dropped without a stated reason)"
+
+
+def rejection_reasons(report: ReviewReport) -> dict[str, str]:
+    """`file:line` -> the reason the verification pass gave for throwing a candidate out."""
+    return {f"{r.file}:{r.line}": r.reason.strip() for r in report.rejections if r.reason.strip()}
+
+
 def artifact(
     report: ReviewReport, dropped: list[ReviewFinding], reasons: dict[str, str] | None = None
 ) -> dict[str, Any]:
-    """What gets stored: the report, and everything rejected with why."""
+    """What gets stored: the report, and everything rejected with why.
+
+    `reasons` used to be a parameter nobody passed, so every dropped candidate was stored
+    with `"reason": ""` — and the test asserted only that the *key* was present, which an
+    empty string satisfies. "Why was this not reported" had no answer, which is the thing
+    this artifact exists to answer.
+
+    A candidate with no matching rejection is marked `NO_REASON` rather than left blank:
+    "the model rejected this and explained why" and "the model dropped this without
+    saying anything" are different facts about how much the review can be trusted, and a
+    blank string made them look identical.
+    """
+    stated = reasons if reasons is not None else rejection_reasons(report)
     return {
         "report": report.model_dump(mode="json"),
         "dropped": [
-            {**c.model_dump(mode="json"), "reason": (reasons or {}).get(f"{c.file}:{c.line}", "")}
+            {**c.model_dump(mode="json"), "reason": stated.get(f"{c.file}:{c.line}", NO_REASON)}
             for c in dropped
         ],
+        # How many the model bothered to explain, against how many it threw out. A pass
+        # that rejects nine candidates and explains none is one a reader should discount.
+        "rejections_explained": sum(1 for c in dropped if f"{c.file}:{c.line}" in stated),
     }

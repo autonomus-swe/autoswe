@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -24,6 +25,7 @@ from agents import security
 from contracts import Budget, SecurityFinding, Usage
 from contracts.plan import ImplementationPlan, TaskGraph
 from contracts.repo import RepoProfile
+from core.errors import RepoError
 from core.settings import Settings, load_settings
 from gateway.openai_compat_provider import ChatTurn, OpenAICompatProvider, ToolCallReq
 from orchestrator.deps import Deps, docker_sandbox_factory
@@ -35,6 +37,7 @@ from repo.gitcmd import git
 from storage import repo as db
 from storage.db import make_engine, session
 from storage.redis import RedisBus
+from tests.fakes import planted_secret
 
 pytestmark = pytest.mark.integration
 
@@ -1068,3 +1071,275 @@ async def test_an_escalated_run_with_commits_opens_a_draft_that_says_it_did_not_
     assert row.status == "failed" and row.pr_url == final.pr_url
     assert row.error == final.error, "the run's failure, not a pull-request failure"
     assert "pr" in artifacts, "and the body that was published is on the record"
+
+
+requires_gitleaks = pytest.mark.skipif(
+    not shutil.which("gitleaks"), reason="gitleaks is not on PATH"
+)
+
+
+class CommitsASecret(ScriptedAgents):
+    """A coder that finishes the work correctly and also commits a credential.
+
+    The tests pass, the review is clean, and the stubbed scanner pass finds nothing — so
+    the run reaches PR believing it is done. The only thing standing between that
+    credential and a public forge is the rescan in `_refuse_secrets`, which is what this
+    exercises with the real gitleaks binary rather than a stub.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.coder_script = [
+            call("1", "str_replace_based_edit_tool", {"command": "view", "path": "fixture/ops.py"}),
+            call(
+                "2",
+                "str_replace_based_edit_tool",
+                {"command": "create", "path": "fixture/ops.py", "file_text": SOLUTION},
+            ),
+            # A new file, so no prior view is required — and a plausible place for a key
+            # to end up, which is the point.
+            call(
+                "3",
+                "str_replace_based_edit_tool",
+                {
+                    "command": "create",
+                    "path": "fixture/settings.py",
+                    "file_text": f'AWS_SECRET_ACCESS_KEY = "{planted_secret("full-run")}"\n',
+                },
+            ),
+            call("4", "run_tests", {"selector": "tests/test_ops.py"}),
+            call("5", "git_commit", {"message": "feat(ops): add subtract and slugify"}),
+            call(
+                "6",
+                "submit_result",
+                {
+                    "summary": "Added both functions and a settings module",
+                    "files_touched": ["fixture/ops.py", "fixture/settings.py"],
+                    "how_to_test": "uv run pytest -q",
+                    "notes_for_reviewer": [],
+                },
+            ),
+            ChatTurn("done", [], "stop", Usage(), {"role": "assistant", "content": "done"}),
+        ]
+
+
+@requires_docker
+@requires_gitleaks
+async def test_a_committed_secret_stops_the_push_with_the_real_scanner(
+    deps: tuple[Deps, ScriptedAgents, StubGitHub], origin_repo: Path
+) -> None:
+    """Exit criterion: a planted `AWS_SECRET_ACCESS_KEY=...` in a new file refuses the push.
+
+    The gate is unit-tested against a stubbed scanner in tests/unit/test_pr_node.py. This
+    is the other half: the real gitleaks binary, over a real commit in a real worktree,
+    reached through the whole pipeline. The stubbed `run_all` in this module does not reach
+    it — `_refuse_secrets` calls `run_gitleaks` directly, which is the defence-in-depth
+    rescan immediately before the push.
+
+    Asserted by absence as much as presence: the branch must not exist on the origin.
+    """
+    d, _, github = deps
+    d = replace(d, provider=CommitsASecret())
+    async with session(d.engine) as s:
+        run_id = await db.create_run(
+            s,
+            repo_url=str(origin_repo),
+            base_branch="main",
+            goal=GOAL,
+            budget=Budget(max_usd=1.0),
+            provider="scripted",
+        )
+    state = RunState(
+        run_id=run_id,
+        goal=GOAL,
+        repo_url=str(origin_repo),
+        base_branch="main",
+        work_branch=f"agent/{run_id}",
+    )
+
+    with pytest.raises(RepoError, match="refusing to push"):
+        await run(state, d)
+
+    assert state.pr_url is None
+    assert github.created == [], "no pull request was opened"
+    assert state.work_branch not in await git(
+        "branch", "--list", state.work_branch, cwd=origin_repo
+    ), "and the branch never reached the origin"
+
+    # the finding is on the record for a human to rotate, and the value is not
+    async with session(d.engine) as s:
+        row = await db.get_run(s, run_id)
+        artifact = await db.latest_artifact(s, run_id, "gitleaks")
+    assert row is not None and row.status == "failed"
+    assert artifact is not None, "the run that refused to push said what it found"
+    (found,) = artifact.content["findings"]
+    assert found["tool"] == "gitleaks"
+    assert found["file"] == "fixture/settings.py"
+    assert found["severity"] == "critical"
+    assert "value withheld" in found["message"]
+    assert planted_secret("full-run") not in json.dumps(artifact.content)
+
+
+BLOCKING_REVIEW = {
+    "findings": [
+        {
+            "file": "fixture/ops.py",
+            "line": 9,
+            "severity": "blocking",
+            "category": "missing-validation",
+            "summary": "slugify does not reject None",
+            "failure_scenario": "slugify(None) raises AttributeError instead of TypeError",
+        }
+    ],
+    "blocking": True,
+    "rejections": [],
+}
+
+
+class ReviewBlocksThenClears(ScriptedAgents):
+    """A reviewer that blocks once, then passes. The coder is asked twice.
+
+    The fix loop has table tests over the real `transition`, but nothing drove it through
+    an actual run: no test made a review return `blocking=True` and then watched a fix task
+    go through CODE and TEST and come back to the gate that asked for it.
+    """
+
+    reviews_before_clean = 1
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reviews = 0
+        self.review_submitted = False
+        self.first_pass = list(self.coder_script)
+        self.coder_script = []
+
+    def _pass(self) -> list[ChatTurn]:
+        if self.first_pass:
+            script, self.first_pass = self.first_pass, []
+            return script
+        # The fix round. It submits without editing: the suite is already green, and what
+        # is under test is the loop rather than the quality of the fix.
+        return [
+            call(
+                "f",
+                "submit_result",
+                {
+                    "summary": "addressed the review finding",
+                    "files_touched": ["fixture/ops.py"],
+                    "how_to_test": "uv run pytest -q",
+                    "notes_for_reviewer": ["slugify now rejects None"],
+                },
+            )
+        ]
+
+    async def _complete(self, **kw: Any) -> ChatTurn:
+        offered = {t["function"]["name"] for t in kw.get("tools", [])}
+        if "submit_review" in offered:
+            # Counted per *phase*, not per call. A fresh phase arrives as [system, user];
+            # within one phase the loop keeps asking, and a fake that answers every time
+            # both miscounts the rounds and re-submits until `max_iterations` — which is
+            # not what a model does. Same trap as the coder script below.
+            if len(kw.get("messages") or []) <= 2:
+                self.reviews += 1
+                self.review_submitted = False
+                self.roles.append("review")
+            if self.review_submitted:
+                return self._done()
+            self.review_submitted = True
+            blocking = self.reviews <= self.reviews_before_clean
+            return call("v", "submit_review", BLOCKING_REVIEW if blocking else REVIEW_REPORT)
+        if "submit_security" in offered:
+            if "security" in self.roles:
+                return self._done()
+            self.roles.append("security")
+            return call("s", "submit_security", SECURITY_REPORT)
+        if "submit_result" in offered:
+            if "coder" not in self.roles:
+                self.roles.append("coder")
+            if len(kw.get("messages") or []) <= 2:
+                self.coder_script = self._pass()
+            return self.coder_script.pop(0) if self.coder_script else self._done()
+        return await super()._complete(**kw)
+
+
+class ReviewNeverClears(ReviewBlocksThenClears):
+    """Blocks every time, so the round budget runs out and the findings go on the record."""
+
+    reviews_before_clean = 99
+
+
+async def _run_to_completion(d: Deps, origin_repo: Path) -> tuple[RunState, Any]:
+    async with session(d.engine) as s:
+        run_id = await db.create_run(
+            s,
+            repo_url=str(origin_repo),
+            base_branch="main",
+            goal=GOAL,
+            budget=Budget(max_usd=1.0),
+            provider="scripted",
+        )
+    state = RunState(
+        run_id=run_id,
+        goal=GOAL,
+        repo_url=str(origin_repo),
+        base_branch="main",
+        work_branch=f"agent/{run_id}",
+        unattended=True,
+    )
+    return await run(state, d), run_id
+
+
+@requires_docker
+async def test_a_blocking_review_sends_a_fix_task_through_code_and_test(
+    deps: tuple[Deps, ScriptedAgents, StubGitHub], origin_repo: Path
+) -> None:
+    """Exit criterion: blocking findings -> CODE (fix task) -> TEST -> REVIEW again.
+
+    Walked by a real run rather than by the transition table alone: the fix task is
+    appended by `_grant_fix_round`, picked up by `code_node` as an ordinary task, tested,
+    and returned to REVIEW by the `return_to` hop.
+    """
+    d, _, github = deps
+    d = replace(d, provider=ReviewBlocksThenClears())
+
+    final, run_id = await _run_to_completion(d, origin_repo)
+
+    assert final.phase is Phase.DONE, final.error
+    assert final.fix_rounds == {"review": 1}, "one round bought, one spent"
+    assert final.tasks is not None
+    fix = final.tasks.by_id("fix-review-1")
+    assert fix.kind == "fix" and fix.status == "done", "an ordinary task, tested like any"
+    assert final.known_issues == [], "the second review was clean, so nothing was left"
+    assert final.review is not None and final.review.blocking is False
+
+    async with session(d.engine) as s:
+        steps = [st.agent for st in await db.list_steps(s, run_id)]
+    # the reviewer ran twice, with a coder between them
+    assert steps.count("review") == 2, steps
+    assert steps.index("coder") < steps.index("review"), "coded before the first review"
+    assert steps.count("coder") == 2, "and again for the fix round"
+    assert github.created[0]["draft"] is False, "a run that fixed its findings is not a draft"
+
+
+@requires_docker
+async def test_a_review_that_never_clears_proceeds_with_the_findings_on_the_record(
+    deps: tuple[Deps, ScriptedAgents, StubGitHub], origin_repo: Path
+) -> None:
+    """Exit criterion: after two rounds the run proceeds with `known_issues`.
+
+    The budget is what makes this terminate. A pull request that names what is wrong with
+    it beats one that never arrives — and it is a draft, so nobody mistakes it for ready.
+    """
+    d, _, github = deps
+    d = replace(d, provider=ReviewNeverClears())
+
+    final, _run_id = await _run_to_completion(d, origin_repo)
+
+    assert final.phase is Phase.DONE, final.error
+    assert final.fix_rounds == {"review": 2}, "two rounds, and no third"
+    assert final.known_issues, "the unresolved finding is on the record"
+    assert "slugify does not reject None" in final.known_issues[0]
+
+    (opened,) = github.created
+    assert opened["draft"] is True
+    assert "slugify does not reject None" in opened["body"], "and in the body a human reads"
