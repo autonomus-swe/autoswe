@@ -9,6 +9,7 @@ from tools.editor import EditorTool
 from tools.fs import ReadFileTool
 from tools.git import GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool
 from tools.search import SearchCodeTool
+from tools.symbols import ListSymbolsTool
 from tools.tests import RunTestsTool
 
 REGISTRY: dict[str, BaseTool] = {
@@ -24,6 +25,7 @@ REGISTRY: dict[str, BaseTool] = {
         GitLogTool(),
         GitCommitTool(),
         AskUserTool(),
+        ListSymbolsTool(),
     )
 }
 
@@ -32,6 +34,7 @@ ROLE_TOOLS: dict[str, list[str]] = {
         "bash",
         "str_replace_based_edit_tool",
         "read_file",
+        "list_symbols",
         "search_code",
         "run_tests",
         "git_status",
@@ -45,6 +48,7 @@ ROLE_TOOLS: dict[str, list[str]] = {
         "bash",
         "str_replace_based_edit_tool",
         "read_file",
+        "list_symbols",
         "search_code",
         "run_tests",
         "git_status",
@@ -54,11 +58,11 @@ ROLE_TOOLS: dict[str, list[str]] = {
         # tool of last resort, and tool order nudges what a model reaches for.
         "ask_user",
     ],
-    "analyzer": ["read_file", "search_code", "git_status", "git_diff"],
-    "planner": ["read_file", "search_code", "git_status", "git_diff"],
+    "analyzer": ["read_file", "list_symbols", "search_code", "git_status", "git_diff"],
+    "planner": ["read_file", "list_symbols", "search_code", "git_status", "git_diff"],
     # The Reviewer reads history as well as the diff: "what did this run already try"
     # is a different question from "what does the diff say", and both inform a finding.
-    "review": ["read_file", "search_code", "git_status", "git_diff", "git_log"],
+    "review": ["read_file", "list_symbols", "search_code", "git_status", "git_diff", "git_log"],
     "review_pre": ["read_file", "search_code", "git_status", "git_diff", "git_log"],
     # Read-only, and `bash` is deliberately absent even though a security reviewer would
     # find it convenient: this role is the one reading attacker-controlled strings out of a

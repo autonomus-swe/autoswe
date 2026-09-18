@@ -41,7 +41,7 @@ from orchestrator.events import emit
 from orchestrator.hooks import OrchestratorHooks
 from orchestrator.state import Phase, RunState
 from orchestrator.transition import MAX_DEBUG_ATTEMPTS
-from repo import diff, pr_body
+from repo import diff, pr_body, symbols
 from repo import profile as repo_profile
 from repo import worktree as wt
 from repo.clone import ensure_bare_clone, repo_key, resolve_sha
@@ -151,6 +151,16 @@ async def setup_node(state: RunState, deps: Deps, res: RunResources) -> RunState
     # deterministic facts first: SETUP uses the detected install command, and ANALYZE
     # gets them as context rather than re-deriving what a file read can settle
     state.facts = repo_profile.collect(res.worktree.path)
+
+    # The symbol index, host-side and before the sandbox needs to exist: it reads files and
+    # writes rows and wants a container for neither. Keyed by the base SHA, so a second run
+    # against the same commit reuses it — which is what makes it affordable on a large
+    # repository. A failure here costs the repo map its ranking, not the run: ANALYZE and
+    # the Coder both work without it.
+    try:
+        await symbols.index_repo(deps.engine, res.worktree.path, state.base_sha or "HEAD")
+    except Exception as e:
+        log.warning("symbol_index_failed", error=f"{type(e).__name__}: {e}")
     await sandbox.connect_install_network()
     install = install_command(res.worktree.path, state.facts)
     result = await sandbox.exec(install, timeout_s=INSTALL_TIMEOUT_S)

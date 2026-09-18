@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +18,7 @@ from storage.models import (
     CheckpointRow,
     EventRow,
     LLMCallRow,
+    RepoSymbolRow,
     RunRow,
     StepRow,
     TaskRow,
@@ -381,5 +382,67 @@ async def list_artifacts(s: AsyncSession, run_id: uuid.UUID) -> list[ArtifactRow
     """
     res = await s.execute(
         select(ArtifactRow).where(ArtifactRow.run_id == run_id).order_by(ArtifactRow.seq)
+    )
+    return list(res.scalars())
+
+
+# ---- the symbol index -----------------------------------------------------------------
+
+
+async def symbols_indexed(s: AsyncSession, repo_sha: str) -> bool:
+    """Whether this SHA has already been indexed.
+
+    The whole reason indexing a large repository is affordable: the index describes a
+    commit, so two runs against the same base share it and a re-run is a no-op. `limit 1`
+    rather than a count, because the question is existence.
+    """
+    res = await s.execute(
+        select(RepoSymbolRow.id).where(RepoSymbolRow.repo_sha == repo_sha).limit(1)
+    )
+    return res.scalar_one_or_none() is not None
+
+
+async def insert_symbols(s: AsyncSession, repo_sha: str, rows: list[dict[str, Any]]) -> int:
+    """Bulk-insert one SHA's symbols. Returns how many landed.
+
+    Chunked because a three-thousand-file repository is tens of thousands of rows, and a
+    single statement that large is one the driver has to buffer whole.
+    """
+    if not rows:
+        return 0
+    inserted = 0
+    chunk = 1000
+    for start in range(0, len(rows), chunk):
+        batch = [
+            {**r, "id": uuid.uuid4(), "repo_sha": repo_sha} for r in rows[start : start + chunk]
+        ]
+        await s.execute(insert(RepoSymbolRow), batch)
+        inserted += len(batch)
+    return inserted
+
+
+async def symbols_for_path(s: AsyncSession, repo_sha: str, path: str) -> list[RepoSymbolRow]:
+    """Every definition in one file, in source order."""
+    res = await s.execute(
+        select(RepoSymbolRow)
+        .where(RepoSymbolRow.repo_sha == repo_sha, RepoSymbolRow.path == path)
+        .order_by(RepoSymbolRow.start_line)
+    )
+    return list(res.scalars())
+
+
+async def symbols_named(
+    s: AsyncSession, repo_sha: str, name: str, limit: int = 50
+) -> list[RepoSymbolRow]:
+    """Every definition with this name, anywhere in the tree.
+
+    The query Step 5.2's ranking is for: a goal that names `paginate` needs to know which
+    file defines it before it can put that file first.
+    """
+    res = await s.execute(
+        select(RepoSymbolRow)
+        .where(RepoSymbolRow.repo_sha == repo_sha, RepoSymbolRow.name == name)
+        .order_by(RepoSymbolRow.path)
+        .limit(limit)
     )
     return list(res.scalars())

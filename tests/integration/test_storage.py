@@ -186,3 +186,84 @@ async def test_downgrade_removes_tables_then_upgrade_restores(migrated_pg_url: s
     finally:
         await eng.dispose()
     await asyncio.to_thread(upgrade, migrated_pg_url, "head")
+
+
+# ---- the symbol index -------------------------------------------------------------------
+
+
+async def test_the_symbol_index_is_keyed_by_sha_and_a_second_pass_is_a_no_op(
+    db: AsyncSession,
+) -> None:
+    """The property that makes indexing a large repository affordable.
+
+    The index describes a commit, not a run, so two runs against the same base share it.
+    Without the skip, every run would re-parse three thousand files to produce rows it
+    already had.
+    """
+    sha = "a" * 40
+    assert await repo.symbols_indexed(db, sha) is False
+
+    rows = [
+        {
+            "path": "src/pages.py",
+            "kind": "function",
+            "name": "paginate",
+            "signature": "def paginate(items, size):",
+            "start_line": 7,
+            "end_line": 9,
+            "refs": ["chunk"],
+        }
+    ]
+    assert await repo.insert_symbols(db, sha, rows) == 1
+    assert await repo.symbols_indexed(db, sha) is True
+
+    # a different commit is a different index, and does not see this one
+    assert await repo.symbols_indexed(db, "b" * 40) is False
+
+
+async def test_a_symbol_is_findable_by_name_and_by_file(db: AsyncSession) -> None:
+    """The two queries Step 5.2's ranking needs: "where is paginate" and "what is in this
+    file". Both scoped to the SHA, or a stale index would answer for the wrong commit."""
+    sha = "c" * 40
+    await repo.insert_symbols(
+        db,
+        sha,
+        [
+            {
+                "path": "src/pages.py",
+                "kind": "function",
+                "name": "paginate",
+                "signature": "def paginate(items, size):",
+                "start_line": 7,
+                "end_line": 9,
+                "refs": ["chunk"],
+            },
+            {
+                "path": "src/pages.py",
+                "kind": "class",
+                "name": "Pager",
+                "signature": "class Pager:",
+                "start_line": 12,
+                "end_line": 20,
+                "refs": [],
+            },
+            {
+                "path": "src/other.py",
+                "kind": "function",
+                "name": "paginate",
+                "signature": "def paginate(x):",
+                "start_line": 1,
+                "end_line": 2,
+                "refs": [],
+            },
+        ],
+    )
+
+    by_name = await repo.symbols_named(db, sha, "paginate")
+    assert sorted(s.path for s in by_name) == ["src/other.py", "src/pages.py"]
+
+    in_file = await repo.symbols_for_path(db, sha, "src/pages.py")
+    assert [s.name for s in in_file] == ["paginate", "Pager"], "in source order"
+    assert in_file[0].refs == ["chunk"], "the array round-trips"
+
+    assert await repo.symbols_named(db, "d" * 40, "paginate") == []

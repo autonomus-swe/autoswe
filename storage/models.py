@@ -198,6 +198,36 @@ class ArtifactRow(Base):
     created_at: Mapped[datetime] = _created_at()
 
 
+class RepoSymbolRow(Base):
+    """One definition in one file, at one repository SHA.
+
+    Keyed by SHA rather than by run, because the index describes a commit and not a run:
+    two runs against the same base share it, and re-indexing the same SHA is a no-op. That
+    is the whole reason indexing a 3000-file repository can be affordable.
+
+    `refs` holds the identifiers used *inside* this definition, which is what makes the
+    table answer "who calls paginate" rather than only "where is paginate".
+    """
+
+    __tablename__ = "repo_symbols"
+    __table_args__ = (
+        Index("ix_repo_symbols_sha", "repo_sha"),
+        Index("ix_repo_symbols_sha_name", "repo_sha", "name"),
+        Index("ix_repo_symbols_sha_path", "repo_sha", "path"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    repo_sha: Mapped[str] = mapped_column(Text, nullable=False)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    signature: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    start_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    refs: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, server_default="{}")
+    created_at: Mapped[datetime] = _created_at()
+
+
 CORE_TABLES: tuple[str, ...] = (
     "runs",
     "tasks",
@@ -207,4 +237,5 @@ CORE_TABLES: tuple[str, ...] = (
     "checkpoints",
     "events",
     "artifacts",
+    "repo_symbols",
 )
