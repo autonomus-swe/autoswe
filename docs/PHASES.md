@@ -128,8 +128,8 @@ Copy this into the project's main issue and tick as you go.
 
 - [x] Phase 0 — foundations (`v0.0.1`, tagged 2026-09-07)
 - [x] Phase 1 — single-agent loop (`v0.1.0`, 2026-09-11)
-- [ ] Phase 2 — plan and state (`v0.2.0`)
-- [ ] Phase 3 — verification loop (`v0.3.0`)
-- [ ] Phase 4 — review, security, PR (`v0.4.0`)
+- [x] Phase 2 — plan and state (`v0.2.0`, 2026-09-15)
+- [x] Phase 3 — verification loop (`v0.3.0`, 2026-09-16)
+- [x] Phase 4 — review, security, PR (`v0.4.0`, 2026-09-18)
 - [ ] Phase 5 — scale and cost (`v0.5.0`)
 - [ ] Phase 6 — interop and evals (`v1.0.0`)

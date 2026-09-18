@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.4.0 — Phase 4: review, security, and a pull request worth reading
+
+Before anything is pushed, the change is reviewed in two passes, scanned by four tools plus
+a model that reads their output, fixed in bounded rounds, and described by a writer that is
+trusted with prose and nothing else. Secrets do not leave the worker.
+
+The rule running through all of it: **the model judges, the code decides.** Every gate —
+`blocking`, `critical`, draft-or-not, every number in the pull request body — is computed
+host-side from the model's severities, never read from the model's own answer.
+
+Added
+- A two-pass Reviewer. The cheap pass enumerates and is allowed to be wrong; the expensive
+  pass opens each file and confirms or rejects with a reason. Rejections are stored in the
+  `review` artifact, and a candidate dropped without one is marked as exactly that.
+- `repo/diff.py`: the diff a review reads, with untracked files included, generated files
+  summarised, and the new-side line numbers kept so a finding can be tied to a line the
+  run actually added.
+- Four scanners — bandit and semgrep in the sandbox, gitleaks and pip-audit on the worker,
+  each placed by what it needs rather than by preference. A scanner that fails becomes an
+  `info` finding naming the tool, because silence reads as "nothing wrong".
+- A Security agent that checks scanner output against the files, and a `critical` gate
+  computed in code: `critical` or `high`, inside the diff, not rejected. An unverified
+  finding still gates.
+- An eleven-key checklist that reports and never gates by itself. Whether a key applies is
+  computed from the diff, because a model that just wrote the code is not the right judge
+  of whether its own SQL handling was in scope.
+- Fix rounds, bounded at two per gate, with one function owning both budgets. Unresolved
+  findings go to `known_issues` and the pull request carries them verbatim.
+- A PR Writer with no tools, and `repo/pr_body.py` which renders its prose beside the
+  harness's numbers. A run that gave up opens a draft that says so.
+- An escalated run with commits opens a draft `[WIP]` pull request carrying the hypotheses
+  the Debugger already ruled out.
+- `GET /runs/{id}/artifacts` and `/artifacts/{kind}`, plus `autoswe artifacts`. Seven kinds
+  were being written and none could be read.
+- The `f-injection` chaos branch, with instructions addressed at the agent in three files,
+  and a harness test driven by a provider that obeys them on purpose.
+
+Fixed
+- **bandit published the values it found.** Its B105/B106/B107 family quotes the matched
+  literal in `issue_text`, which was copied into a finding's message and rendered into the
+  published pull request body. The case that mattered is the one gitleaks misses: a short
+  common password is flagged by B105 and nothing else, so the push was not refused and the
+  body shipped the value. Those rules now report the rule and the location, value withheld.
+- **The tool ledger could not tell a refused command from a failed one.** Both were
+  `exit_code=1` and `approved_by` was never written, so "did anything forbidden execute"
+  was unanswerable from the audit trail. A refusal is now `-1`, attributed to `policy` or
+  `harness`.
+- **The approval list was consulted before the deny list**, so a forbidden command reached
+  a human for a decision with no legitimate yes. `policy.py` had claimed the opposite.
+- semgrep waited out a connect timeout on a version check it could never complete in a
+  networkless sandbox: 2m36s became 1m01s. Narrowing the vendored rules to the security
+  set took a 181-file repository from 104.1s to 58.4s.
+- The console's phase rail went blank whenever a run reached REVIEW, because the phase was
+  in neither of its two lists. A test now reads both lists out of the JavaScript.
+- `full_diff` wrote its temporary index into `<worktree>/.git`, which is a *file* in a
+  linked worktree, not a directory.
+
+Not fully verified: one exit criterion needs a funded API key — whether a real reviewer
+calls a seeded token-expiry bug `blocking` and leaves a style-only diff alone. Both fixture
+branches, their premises and the assertion are in place; see
+`docs/PHASE-4-review-security-pr.md` §1 and `tests/e2e/test_m4.py`.
+
 ## 0.3.0 — Phase 3: the verification loop
 
 A failing test is now something the run reasons about rather than something it reports. It

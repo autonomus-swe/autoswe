@@ -1,6 +1,6 @@
 [project]
 name = "autoswe"
-version = "0.3.0"
+version = "0.4.0"
 description = "Autonomous software engineering agent: control plane, orchestrator, agents, tools."
 readme = "README.md"
 requires-python = ">=3.12"
