@@ -23,6 +23,10 @@ api = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "sse-starlette>=2.1"]
 cli = ["httpx>=0.27"]
 worker = [
     "arq>=0.26",
+    # The symbol index. One wheel carries the grammars for every language the index
+    # supports, so adding a language is a query file rather than a build step.
+    "tree-sitter>=0.23",
+    "tree-sitter-language-pack>=0.7",
     # pip-audit queries the advisory database over the network, so it runs on the worker
     # and never in the sandbox. A dependency rather than a binary because the worker runs
     # as a host process in development and in a container in compose, and it has to be
