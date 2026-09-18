@@ -576,3 +576,52 @@ async def test_a_completed_run_carries_no_hypotheses_section(
     await pr_node(state(), cast("Any", FakeDeps()), resources(tmp_path))
 
     assert "## What was already tried" not in sent.prs[0]["body"]
+
+
+# ---- a run with nothing committed ---------------------------------------------------------
+
+
+async def test_a_run_that_committed_nothing_does_not_open_an_empty_pull_request(
+    tmp_path: Path, sent: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found by the first real-model run, which 808 scripted tests could not find.
+
+    The model wrote working code, ran the tests in the sandbox — green, against the
+    worktree — submitted its result, and never called `git_commit`. The run reached PR,
+    pushed a branch identical to main, and opened a pull request containing nothing. It
+    reported DONE.
+
+    Every scripted fake in this suite calls `git_commit`, so nothing here had ever
+    exercised the path where an agent simply forgets. A pull request with no commits in it
+    is worse than no pull request: it reads as success and costs a reviewer the click.
+    """
+    import orchestrator.nodes as nodes
+
+    async def no_commits(*a: Any, **kw: Any) -> str:
+        return "\n"
+
+    monkeypatch.setattr(nodes, "git", no_commits)
+
+    with pytest.raises(RepoError, match="no commits"):
+        await pr_node(state(), cast("Any", FakeDeps()), resources(tmp_path))
+
+    assert sent.pushed == [], "and nothing was pushed"
+    assert sent.prs == []
+
+
+async def test_the_empty_run_is_checked_before_the_branch_is_pushed(
+    tmp_path: Path, sent: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Order matters for the same reason the secret scan runs first: a branch pushed and
+    then found to be empty has already left a dangling ref on the remote."""
+    import orchestrator.nodes as nodes
+
+    async def no_commits(*a: Any, **kw: Any) -> str:
+        return ""
+
+    monkeypatch.setattr(nodes, "git", no_commits)
+
+    with pytest.raises(RepoError):
+        await pr_node(state(), cast("Any", FakeDeps()), resources(tmp_path))
+
+    assert "push" not in sent.order, sent.order

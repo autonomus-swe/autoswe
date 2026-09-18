@@ -1351,6 +1351,39 @@ async def _body_facts(state: RunState, deps: Deps, res: RunResources) -> pr_body
     )
 
 
+async def _refuse_nothing_to_propose(state: RunState, res: RunResources) -> None:
+    """Refuse to open a pull request that contains no commits.
+
+    Found by the first end-to-end run against a real model. It wrote working code, ran the
+    tests in the sandbox — green, because the sandbox tests the *worktree* — submitted its
+    result, and never called `git_commit`. The run pushed a branch identical to its base
+    and opened an empty pull request, and reported DONE.
+
+    Every scripted provider in the test suite calls `git_commit`, so eight hundred tests
+    had never exercised an agent simply forgetting. A pull request with nothing in it is
+    worse than none: it reads as success and costs a reviewer the click to find out it is
+    not.
+
+    Checked before the push for the same reason the secret scan is: a branch pushed and
+    then found empty has already left a dangling ref on the remote.
+    """
+    assert res.worktree is not None
+    commits = await git(
+        "log",
+        "--oneline",
+        f"{state.base_sha}..HEAD" if state.base_sha else "HEAD",
+        cwd=res.worktree.path,
+    )
+    if commits.strip():
+        return
+    log.error("pr_refused_empty", branch=state.work_branch)
+    raise RepoError(
+        "refusing to open a pull request with no commits: the run reached PR without "
+        "committing anything. Work in the worktree is discarded at teardown, so if the "
+        "agent wrote code it has been lost — check whether it called git_commit."
+    )
+
+
 async def _refuse_secrets(state: RunState, deps: Deps, res: RunResources) -> None:
     """Scan for a committed secret and refuse the push if there is one.
 
@@ -1409,6 +1442,7 @@ async def _push_and_open(state: RunState, deps: Deps, res: RunResources) -> str:
     less likely to be exercised in testing.
     """
     assert res.worktree is not None
+    await _refuse_nothing_to_propose(state, res)
     await _refuse_secrets(state, deps, res)
     await push_branch(res.worktree.path, state.work_branch, deps.git_token())
     state.pushed = True

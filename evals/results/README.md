@@ -21,6 +21,41 @@ measured: a 7B local model can drive the single-agent loop but cannot reliably p
 `TaskGraphSpec`. The phases it did reach worked — the baseline ran, the install worked,
 the tests ran in the sandbox.
 
+**2026-09-18, M1 end to end, `nvidia/nemotron-3-ultra-550b-a55b:free` via OpenRouter.**
+The first run of this pipeline by a real model, and it found something eight hundred
+scripted tests had not.
+
+It got the whole way: ANALYZE, PLAN, DECOMPOSE, CODE, TEST green with all three tests
+passing, REVIEW, SECURITY, and a pull request. Every gate worked. Then:
+
+```
+assert "fixture/ops.py" in changed
+AssertionError: assert 'fixture/ops.py' in ''
+```
+
+The branch had **no commits**. The model wrote working code, ran the tests in the sandbox —
+which tests the *worktree*, so they passed — submitted its result, and never called
+`git_commit`. The run pushed a branch identical to its base, opened an empty pull request,
+and reported DONE.
+
+Every scripted provider in the suite calls `git_commit`, so no test had ever exercised an
+agent simply forgetting. `pr_node` now refuses to open a pull request with no commits, and
+two unit tests cover it.
+
+**What this says about the free tier.** The earlier note below concluded that free API
+tiers do not work. That was measured against `openrouter/free`, which is not a model id —
+20 of OpenRouter's 22 free models support tool calling, and two of them produced a valid
+`TaskGraphSpec` through the forced-submit path that local Ollama could not:
+
+| model | forced `TaskGraphSpec` | time | cost |
+|---|---|---|---|
+| `deepseek/deepseek-v4-flash-0731:free` | 4 tasks | 41.7 s | $0.00 |
+| `nvidia/nemotron-3-ultra-550b-a55b:free` | 3 tasks | 22.9 s | $0.00 |
+
+So the pipeline can be exercised against a real model at no cost. The free tier is rate
+limited, which bounds how much of the eval matrix one key can produce in a day, but it is
+not the wall this file previously recorded.
+
 **2026-09-18, the Phase 4 review criterion, local Ollama.** The seeded review pair
 (`g-token-expiry`, `h-style-only`) asks whether a reviewer flags a real bug and leaves a
 reformatting alone. That question does not need `DECOMPOSE` — a diff is all the reviewer
