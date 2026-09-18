@@ -31,14 +31,24 @@ Suggested duration: 5–7 days.
 
 ## 1. Exit criteria
 
-- [ ] `review_pre` produces candidates and `review` verifies them; findings dropped as false positives are stored with a reason (artifact `review`).
+- [x] `review_pre` produces candidates and `review` verifies them; findings dropped as false positives are stored with a reason (artifact `review`).
+      → `agents/reviewer.py`; the reason needed `ReviewReport.rejections`, which did not exist — the prompt asked for one and the contract had nowhere to put it, so every stored rejection was blank. `tests/unit/test_reviewer.py` now asserts the text, and distinguishes "rejected with a reason" from "silently dropped".
 - [ ] A seeded diff with a real bug (token expiry not checked) is flagged `blocking`; a seeded style-only diff is not (e2e, two fixture branches).
-- [ ] Fix round: blocking findings → `CODE` (fix task) → `TEST` → `REVIEW` again; after two rounds the run proceeds with `known_issues` (table tests + e2e).
-- [ ] All four scanners run and their findings are normalized; a planted `AWS_SECRET_ACCESS_KEY=…` in a new file makes `SecurityReport.critical=True` and the push is refused (integration test).
-- [ ] The PR body contains: summary, changes, testing, review table, security table with the checklist, known issues, rollback, and a cost/attempts footer; draft when known issues exist.
-- [ ] An escalated run with commits opens a draft PR titled `[WIP]` with the hypotheses tried (e2e on fixture (c)).
-- [ ] `GET /runs/{id}/artifacts` returns diff, test reports, review, security, and PR description.
-- [ ] `transition()` table has rows for review/security fix loops; branch coverage 100 %.
+      → **Needs a funded key.** Both branches exist (`g-token-expiry`, `h-style-only`) with their premises asserted in `tests/integration/test_chaos_fixtures.py`, and the assertion is written in `tests/e2e/test_m4.py`. The judgement is the model's, so a scripted provider cannot answer it.
+- [x] Fix round: blocking findings → `CODE` (fix task) → `TEST` → `REVIEW` again; after two rounds the run proceeds with `known_issues` (table tests + e2e).
+      → table tests in `tests/unit/test_fix_rounds.py`; driven by whole runs in `tests/integration/test_full_run.py` (`ReviewBlocksThenClears`, `ReviewNeverClears`).
+- [x] All four scanners run and their findings are normalized; a planted `AWS_SECRET_ACCESS_KEY=…` in a new file makes `SecurityReport.critical=True` and the push is refused (integration test).
+      → `tests/integration/test_scanners.py` for both halves, and `tests/integration/test_full_run.py` refuses the push with the real gitleaks through a whole run. Writing the first of these found a leak: bandit's B105 quotes the value it finds, and that message was rendered into the published body.
+- [x] The PR body contains: summary, changes, testing, review table, security table with the checklist, known issues, rollback, and a cost/attempts footer; draft when known issues exist.
+      → `repo/pr_body.py`, asserted section by section in `tests/unit/test_pr_body.py`.
+- [x] An escalated run with commits opens a draft PR titled `[WIP]` with the hypotheses tried (e2e on fixture (c)).
+      → `orchestrator/nodes.py::_draft_pr_for_a_failed_run`; driven by a whole run in `tests/integration/test_full_run.py`. Not fixture (c): the rewind discards the failing task's commits, so an escalated run has commits only when an *earlier* task succeeded, which is the case the draft is for.
+- [x] `GET /runs/{id}/artifacts` returns diff, test reports, review, security, and PR description.
+      → `api/routes/artifacts.py`; all five kinds asserted retrievable in `tests/integration/test_api.py`.
+- [x] `transition()` table has rows for review/security fix loops; branch coverage 100 %.
+      → 64 statements, 46 branches, 0 missed. `UNROUTED` is empty for the first time.
+- [x] Prompt-injection fixture and harness tests (Step 4.9).
+      → branch `f-injection` with the payload in all three places; `tests/integration/test_injection.py` drives a provider that obeys it. Found two things: the ledger could not tell a refused command from a failed one, and the ASK list was consulted before DENY, so a forbidden command went to a human and was attributed to the wrong layer.
 - [ ] Tag `v0.4.0`.
 
 ---
@@ -161,7 +171,9 @@ Image changes: add `bandit semgrep` to the sandbox image; add `gitleaks` binary 
 
 ### Step 4.5 — Security agent and the gitleaks gate
 
-**Files:** `agents/security.py`, `agents/prompts/security.md`, `orchestrator/nodes.py` (`security_node`), `repo/github.py` (`gitleaks_gate`), `tests/unit/test_security.py`, `tests/integration/test_gitleaks_gate.py`.
+**Files:** `agents/security.py`, `agents/prompts/security.md`, `orchestrator/nodes.py` (`security_node`), `repo/github.py` (`gitleaks_gate`), `tests/unit/test_security_agent.py`, `tests/unit/test_security_node.py`, `tests/integration/test_scanners.py`.
+
+> The gitleaks gate is tested in `tests/integration/test_scanners.py` beside the other three scanners rather than in a file of its own, because the thing under test is the tool's real behaviour on a real repository and the fixtures for that already live there. `tests/unit/test_pr_node.py` covers the refusal against a stubbed scanner, and `tests/integration/test_full_run.py` covers it against the real one through a whole run.
 
 Role `security` (Sonnet 5, medium, tools `read_file`, `search_code`, `git_diff`, `submit_security`). Input: the diff, the normalized scanner findings (with `in_diff` tags), and the checklist to fill. Prompt rules:
 - For every `in_diff` finding, open the code and mark `verified_by_llm=True` and `false_positive` with a `rationale` (a test file containing a fake secret is a classic false positive; say so, but only for test files).

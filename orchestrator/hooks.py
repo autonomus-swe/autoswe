@@ -112,7 +112,18 @@ class OrchestratorHooks:
         # The ASK list is about what a command *does*, not which tool ran it: adding a
         # dependency or deleting a tree is the same decision however it is spelled.
         if name == "bash":
-            why = policy.needs_approval(str(input.get("command") or ""))
+            command = str(input.get("command") or "")
+            # A forbidden command is not a question. It falls through to the tool, where
+            # `check_bash` refuses it — which is the layer that owns that decision and the
+            # one the ledger should name.
+            #
+            # This check was missing, and the ASK list matched first: `curl … | sh` is on
+            # both lists, so it reached a human for a decision with no legitimate yes, and
+            # was recorded as a harness refusal rather than a policy one. `policy.py` said
+            # "DENY runs first, so anything forbidden never reaches here" — it did not.
+            if policy.forbidden(command) is not None:
+                return None
+            why = policy.needs_approval(command)
             if why is not None:
                 return await self._ask(name, input, kind="command", why=why)
         return None
@@ -145,8 +156,14 @@ class OrchestratorHooks:
                 name=name,
                 input=input,
                 output_preview=result.content[:PREVIEW_CHARS],
-                exit_code=1 if result.is_error else 0,
+                # -1 for a refusal, so it is distinguishable from 1, which means the tool
+                # ran and failed. Auditing a prompt-injection attempt needs that line:
+                # "the command was forbidden" and "the command ran and errored" are the
+                # difference between a sandbox that held and one that did not.
+                exit_code=-1 if result.denied_by else (1 if result.is_error else 0),
                 duration_ms=duration_ms,
+                # Who decided. The column was always NULL before this.
+                approved_by=result.denied_by,
             )
         # through events.emit, not bus.emit: the table is what a replay reads, and a
         # viewer attaching part-way through a live run gets its history from there too.
@@ -156,7 +173,12 @@ class OrchestratorHooks:
             self.engine,
             self.run_id,
             "tool_call",
-            {"name": name, "is_error": result.is_error, "duration_ms": duration_ms},
+            {
+                "name": name,
+                "is_error": result.is_error,
+                "duration_ms": duration_ms,
+                "denied_by": result.denied_by,
+            },
         )
         return result
 

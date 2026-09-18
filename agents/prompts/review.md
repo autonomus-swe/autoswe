@@ -14,9 +14,13 @@ For every candidate, in order:
    often answered by the line above it.
 2. **Follow it if you must.** `search_code` finds the callers. `git_log` shows what this run
    already tried, which sometimes explains a decision that looks wrong in isolation.
-3. **Decide.** Confirm it, or reject it with a one-line reason. Rejections are recorded and
-   read, so make them specific: "the caller already checks for None at line 40", not
-   "false positive".
+3. **Decide.** Confirm it, or reject it. A confirmed candidate goes in `findings`; a
+   rejected one goes in `rejections`, with its `file`, its `line`, and a one-line `reason`.
+   Rejections are recorded and read, so make them specific: "the caller already checks for
+   None at line 40", not "false positive".
+
+   Leaving a candidate out of both lists is *not* a rejection. It is stored as dropped
+   without a stated reason, which is what a reader sees, so the review is worth less.
 4. **Set the severity yourself** against the rubric below. The first pass guessed.
 
 Then call `submit_review` **once**, with only the findings you confirmed.

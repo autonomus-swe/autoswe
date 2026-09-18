@@ -1100,8 +1100,11 @@ async def review_node(state: RunState, deps: Deps, res: RunResources) -> RunStat
     """
     files = await _review_diff(state, deps, res)
     if not files:
-        # Nothing changed, so there is nothing to review. Recording an empty report rather
-        # than skipping keeps the artifact set the same shape for every run.
+        # Nothing changed, so there is nothing to review. The empty report is written as an
+        # artifact and not only onto the state, because "the artifact set is the same shape
+        # for every run" is the property a reader relies on: without the row,
+        # `GET /runs/{id}/artifacts/review` 404s for a clean run and the caller cannot tell
+        # "reviewed, nothing found" from "never reviewed".
         state.review = ReviewReport(findings=[], blocking=False)
         log.info("review_skipped", reason="the run changed no files")
         await _emit(deps, state.run_id, "review_report", {"findings": 0, "blocking": False})
@@ -1137,7 +1140,13 @@ async def review_node(state: RunState, deps: Deps, res: RunResources) -> RunStat
         if report is not None:
             async with session(deps.engine) as s:
                 await db.save_artifact(
-                    s, state.run_id, "review", None, reviewer.artifact(report, dropped)
+                    s,
+                    state.run_id,
+                    "review",
+                    None,
+                    # The reasons come off the report itself. Passing nothing here is what
+                    # left every stored rejection blank.
+                    reviewer.artifact(report, dropped, reviewer.rejection_reasons(report)),
                 )
 
     assert report is not None
@@ -1226,9 +1235,13 @@ async def security_node(state: RunState, deps: Deps, res: RunResources) -> RunSt
     """
     files = await _review_diff(state, deps, res)
     if not files or res.sandbox is None or res.worktree is None:
-        # Nothing changed, or no sandbox to scan in. Recording an empty report rather than
-        # skipping keeps the artifact set the same shape for every run.
+        # Nothing changed, or no sandbox to scan in. Written as an artifact for the same
+        # reason as the review above: an absent row and a clean scan must not look alike.
         state.security = SecurityReport(findings=[], critical=False, checklist={})
+        async with session(deps.engine) as s:
+            await db.save_artifact(
+                s, state.run_id, "security", None, security.artifact(state.security, {})
+            )
         log.info("security_skipped", files=len(files), sandbox=res.sandbox is not None)
         await _emit(deps, state.run_id, "security_report", {"findings": 0, "critical": False})
         return state

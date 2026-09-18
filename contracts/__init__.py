@@ -15,7 +15,13 @@ from contracts.plan import (
 )
 from contracts.pr import PullRequestDescription
 from contracts.repo import RepoFacts, RepoProfile
-from contracts.review import ReviewCandidates, ReviewFinding, ReviewReport, Severity
+from contracts.review import (
+    ReviewCandidates,
+    ReviewFinding,
+    ReviewRejection,
+    ReviewReport,
+    Severity,
+)
 from contracts.security import SecurityChecklist, SecurityFinding, SecurityReport, SecuritySeverity
 from contracts.task_result import TaskResult
 from contracts.testing import (
@@ -44,6 +50,7 @@ __all__ = [
     "RepoProfile",
     "ReviewCandidates",
     "ReviewFinding",
+    "ReviewRejection",
     "ReviewReport",
     "SecurityChecklist",
     "SecurityFinding",

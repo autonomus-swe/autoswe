@@ -25,11 +25,25 @@ DENY: list[tuple[re.Pattern[str], str]] = [
 FORBIDDEN_PARTS = frozenset({".git", ".autoswe"})
 
 
-def check_bash(cmd: str) -> None:
-    """Raise :class:`PolicyViolation` with the reason and the replacement, if any."""
+def forbidden(cmd: str) -> str | None:
+    """Why this command is refused outright, or None. The non-raising form of `check_bash`.
+
+    Exists so the approval gate can tell that a command is going to be refused anyway and
+    decline to ask a human about it — see `OrchestratorHooks.before_tool`. Without it the
+    ASK list was consulted first, and `curl … | sh` went to a human for a decision that
+    has no legitimate yes.
+    """
     for pattern, why in DENY:
         if pattern.search(cmd):
-            raise PolicyViolation(why)
+            return why
+    return None
+
+
+def check_bash(cmd: str) -> None:
+    """Raise :class:`PolicyViolation` with the reason and the replacement, if any."""
+    why = forbidden(cmd)
+    if why is not None:
+        raise PolicyViolation(why)
 
 
 def confine(path: str, root: Path) -> Path:

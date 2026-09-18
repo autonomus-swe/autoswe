@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from repo import diff as d
+from tests.fakes import planted_secret
 from tools import scanners
 from tools.scanner_parsers import parse_bandit, parse_gitleaks, parse_pip_audit, parse_semgrep
 
@@ -253,3 +254,123 @@ def test_json_survives_a_tool_that_printed_something_first() -> None:
         {"RuleID": "a"},
         {"RuleID": "b"},
     ]
+
+
+def test_a_gitleaks_finding_is_tagged_into_the_diff_so_the_report_can_gate() -> None:
+    """The step `SecurityReport.critical` depends on, and it had no test.
+
+    `parse_gitleaks` sets `in_diff=False` — it reads commits and knows nothing about the
+    diff — and `security.is_critical` requires `in_diff`. So a committed secret reaches
+    `critical=True` only because `tag_in_diff` flips it here. If that flip broke, the push
+    gate would still refuse (it ignores `in_diff` on purpose) but the report would say
+    `critical: no`, and the pull request body would say it too.
+    """
+    findings = parse_gitleaks(load("gitleaks"))  # type: ignore[arg-type]
+    (leak,) = findings
+    assert leak.in_diff is False, "the parser cannot know; the premise of this test"
+
+    tagged = scanners.tag_in_diff(findings, [file_diff(leak.file, {leak.line})])
+
+    assert tagged[0].in_diff is True
+    from agents.security import is_critical
+
+    assert is_critical(tagged) is True, "which is what makes the report say critical"
+
+
+def test_a_secret_on_a_line_the_run_did_not_touch_does_not_make_the_report_critical() -> None:
+    """The other direction. A credential already in the file is a real problem and is not
+    this run's; the push gate still refuses it, but the report does not blame the agent."""
+    findings = parse_gitleaks(load("gitleaks"))  # type: ignore[arg-type]
+    (leak,) = findings
+
+    tagged = scanners.tag_in_diff(findings, [file_diff(leak.file, {leak.line + 50})])
+
+    from agents.security import is_critical
+
+    assert tagged[0].in_diff is False
+    assert is_critical(tagged) is False
+
+
+# ---- the one scanner that quoted what it found ----------------------------------------
+
+
+def test_bandits_hardcoded_password_findings_never_carry_the_value() -> None:
+    """Found by a test asserting the value stays out of a report, and it did not.
+
+    bandit 1.8.6's B105 reports `Possible hardcoded password: 'hunter2'` — the literal, in
+    `issue_text`, which `parse_bandit` copied into `message` and `repo/pr_body.py` renders
+    into the published body. gitleaks redacts its own findings and semgrep's rule messages
+    are static templates, so this was the only path by which a credential reached a forge.
+    """
+    # Derived, not written down — this repository's own pre-commit hook flags a literal
+    # here, which is the hook being right: a test about not publishing a credential is no
+    # place to paste one. `planted_secret` is the same helper the scanner tests use.
+    secret = planted_secret("bandit-b105")
+    raw = {
+        "results": [
+            {
+                "test_id": "B105",
+                "test_name": "hardcoded_password_string",
+                "filename": "src/settings.py",
+                "line_number": 1,
+                "issue_severity": "LOW",
+                "issue_text": f"Possible hardcoded password: '{secret}'",
+            }
+        ],
+        "errors": [],
+    }
+
+    (f,) = parse_bandit(raw)
+
+    assert secret not in f.message
+    assert "value withheld" in f.message
+    assert "hardcoded_password_string" in f.message, "still says what the rule was"
+    assert f.file == "src/settings.py" and f.line == 1, "and where to go and look"
+
+
+def test_the_low_entropy_case_is_why_this_matters() -> None:
+    """ "hunter2" is flagged by B105 and by nothing else.
+
+    gitleaks needs one of its rules to match, and a short common password matches none — so
+    the push is *not* refused, the run completes, and the pull request body is published.
+    That is the case where withholding the value is the only thing standing between a
+    credential and a forge, which is why this is fixed in the parser and not in the gate.
+    """
+    raw = {
+        "results": [
+            {
+                "test_id": "B105",
+                "test_name": "hardcoded_password_string",
+                "filename": "src/db.py",
+                "line_number": 4,
+                "issue_severity": "LOW",
+                "issue_text": "Possible hardcoded password: 'hunter2'",
+            }
+        ],
+        "errors": [],
+    }
+
+    (f,) = parse_bandit(raw)
+
+    assert "hunter2" not in f.message
+
+
+def test_bandits_other_findings_keep_their_own_words() -> None:
+    """Only the rules that quote a literal are rewritten. B324's text explains the problem
+    and replacing it would cost the reader the explanation."""
+    findings = parse_bandit(load("bandit"))  # type: ignore[arg-type]
+
+    md5 = next(f for f in findings if f.rule == "B324")
+    assert "MD5" in md5.message and "value withheld" not in md5.message
+
+
+def test_every_bandit_rule_that_quotes_a_value_is_in_the_withheld_set() -> None:
+    """The set is a claim about bandit's own behaviour, so it is written down next to the
+    reason. If a future bandit adds another quoting rule this test will not catch it — what
+    it catches is somebody trimming the set without reading why it exists."""
+    from tools.scanner_parsers.bandit import SECRET_RULES
+
+    assert SECRET_RULES == {"B105", "B106", "B107"}, (
+        "B105 string, B106 funcarg, B107 default — the hardcoded-password family, all of "
+        "which interpolate the literal into issue_text"
+    )

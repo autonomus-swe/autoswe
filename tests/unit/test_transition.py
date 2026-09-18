@@ -515,6 +515,25 @@ def test_three_failures_then_escalation_is_the_whole_debug_budget() -> None:
 UNROUTED: set[Phase] = set()
 
 
+def test_a_phase_with_no_row_raises_rather_than_falling_through() -> None:
+    """The guard at the end of `transition`, which the enum can no longer reach.
+
+    Phase 4 routed the last declared phase, so `UNROUTED` is empty and every `Phase` value
+    now matches a case. That makes the `raise` unreachable from the type — and an
+    unreachable guard is one somebody deletes. It is worth keeping for the next phase added
+    to the enum without a row: falling through would return `None`, and the runner would
+    set `state.phase = None` and fail somewhere unrelated with nothing pointing back here.
+
+    The phase is written straight into `__dict__` because `RunState` validates on
+    assignment, which is the whole reason a real enum value cannot get here.
+    """
+    s = state(phase=Phase.CODE)
+    s.__dict__["phase"] = "a-phase-from-the-future"
+
+    with pytest.raises(ValueError, match="no transition defined"):
+        transition(s)
+
+
 def test_every_phase_is_routed_except_the_ones_not_built_yet() -> None:
     """Named rather than sampled: picking one unbuilt phase as the example meant moving the
     test every time one was built, and a test that moves stops guarding anything."""

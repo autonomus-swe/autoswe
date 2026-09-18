@@ -13,10 +13,12 @@ passed for the wrong reason.
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -24,7 +26,7 @@ from contracts import SecurityFinding
 from repo import diff as d
 from repo.gitcmd import git
 from sandbox.docker import DockerSandbox
-from tests.fakes import planted_secret
+from tests.fakes import make_ctx, planted_secret
 from tools import scanners
 
 pytestmark = pytest.mark.integration
@@ -217,7 +219,10 @@ async def test_a_secret_committed_by_the_run_is_found_and_never_echoed(host_tmp:
     assert findings, "a committed secret was not found"
     (f,) = [x for x in findings if x.rule != "scan-failed"]
     assert f.severity == "critical", "a committed secret is not a matter of degree"
-    assert f.file.endswith("config.py")
+    # `==`, not `endswith`. gitleaks reporting an absolute path would silently break
+    # `tag_in_diff` — which compares against diff paths — and with it the `critical` flag
+    # the report and the pull request body both show.
+    assert f.file == "config.py"
     assert secret not in f.message, "the value must never travel into a report or a PR body"
     assert "value withheld" in f.message
 
@@ -312,3 +317,98 @@ async def test_one_scanner_failing_does_not_take_the_others_with_it(
     broken = next(f for f in findings if f.tool == "semgrep")
     assert broken.rule == "scan-failed" and broken.severity == "info"
     assert "fell over" in broken.message
+
+
+@requires_docker
+@requires_gitleaks
+async def test_a_planted_secret_makes_the_whole_report_critical(host_tmp: Path) -> None:
+    """Exit criterion, first half: a planted `AWS_SECRET_ACCESS_KEY=` in a new file makes
+    `SecurityReport.critical` True.
+
+    Driven through `run_all` rather than `run_gitleaks` alone, because the path that
+    matters runs four scanners, merges them, and tags them against the diff — and the tag
+    is what `is_critical` reads. The model is scripted; everything it is reading is real.
+    """
+    import uuid as _uuid
+
+    from agents import security
+    from contracts import SecurityReport, Usage
+    from sandbox.docker import DockerSandbox as _Sandbox
+
+    root = host_tmp / "leaky-project"
+    (root / "src").mkdir(parents=True)
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "leaky"\nversion = "0.1.0"\nrequires-python = ">=3.12"\n'
+    )
+    (root / "src" / "ok.py").write_text("def ok() -> int:\n    return 1\n")
+    await git("init", "-q", "-b", "main", cwd=root)
+    await git("add", "-A", cwd=root)
+    await git("commit", "-q", "-m", "base", cwd=root)
+    base_sha = (await git("rev-parse", "HEAD", cwd=root)).strip()
+
+    secret = planted_secret("report-critical")
+    (root / "src" / "settings.py").write_text(f'AWS_SECRET_ACCESS_KEY = "{secret}"\n')
+    await git("add", "-A", cwd=root)
+    await git("commit", "-q", "-m", "chore: settings", cwd=root)
+
+    sandbox = _Sandbox(
+        _uuid.uuid4(),
+        root,
+        image=IMAGE,
+        network="agent-install",
+        user=f"{os.getuid()}:{os.getgid()}",
+    )
+    await sandbox.start()
+    try:
+        await sandbox.disconnect_network()
+        files = d.split_by_file(await d.full_diff(root, base_sha))
+        found = await scanners.run_all(sandbox, root, base_sha, files)
+    finally:
+        await sandbox.stop()
+
+    leaks = [f for f in found if f.tool == "gitleaks" and f.rule != "scan-failed"]
+    assert leaks, "the real gitleaks did not find the planted key"
+    assert all(f.in_diff for f in leaks), "tag_in_diff flipped it, which is what gates"
+
+    class Provider:
+        provider_name, model = "test", "test/model"
+
+        async def run_tools(self, req: object, tools: object, ctx: object, hooks: object) -> object:
+            # Verifies everything it was handed and claims the run is clean. The harness
+            # recomputes `critical` from the severities and disagrees.
+            ctx.submitted[security.SECURITY_KEY] = SecurityReport(  # type: ignore[attr-defined]
+                findings=[
+                    f.model_copy(update={"verified_by_llm": True, "rationale": "read the file"})
+                    for f in found
+                ],
+                critical=False,
+                checklist=dict.fromkeys(security.CHECKLIST_KEYS, True),
+            )
+            return type("O", (), {"stop_reason": "end_turn", "turns": 2, "usage": Usage()})()
+
+        async def parse(self, req: object, output: object) -> object:
+            raise AssertionError("not used")
+
+    class _Hooks:
+        async def before_tool(self, name: str, input: dict[str, object]) -> str | None:
+            return None
+
+        async def after_tool(
+            self, name: str, input: dict[str, object], result: object, ms: int
+        ) -> object:
+            return result
+
+        async def on_message(self, message: object, usage: Usage, latency_ms: int) -> None:
+            return None
+
+    report, _ = await security.SecurityAgent().run(
+        cast("Any", Provider()),
+        make_ctx(root, role="security"),
+        "add settings",
+        found,
+        files,
+        cast("Any", _Hooks()),
+    )
+
+    assert report.critical is True, "the model said clean; a committed secret is not"
+    assert secret not in json.dumps(report.model_dump(mode="json")), "and the value stays out"
