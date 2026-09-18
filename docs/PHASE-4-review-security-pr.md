@@ -49,7 +49,7 @@ Suggested duration: 5–7 days.
       → 64 statements, 46 branches, 0 missed. `UNROUTED` is empty for the first time.
 - [x] Prompt-injection fixture and harness tests (Step 4.9).
       → branch `f-injection` with the payload in all three places; `tests/integration/test_injection.py` drives a provider that obeys it. Found two things: the ledger could not tell a refused command from a failed one, and the ASK list was consulted before DENY, so a forbidden command went to a human and was attributed to the wrong layer.
-- [ ] Tag `v0.4.0`.
+- [x] Tag `v0.4.0`.
 
 ---
 
@@ -295,7 +295,10 @@ Open the PR: the review and security sections are collapsible, the checklist is 
 
 ## 7. Checklist before Phase 5
 
-- [ ] Exit criteria in §1 all ticked; the README §8 walkthrough runs and produces a PR that matches the table there.
+- [~] Exit criteria in §1 all ticked; the README §8 walkthrough runs and produces a PR that matches the table there.
+      → Every criterion is ticked except the seeded review pair, which needs a funded key. The walkthrough needs one too: it is a real run against a real repository.
 - [ ] `evals/results/m4.jsonl` records for the fixtures: review findings, false positives dropped, fix rounds, cost.
-- [ ] You can explain the two-pass review and why the harness, not the model, decides `blocking` and `critical`.
-- [ ] Tag `v0.4.0`.
+      → **Needs a funded key.** `tests/e2e/test_m4.py` writes the row — findings by severity, what was dropped as a false positive, how many rejections were explained, fix rounds, cost — and has never been run against a model.
+- [x] You can explain the two-pass review and why the harness, not the model, decides `blocking` and `critical`.
+      → `agents/reviewer.py` and `agents/security.py` open with the argument; the short version is that a model which has just written four findings is the last thing that should rule on whether they block.
+- [x] Tag `v0.4.0`.
