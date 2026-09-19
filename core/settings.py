@@ -62,6 +62,18 @@ class Settings(BaseSettings):
     repos_dir: Path = Path("/var/agent/repos")
     sandbox_image: str = "agent-sandbox:python-3.12"
     sandbox_network: str = "agent-install"
+    # Egress control for the install window, off unless a proxy is named. See
+    # `docs/observability.md`'s sibling `docs/egress.md` and `proxy/`.
+    #
+    # A SEPARATE network rather than making `agent-install` internal. Flipping the existing
+    # one is a silent no-op: `_ensure_network` reuses a network that already exists without
+    # inspecting it, `networks.create` on a live name is a 409, and the old one cannot be
+    # removed while any run holds an endpoint on it. So every machine that had ever run
+    # autoswe would keep unrestricted egress while the deny tests passed — the proxy does
+    # return 403, it just is not the only way out. Two names make "is this host enforcing
+    # egress?" answerable by reading one.
+    egress_proxy_url: str | None = None
+    sandbox_egress_network: str = "agent-egress"
     # no_new_privs blocks setuid escalation. Some Docker builds (snap-packaged Docker on
     # Ubuntu Core) cannot start a container with it because their AppArmor profile
     # transition needs it off; the sandbox detects that and falls back with a warning.
@@ -78,6 +90,35 @@ class Settings(BaseSettings):
     # ---- misc ----
     environment: Literal["dev", "test", "prod"] = "dev"
     log_level: str = "INFO"
+
+    @property
+    def egress_enforced(self) -> bool:
+        """Whether the install window is confined to an allow-listed proxy."""
+        return bool(self.egress_proxy_url)
+
+    def install_network(self) -> str:
+        """The network the sandbox joins for its dependency install."""
+        return self.sandbox_egress_network if self.egress_enforced else self.sandbox_network
+
+    def proxy_env(self) -> dict[str, str]:
+        """Proxy variables for the install command, empty when egress is unrestricted.
+
+        Both cases of each name: `uv`, `pip`, `npm`, `pnpm` and `go` between them read
+        lower and upper case, and which one a given version prefers is not worth tracking.
+        `NO_PROXY` covers the loopback so a package manager's own health check does not
+        take the long way round.
+        """
+        url = self.egress_proxy_url
+        if not url:
+            return {}
+        return {
+            "HTTP_PROXY": url,
+            "HTTPS_PROXY": url,
+            "http_proxy": url,
+            "https_proxy": url,
+            "NO_PROXY": "localhost,127.0.0.1",
+            "no_proxy": "localhost,127.0.0.1",
+        }
 
     @field_validator("anthropic_api_key", "github_token", "llm_api_key", mode="before")
     @classmethod

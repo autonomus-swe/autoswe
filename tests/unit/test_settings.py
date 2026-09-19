@@ -143,3 +143,48 @@ def test_blank_optional_secrets_are_treated_as_absent(
         s.require_worker()
     err = capsys.readouterr().err
     assert "LLM_API_KEY" in err and "GITHUB_TOKEN" in err
+
+
+# ---- egress ----------------------------------------------------------------------------
+
+
+def test_egress_is_off_until_a_proxy_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default has to stay byte-identical to what every existing machine does. A
+    half-configured egress setup degrades runs silently, because an install failure is
+    only a warning."""
+    set_env(monkeypatch)
+    monkeypatch.delenv("EGRESS_PROXY_URL", raising=False)
+    s = load_settings(env_file=None)
+
+    assert not s.egress_enforced
+    assert s.install_network() == s.sandbox_network
+    assert s.proxy_env() == {}
+
+
+def test_naming_a_proxy_moves_the_sandbox_to_the_internal_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second network rather than flipping `agent-install`: reusing an existing network
+    without inspecting it would leave every machine that has run autoswe with unrestricted
+    egress while the deny tests still passed."""
+    set_env(monkeypatch)
+    monkeypatch.setenv("EGRESS_PROXY_URL", "http://agent-egress-proxy:8888")
+    s = load_settings(env_file=None)
+
+    assert s.egress_enforced
+    assert s.install_network() == s.sandbox_egress_network
+    assert s.install_network() != s.sandbox_network
+
+
+def test_the_proxy_variables_cover_both_cases_and_spare_the_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """uv, pip, npm, pnpm and go between them read lower and upper case, and which a given
+    version prefers is not worth tracking."""
+    set_env(monkeypatch)
+    monkeypatch.setenv("EGRESS_PROXY_URL", "http://p:8888")
+    env = load_settings(env_file=None).proxy_env()
+
+    assert env["HTTP_PROXY"] == env["http_proxy"] == "http://p:8888"
+    assert env["HTTPS_PROXY"] == env["https_proxy"] == "http://p:8888"
+    assert "127.0.0.1" in env["NO_PROXY"] and "127.0.0.1" in env["no_proxy"]
