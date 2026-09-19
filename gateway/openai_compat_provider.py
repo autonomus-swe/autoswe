@@ -45,6 +45,11 @@ _RECOVERABLE_MARKERS = (
 # Free tiers meter per minute, not per run. The SDK's own retries all land inside the
 # same window and fail together, so a whole agent run dies on a limit that clears in
 # seconds. Wait for the window the provider names, then carry on.
+# How many tool calls may be in flight at once. Not a throughput knob — a bound on the
+# database pool. Every call ends in `after_tool`, which opens a session to write the
+# ledger row, and a model that asks for twenty reads in one turn would otherwise take
+# twenty connections from a pool sized for five and deadlock the step it was speeding up.
+MAX_PARALLEL_TOOLS = 8
 RATE_LIMIT_RETRIES = 6
 RATE_LIMIT_MAX_WAIT_S = 90.0
 RATE_LIMIT_FALLBACK_WAIT_S = 20.0
@@ -505,13 +510,80 @@ class OpenAICompatProvider:
                 return RunOutcome(turn.content or "", turns, total, stop)
             for call in turn.tool_calls:
                 called.add(call.name)
-                text = await self._call_tool(call, by_name, ctx, hooks)
+            for call, text in zip(
+                turn.tool_calls,
+                await self._run_calls(turn.tool_calls, by_name, ctx, hooks),
+                strict=True,
+            ):
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
             if self._breakpoints:
                 # A forty-turn Coder loop grows a transcript far larger than the system
                 # prefix, and the two static blocks cache none of it.
                 caching.moving_breakpoints(messages, turns)
         return RunOutcome("", turns, total, "max_iterations")
+
+    @staticmethod
+    def _parallelisable(calls: list[ToolCallReq], by_name: dict[str, BaseTool]) -> bool:
+        """Whether this batch may run at once.
+
+        Every call has to qualify, not just most: one that does not makes the whole batch
+        serial. Three conditions, and each rules out a different way concurrency goes
+        wrong.
+
+        **`parallel_safe` and not `mutating`** — two edits to the same file racing is the
+        obvious one, but `str_replace` also reads `ctx.view_hashes` to decide whether the
+        file moved under it, and that check means nothing if another call is writing the
+        file while it runs.
+
+        **Not `requires_approval`** — approval is a question put to a human through a
+        channel keyed by a per-call counter. Two of them in flight at once is a race for
+        one answer.
+
+        **Known to the registry** — an unknown name is the model inventing a tool, and
+        nothing about an invented tool can be assumed. It falls to the serial path, where
+        it turns into an error result like any other.
+        """
+        if len(calls) < 2:
+            return False
+        tools = [by_name.get(c.name) for c in calls]
+        return all(
+            t is not None and t.parallel_safe and not t.mutating and not t.requires_approval
+            for t in tools
+        )
+
+    async def _run_calls(
+        self, calls: list[ToolCallReq], by_name: dict[str, BaseTool], ctx: RunContext, hooks: Hooks
+    ) -> list[str]:
+        """Every call's rendered result, in the order the model asked for them.
+
+        Three `search_code` calls against a large tree are three independent reads, and
+        running them one after another is most of a Coder turn spent waiting. When they all
+        qualify they run at once — and the results are still returned in call order,
+        because the transcript is what the model reads next and reordering it would
+        misattribute answers to questions.
+
+        `return_exceptions=True` is not tidiness. `before_tool` raises `RunCancelled` and
+        `BudgetExhausted` as control flow, and a bare `gather` propagates the first of
+        those while leaving its siblings running against a run that is over — writing
+        ledger rows for a cancelled run, and logging "never retrieved" for whatever they
+        raised. Settling everything first and re-raising afterwards keeps the exception
+        while leaving nothing behind it.
+        """
+        if not self._parallelisable(calls, by_name):
+            return [await self._call_tool(c, by_name, ctx, hooks) for c in calls]
+
+        log.info("tools_in_parallel", tools=[c.name for c in calls])
+        limit = asyncio.Semaphore(MAX_PARALLEL_TOOLS)
+
+        async def bounded(call: ToolCallReq) -> str:
+            async with limit:
+                return await self._call_tool(call, by_name, ctx, hooks)
+
+        settled = await asyncio.gather(*(bounded(c) for c in calls), return_exceptions=True)
+        for item in settled:
+            if isinstance(item, BaseException):
+                raise item
+        return [str(item) for item in settled]
 
     async def _call_tool(
         self, call: ToolCallReq, by_name: dict[str, BaseTool], ctx: RunContext, hooks: Hooks
