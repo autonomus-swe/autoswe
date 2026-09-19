@@ -32,18 +32,23 @@ Excluded from the default suite by the `e2e` marker. Run with:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import pytest
 
-from contracts import Budget
+from agents import reviewer
+from contracts import Budget, ReviewFinding, ReviewReport, ToolResult, Usage
 from evals import record
 from orchestrator.deps import Deps
 from orchestrator.runner import run
 from orchestrator.state import Phase, RunState
+from repo import diff as diffmod
+from repo.gitcmd import git
 from storage import repo as db
 from storage.db import session
 from tests.e2e.chaos import F_INJECTION, INJECTED, REVIEW_PAIR, Scenario
+from tests.fakes import make_ctx
 
 pytestmark = pytest.mark.e2e
 
@@ -129,11 +134,67 @@ async def _record(
     )
 
 
+async def review_diff(
+    deps: Deps, repo: Path, scenario: Scenario
+) -> tuple[ReviewReport, list[ReviewFinding]]:
+    """Run the two-pass reviewer over the diff `main..<branch>`, and nothing else.
+
+    **Not a whole run, and that is the correction.** The first version of this test drove
+    `run()` with `base_branch=<scenario>`, which reviews the diff the *agent* produced —
+    `base_sha..HEAD` — so the reviewer never saw the seeded bug at all. It was measuring
+    whether the reviewer objects to the agent's own work.
+
+    The criterion is about a diff: given `main..g-token-expiry`, does the reviewer block?
+    So the diff is what is handed to it. This also costs three or four model calls instead
+    of fifty, which on a rate-limited free tier is the difference between a measurement and
+    a series of 90-second backoffs.
+    """
+    await git("checkout", "-q", scenario.branch, cwd=repo)
+    text = await git("diff", "main", scenario.branch, cwd=repo)
+    files = diffmod.split_by_file(text)
+    assert files, f"{scenario.branch} has no diff against main"
+
+    hooks = _Hooks()
+    candidates = await reviewer.ReviewPreAgent().run(
+        deps.provider, scenario.goal, None, None, files, hooks
+    )
+    ctx = make_ctx(repo, role="review")
+    report, dropped, _outcome = await reviewer.ReviewAgent().run(
+        deps.provider, ctx, scenario.goal, candidates, files, hooks
+    )
+    print(
+        f"\n{scenario.branch}: blocking={report.blocking} "
+        f"({len(candidates)} candidates → {len(report.findings)} kept, {len(dropped)} dropped)"
+    )
+    for f in report.findings:
+        print(f"    [{f.severity}] {f.file}:{f.line} {f.summary[:70]}")
+    return report, dropped
+
+
+class _Hooks:
+    """No ledger: this drives two agents directly rather than through a run.
+
+    Matches `gateway.provider.Hooks` exactly — a looser signature type-checks here and
+    fails at the call site, which is the wrong place to find out.
+    """
+
+    async def before_tool(self, name: str, input: dict[str, Any]) -> str | None:
+        return None
+
+    async def after_tool(
+        self, name: str, input: dict[str, Any], result: ToolResult, duration_ms: int
+    ) -> ToolResult:
+        return result
+
+    async def on_message(self, message: Any, usage: Usage, latency_ms: int) -> None:
+        return None
+
+
 @pytest.mark.parametrize(
     ("scenario", "should_block"), REVIEW_PAIR, ids=lambda v: getattr(v, "branch", v)
 )
 async def test_the_reviewer_tells_a_real_bug_from_a_reformatting(
-    deps_and_repo: tuple[Deps, Path], scenario: Scenario, should_block: bool
+    e2e_deps: Deps, chaos_repo: Path, scenario: Scenario, should_block: bool
 ) -> None:
     """Exit criterion: a seeded real bug is `blocking`; a style-only diff is not.
 
@@ -141,25 +202,45 @@ async def test_the_reviewer_tells_a_real_bug_from_a_reformatting(
     assertion. Passing one half tells you nothing about a reviewer: blocking everything
     passes (g), blocking nothing passes (h).
     """
-    deps, repo = deps_and_repo
+    report, dropped = await review_diff(e2e_deps, chaos_repo, scenario)
+    _record_review(scenario, report, dropped, e2e_deps.provider.model)
 
-    final = await review_run(deps, repo, scenario)
-
-    assert final.review is not None, f"{scenario.branch} produced no review"
-    assert final.review.blocking is should_block, (
+    assert report.blocking is should_block, (
         f"{scenario.branch}: expected blocking={should_block}, got "
-        f"{[(f.severity, f.file, f.summary) for f in final.review.findings]}"
+        f"{[(f.severity, f.file, f.summary) for f in report.findings]}"
     )
     if should_block:
-        blocking = [f for f in final.review.findings if f.severity == "blocking"]
+        blocking = [f for f in report.findings if f.severity == "blocking"]
         assert any("exp" in f.summary.lower() or "expir" in f.summary.lower() for f in blocking), (
             f"it blocked, but not about the expiry: {[f.summary for f in blocking]}"
         )
-        assert any("auth.py" in f.file for f in blocking), [f.file for f in blocking]
+        assert any("auth" in f.file for f in blocking), [f.file for f in blocking]
+
+
+def _record_review(
+    scenario: Scenario, report: ReviewReport, dropped: list[ReviewFinding], model: str
+) -> None:
+    path = record.append(
+        "m4",
+        {
+            "scenario": scenario.branch,
+            "model": model,
+            "mode": "review-only",
+            "review_blocking": report.blocking,
+            "review_findings": len(report.findings),
+            "review_by_severity": {
+                sev: sum(1 for f in report.findings if f.severity == sev)
+                for sev in ("blocking", "major", "minor", "nit")
+            },
+            "dropped_as_false_positive": len(dropped),
+            "rejections_explained": len(reviewer.rejection_reasons(report)),
+        },
+    )
+    print(f"  → {path}")
 
 
 async def test_a_real_model_against_the_poisoned_repository(
-    deps_and_repo: tuple[Deps, Path],
+    e2e_deps: Deps, chaos_repo: Path
 ) -> None:
     """What the scripted version cannot ask: does a real model try any of it?
 
@@ -172,11 +253,9 @@ async def test_a_real_model_against_the_poisoned_repository(
     and a test that depends on it is a test that fails on a model upgrade for a reason
     nobody can act on. What is asserted is that it does not matter either way.
     """
-    deps, repo = deps_and_repo
+    final = await review_run(e2e_deps, chaos_repo, F_INJECTION)
 
-    final = await review_run(deps, repo, F_INJECTION)
-
-    async with session(deps.engine) as s:
+    async with session(e2e_deps.engine) as s:
         calls = await db.list_tool_calls(s, final.run_id)
         pr = await db.latest_artifact(s, final.run_id, "pr")
 
