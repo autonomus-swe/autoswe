@@ -41,7 +41,7 @@ from orchestrator.events import emit
 from orchestrator.hooks import OrchestratorHooks
 from orchestrator.state import Phase, RunState
 from orchestrator.transition import MAX_DEBUG_ATTEMPTS
-from repo import diff, pr_body, symbols
+from repo import diff, graph, pr_body, repomap, symbols
 from repo import profile as repo_profile
 from repo import worktree as wt
 from repo.clone import ensure_bare_clone, repo_key, resolve_sha
@@ -302,12 +302,55 @@ def _run_context(state: RunState, res: RunResources, step_id: UUID, role: str) -
     )
 
 
+async def _repo_map(state: RunState, deps: Deps, res: RunResources) -> str:
+    """The map the reading agents are given: ranked by centrality and by the goal.
+
+    Reads the symbol index rather than re-parsing. The index is built once in SETUP and
+    keyed by the base SHA, so this costs a query and a graph build instead of walking three
+    thousand files three times a run.
+
+    Falls back to the v1 tree whenever the index is empty — an unsupported language, a
+    repository nothing parsed, or an indexing pass that failed. A worse map beats no map,
+    and the three callers cannot tell the difference.
+    """
+    assert res.worktree is not None
+    pinned = list(state.plan.affected_files) if state.plan else []
+    try:
+        async with session(deps.engine) as s:
+            rows = await db.symbols_for_sha(s, state.base_sha or "")
+        indexed = [
+            symbols.Symbol(
+                path=r.path,
+                kind=r.kind,
+                name=r.name,
+                signature=r.signature,
+                start_line=r.start_line,
+                end_line=r.end_line,
+                refs=list(r.refs or []),
+            )
+            for r in rows
+        ]
+        if indexed:
+            files = sorted({sym.path for sym in indexed})
+            ranks = graph.build(res.worktree.path, files, indexed).rank
+            rendered = repomap.render_symbol_map(
+                res.worktree.path, indexed, ranks, goal=state.goal, pinned=pinned
+            )
+            if rendered:
+                return rendered
+    except Exception as e:
+        # The map is context, not a gate. A run that cannot rank its files is worse at
+        # choosing where to look and is not wrong about anything.
+        log.warning("repo_map_v2_failed", error=f"{type(e).__name__}: {e}")
+    return render_map(res.worktree.path)
+
+
 async def analyze_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     """Survey the repository. Fills state.repo and the test command every later phase uses."""
     assert res.worktree is not None
     facts = state.facts or repo_profile.collect(res.worktree.path)
     state.facts = facts
-    repo_map = render_map(res.worktree.path)
+    repo_map = await _repo_map(state, deps, res)
 
     step_id, hooks, ctx = await _begin(state, deps, res, "analyzer", Phase.ANALYZE)
     error: str | None = None
@@ -332,7 +375,7 @@ async def analyze_node(state: RunState, deps: Deps, res: RunResources) -> RunSta
 async def plan_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     """Produce the implementation plan. Open questions park the run for a human."""
     assert res.worktree is not None and state.repo is not None
-    repo_map = render_map(res.worktree.path)
+    repo_map = await _repo_map(state, deps, res)
     step_id, hooks, ctx = await _begin(state, deps, res, "planner", Phase.PLAN)
     error: str | None = None
     plan = None
@@ -359,7 +402,7 @@ async def plan_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
 async def decompose_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     """Turn the plan into a validated task graph."""
     assert res.worktree is not None and state.repo is not None and state.plan is not None
-    repo_map = render_map(res.worktree.path)
+    repo_map = await _repo_map(state, deps, res)
     step_id, hooks, _ctx = await _begin(state, deps, res, "decomposer", Phase.DECOMPOSE)
     error: str | None = None
     graph = None

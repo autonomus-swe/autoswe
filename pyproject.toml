@@ -27,6 +27,9 @@ worker = [
     # supports, so adding a language is a query file rather than a build step.
     "tree-sitter>=0.23",
     "tree-sitter-language-pack>=0.7",
+    # Repo map v2's lexical half. The centrality half is fifteen lines in `repo/graph.py`
+    # rather than networkx, whose `pagerank` needs scipy — forty megabytes for one call.
+    "rank-bm25>=0.2.2",
     # pip-audit queries the advisory database over the network, so it runs on the worker
     # and never in the sandbox. A dependency rather than a binary because the worker runs
     # as a host process in development and in a container in compose, and it has to be
@@ -94,7 +97,8 @@ no_implicit_optional = true
 exclude = ["storage/migrations/", "tests/fixtures/", "\\.venv/", "venv/"]
 
 [[tool.mypy.overrides]]
-module = ["testcontainers.*", "asyncpg.*", "docker.*", "arq.*"]
+# Third-party packages that ship no type information. Their source is not ours to fix.
+module = ["testcontainers.*", "asyncpg.*", "docker.*", "arq.*", "rank_bm25.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

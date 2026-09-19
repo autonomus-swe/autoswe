@@ -1,30 +1,38 @@
-"""Repo map v1: a ranked file tree, budgeted to a line count.
+"""The repo map: which files matter for this goal, and what they define.
 
-Phase 5 replaces the scoring with tree-sitter symbols and centrality without changing
-``render_map``'s signature.
+Two renderers, and which one runs depends on whether the symbol index is available.
+
+**v2** ranks by two independent signals and shows definitions rather than file sizes:
+
+- *Centrality* (`repo/graph.py`) — how much of the tree leans on this file. Steady across
+  goals, and the reason a settings module ranks above a leaf even when neither is named.
+- *Lexical relevance* (BM25 over symbol names and path tokens) — how much this file's
+  vocabulary matches the goal. Volatile, and the reason a goal naming `paginate` finds
+  `paginate`'s file whatever the graph says.
+
+Neither alone is enough: centrality alone returns the same answer to every question, and
+BM25 alone ranks a file that merely mentions a word above the one that defines the thing.
+The score is `0.6 * centrality + 0.4 * lexical`, each normalised, and the weighting is the
+phase document's.
+
+**v1** is the fallback: an indented tree ordered by where files sit. It runs when there is
+no index — an unsupported language, or a tree nothing parsed — and is a guess about
+importance dressed as an answer, which is why v2 exists.
+
+`render_map`'s signature only grew optional arguments, so the three callers that pass a
+worktree and nothing else still work and simply get v1.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+import re
+from collections.abc import Sequence
+from pathlib import Path, PurePosixPath
 
-SKIP_DIRS = frozenset(
-    {
-        ".git",
-        ".venv",
-        "venv",
-        "node_modules",
-        "__pycache__",
-        ".pytest_cache",
-        ".mypy_cache",
-        ".ruff_cache",
-        "dist",
-        "build",
-        ".autoswe",
-        ".idea",
-        ".vscode",
-    }
-)
+from repo import graph as graphmod
+from repo.symbols import Symbol
+from repo.walk import SKIP_DIRS
+
 MAX_FILE_BYTES = 1_000_000
 BINARY_SUFFIXES = frozenset(
     {
@@ -159,3 +167,134 @@ def render_map(worktree: Path, max_lines: int = 150) -> str:
     if omitted > 0:
         shown.append(f"… (+{omitted} more files)")
     return "\n".join(shown)
+
+
+# ---- v2: ranked by centrality and lexical relevance -------------------------------------
+
+# Characters per token. The phase document asks for a calibration against
+# `client.messages.count_tokens` on a sample map; that needs a funded key, so this is the
+# same rough divisor the reviewer's budget uses. Being a third out costs a slightly short
+# or slightly long map, not a wrong one — the budget is a guard against sending a model
+# forty thousand tokens of tree, not an accounting figure.
+CHARS_PER_TOKEN = 4
+DEFAULT_TOKEN_BUDGET = 3_500
+# A test is worth showing and rarely worth showing first, unless the goal is about tests.
+TEST_PENALTY = 0.7
+TEST_WORDS = ("test", "tests", "spec", "pytest", "coverage", "fixture")
+
+_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def tokenize(text: str) -> list[str]:
+    """Words from an identifier or a path: split on case, underscores and separators.
+
+    `parse_json_report` and `parseJSONReport` both have to match a goal that says "parse
+    report", or the lexical half only works for code written in one house style.
+    """
+    spaced = _CAMEL.sub(" ", text)
+    parts = re.split(r"[^A-Za-z0-9]+", spaced)
+    return [p.lower() for p in parts if len(p) > 1]
+
+
+def _documents(files: list[str], symbols: list[Symbol]) -> dict[str, list[str]]:
+    """One bag of words per file: its path, and the names of everything it defines."""
+    docs: dict[str, list[str]] = {f: tokenize(f) for f in files}
+    for sym in symbols:
+        if sym.path in docs:
+            docs[sym.path].extend(tokenize(sym.name))
+    return docs
+
+
+def _normalise(scores: dict[str, float]) -> dict[str, float]:
+    """To 0..1. A flat input maps to zeros rather than dividing by nothing."""
+    if not scores:
+        return {}
+    low, high = min(scores.values()), max(scores.values())
+    if high - low <= 0:
+        return dict.fromkeys(scores, 0.0)
+    return {k: (v - low) / (high - low) for k, v in scores.items()}
+
+
+def rank_files(
+    files: list[str],
+    symbols: list[Symbol],
+    ranks: dict[str, float],
+    *,
+    goal: str = "",
+    pinned: Sequence[str] = (),
+) -> list[tuple[str, float]]:
+    """Files in the order a reader should see them, best first."""
+    from rank_bm25 import BM25Okapi
+
+    docs = _documents(files, symbols)
+    corpus = [docs[f] for f in files]
+    query = tokenize(goal) + [tokenize(p)[-1] if tokenize(p) else p for p in pinned]
+    lexical: dict[str, float] = dict.fromkeys(files, 0.0)
+    if query and any(corpus):
+        scores = BM25Okapi(corpus).get_scores(query)
+        lexical = dict(zip(files, (float(s) for s in scores), strict=True))
+
+    central = _normalise({f: ranks.get(f, 0.0) for f in files})
+    lexical = _normalise(lexical)
+    goal_wants_tests = any(word in goal.lower() for word in TEST_WORDS)
+    pinned_set = set(pinned)
+
+    scored: list[tuple[str, float]] = []
+    for f in files:
+        score = 0.6 * central[f] + 0.4 * lexical[f]
+        if graphmod.is_test(f) and not goal_wants_tests:
+            score *= TEST_PENALTY
+        if f in pinned_set or (PurePosixPath(f).parent == PurePosixPath(".") and f in MANIFESTS):
+            # Pinned to the top rather than boosted: the plan named this file, so a reader
+            # who does not see it will wonder whether the map knew about it.
+            score += 10.0
+        scored.append((f, score))
+    scored.sort(key=lambda pair: (-pair[1], pair[0]))
+    return scored
+
+
+def render_symbol_map(
+    worktree: Path,
+    symbols: list[Symbol],
+    ranks: dict[str, float],
+    *,
+    goal: str = "",
+    pinned: Sequence[str] = (),
+    token_budget: int = DEFAULT_TOKEN_BUDGET,
+) -> str:
+    """The v2 map: ranked files, each with what it defines, inside a token budget.
+
+    Files that did not fit are listed by path alone under "other files", because "this file
+    exists and I ran out of room" and "this file does not exist" are different facts and a
+    truncated map should not conflate them.
+    """
+    files = sorted({s.path for s in symbols})
+    if not files:
+        return ""
+    by_file: dict[str, list[Symbol]] = {}
+    for sym in symbols:
+        by_file.setdefault(sym.path, []).append(sym)
+
+    order = rank_files(files, symbols, ranks, goal=goal, pinned=pinned)
+    budget = token_budget * CHARS_PER_TOKEN
+    lines: list[str] = []
+    used = 0
+    omitted: list[str] = []
+
+    for path, _score in order:
+        block = [path]
+        for sym in sorted(by_file.get(path, []), key=lambda s: s.start_line):
+            indent = "    " if sym.kind == "method" else "  "
+            label = sym.signature or f"{sym.kind} {sym.name}"
+            block.append(f"{indent}{label}  [L{sym.start_line}-{sym.end_line}]")
+        cost = sum(len(line) + 1 for line in block)
+        if used + cost > budget and lines:
+            omitted.append(path)
+            continue
+        lines.extend(block)
+        used += cost
+
+    if omitted:
+        lines.append(f"\nother files ({len(omitted)}):")
+        lines.extend(f"  {p}" for p in omitted[:200])
+    return "\n".join(lines)
