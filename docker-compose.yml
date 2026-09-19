@@ -25,6 +25,42 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+  # The egress proxy, off unless asked for: `docker compose --profile proxy up -d`.
+  #
+  # It is the only route out of `agent-egress`, which is an `internal` network with no
+  # default route — so the allow-list in proxy/allowlist.txt is the whole egress policy for
+  # a dependency install rather than a suggestion beside one.
+  #
+  # Attached to both networks on purpose: `agent-egress` to be reachable by the sandbox,
+  # the default one to be able to reach anything at all.
+  #
+  # `no-new-privileges` is deliberately absent. It is present on the sandbox, but on hosts
+  # whose AppArmor profile needs the setuid transition it stops tinyproxy from execing at
+  # all — the same quirk sandbox/docker.py documents and falls back from. Everything else
+  # that matters is here: non-root, all capabilities dropped, read-only rootfs.
+  egress-proxy:
+    profiles: ["proxy"]
+    build: {context: ./proxy}
+    container_name: agent-egress-proxy
+    restart: unless-stopped
+    read_only: true
+    cap_drop: ["ALL"]
+    tmpfs: ["/tmp"]
+    networks: [default, agent-egress]
+    healthcheck:
+      # Probes the FILTER, not the port. A tinyproxy whose allow-list failed to load runs
+      # wide open and answers a TCP check perfectly happily — measured — so the check asks
+      # for a host that must be refused and expects the refusal.
+      test:
+        - CMD-SHELL
+        - >-
+          http_proxy=http://127.0.0.1:8888 wget -q -O /dev/null https://pypi.org/simple/ &&
+          ! http_proxy=http://127.0.0.1:8888 wget -q -O /dev/null http://example.com
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
   # The API and worker are optional: `make up` starts only postgres and redis, and the
   # demo runs them on the host. Start them with `docker compose --profile app up -d`.
   api:
@@ -57,6 +93,13 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+
+networks:
+  # Declared `external` because the worker creates it — and creates it `internal`. A plain
+  # compose entry would make `<project>_agent-egress`, a different network from the one the
+  # sandbox joins, and the proxy would sit on a bridge nothing could reach. Measured.
+  agent-egress:
+    external: true
 
 volumes:
   pgdata: {}

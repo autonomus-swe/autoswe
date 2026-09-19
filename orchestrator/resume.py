@@ -136,7 +136,11 @@ async def reattach(state: RunState, deps: Deps, res: RunResources, worker_id: st
     if limits.raises_cpus_to_install:
         await sandbox.set_cpus(limits.install_cpus)
     try:
-        await sandbox.exec(install_command(res.worktree.path, state.facts), timeout_s=900)
+        await sandbox.exec(
+            install_command(res.worktree.path, state.facts),
+            timeout_s=900,
+            env=deps.settings.proxy_env(),
+        )
     finally:
         if limits.raises_cpus_to_install:
             await sandbox.set_cpus(limits.cpus)

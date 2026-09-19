@@ -1,0 +1,50 @@
+# The allow-list. One POSIX extended regex per line, matched against the *host* of the
+# request (for CONNECT, the host in `CONNECT host:port`), case-insensitively.
+#
+# This file is an ALLOW-list, not a deny-list, because tinyproxy.conf sets
+# `FilterDefaultDeny Yes`. Anything not matched here gets 403 Filtered.
+#
+# Every entry is anchored with ^...$ deliberately. Tinyproxy's filter is a substring
+# regex search, not an equality test: an unanchored `pypi\.org` also matches
+# `pypi.org.evil.example` and `notpypi.org`, which is the whole allow-list defeated by
+# anyone who can register a domain. `\.` rather than `.` for the same class of reason —
+# `pypi.org` as a regex matches `pypiXorg`.
+#
+# Subdomains are NOT implied. `^pypi\.org$` does not admit `test.pypi.org`. To admit a
+# whole zone, write it explicitly: `(^|\.)example\.com$`.
+#
+# Neither is the fully-qualified form with the root label. Measured: `CONNECT pypi.org.:443`
+# is logged as `Proxying refused on filtered domain "pypi.org."` — `$` anchors against the
+# trailing dot. That errs closed, which is the right direction and is why it is left
+# alone: no package manager emits the trailing-dot form, and relaxing the anchor to
+# `\.?$` would widen every pattern here to buy back a case nothing hits.
+
+# --- Python (uv, pip) ---------------------------------------------------------------
+# pypi.org serves the index; the wheels themselves are on files.pythonhosted.org, which
+# is where every `pip install` actually spends its bytes. Both are required; an index-only
+# allow-list resolves versions and then fails at download.
+^pypi\.org$
+^files\.pythonhosted\.org$
+
+# --- Node (npm, pnpm) ---------------------------------------------------------------
+# registry.npmjs.org serves both the packument and the tarball, so it is the only host
+# npm needs. pnpm defaults to the same registry.
+^registry\.npmjs\.org$
+
+# --- Go -------------------------------------------------------------------------------
+# The module mirror and the checksum database. GONOSUMDB/GOPRIVATE are not set in the
+# sandbox, so `go mod download` contacts sum.golang.org for every module; without it the
+# build fails closed on checksum verification rather than proceeding unverified.
+^proxy\.golang\.org$
+^sum\.golang\.org$
+
+# github.com is on the list because the phase document puts it there ("for Go modules if
+# needed"). Note what it costs: it is the one entry that is not a package registry, so it
+# is the one entry an agent can use to reach content nobody reviewed — any public repo,
+# any gist, and `github.com/<anything>` as a generic fetch target. It is also not
+# sufficient on its own for the things people expect it to cover:
+#   - `git clone https://github.com/...` over HTTPS *does* work through CONNECT,
+#   - release assets and `raw.githubusercontent.com` do NOT (different hosts),
+#   - `go get` on a direct VCS path ALSO needs codeload.github.com for the zip.
+# Delete this line if the run's stack does not need it; that is the safer default.
+^github\.com$

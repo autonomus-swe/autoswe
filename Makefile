@@ -1,5 +1,5 @@
 .RECIPEPREFIX := >
-.PHONY: up down migrate lint fmt type test test-int test-e2e check sandbox-image sandbox-images api worker
+.PHONY: up down migrate lint fmt type test test-int test-e2e check sandbox-image sandbox-images egress-proxy-image egress-up api worker
 
 up:
 > docker compose up -d --wait postgres redis
@@ -34,6 +34,17 @@ check: lint type test
 # target CI and bringup call. `sandbox-images` builds the set a real run may select from.
 sandbox-image:
 > docker build -t agent-sandbox:python-3.12 sandbox/images/python
+
+egress-proxy-image:
+> docker build -t agent-egress-proxy proxy
+
+# The network has to exist before compose can attach the proxy to it (compose declares it
+# `external`), and the worker only creates it on its first run — so this creates it, with
+# the `internal` flag that is the actual enforcement. Idempotent.
+egress-up: egress-proxy-image
+> docker network inspect agent-egress >/dev/null 2>&1 || docker network create --internal agent-egress
+> docker compose --profile proxy up -d
+> @echo 'set EGRESS_PROXY_URL=http://agent-egress-proxy:8888 in .env to enforce it'
 
 sandbox-images: sandbox-image
 > docker build -t agent-sandbox:node-20 sandbox/images/node

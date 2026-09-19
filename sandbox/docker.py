@@ -69,6 +69,7 @@ class DockerSandbox:
         user: str,
         runtime: str | None = None,
         no_new_privileges: bool = True,
+        network_internal: bool = False,
         mem_limit: str = "4g",
         tmpfs_size: str = "1g",
         cpus: float = 2.0,
@@ -84,6 +85,7 @@ class DockerSandbox:
         self.user = user
         self.runtime = runtime
         self.no_new_privileges = no_new_privileges
+        self.network_internal = network_internal
         self.effective_no_new_privileges = no_new_privileges
         self._client = client
         self.container: Any | None = None
@@ -95,6 +97,37 @@ class DockerSandbox:
         if self._client is None:
             self._client = docker.from_env()
         return self._client
+
+    def _ensure_network(self) -> None:
+        """The install network, created if absent and checked if not.
+
+        The check is the whole feature. An `internal` network has no default route — the
+        container cannot reach anything but its own subnet, so the only way out is a proxy
+        attached to both sides. Measured: on a normal bridge the sandbox reaches the open
+        internet directly and ignores the proxy entirely, so the allow-list without this is
+        decorative.
+
+        Which is why an existing network that is *not* internal is a hard failure rather
+        than a warning. `networks.get` hands back whatever is there, `networks.create` on a
+        live name is a 409, and the old network cannot be removed while a run holds an
+        endpoint on it — so a silent reuse would leave egress wide open while every deny
+        test still passed, because the proxy does return 403. It just would not be the only
+        way out.
+        """
+        try:
+            existing = self.client.networks.get(self.network)
+        except NotFound:
+            self.client.networks.create(
+                self.network, driver="bridge", internal=self.network_internal
+            )
+            return
+        if self.network_internal and not existing.attrs.get("Internal", False):
+            raise SandboxError(
+                f"network {self.network!r} exists but is not internal, so the sandbox "
+                "could reach the internet around the egress proxy. Remove it while no "
+                f"container is attached (`docker network rm {self.network}`) and start "
+                "the proxy with `docker compose --profile proxy up -d`."
+            )
 
     def _quota(self, cpus: float) -> int:
         """CFS quota for a CPU count, clamped to what this host actually has.
@@ -154,10 +187,7 @@ class DockerSandbox:
     def _start_sync(self, no_new_privileges: bool) -> None:
         if not self.workspace.is_dir():
             raise SandboxError(f"workspace does not exist: {self.workspace}")
-        try:
-            self.client.networks.get(self.network)
-        except NotFound:
-            self.client.networks.create(self.network, driver="bridge")
+        self._ensure_network()
         try:  # a crashed earlier run may have left a container with our name
             self.client.containers.get(self.id).remove(force=True)
         except NotFound:

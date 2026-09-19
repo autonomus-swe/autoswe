@@ -210,7 +210,12 @@ async def setup_node(state: RunState, deps: Deps, res: RunResources) -> RunState
         await sandbox.set_cpus(limits.install_cpus)
     install = install_command(res.worktree.path, state.facts)
     try:
-        result = await sandbox.exec(install, timeout_s=INSTALL_TIMEOUT_S)
+        # Only here. The proxy exists for the one window with a network; setting these at
+        # container creation would leave them in the environment of every command the agent
+        # runs afterwards, pointing at a proxy that is by then unreachable.
+        result = await sandbox.exec(
+            install, timeout_s=INSTALL_TIMEOUT_S, env=deps.settings.proxy_env()
+        )
     finally:
         # In a `finally` because `exec` raises on a hung command or a container that went
         # away, and an install that died holding four cores would keep them for the rest
