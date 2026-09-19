@@ -28,7 +28,7 @@ from contracts import (
 )
 from gateway.provider import LLMProvider
 from repo import pr_body
-from tests.fakes import planted_secret
+from tests.fakes import FakeProviderBase, planted_secret
 
 pytestmark = pytest.mark.unit
 
@@ -84,11 +84,8 @@ DESCRIPTION = PullRequestDescription(
 )
 
 
-class Provider:
+class Provider(FakeProviderBase):
     """Scripted. Records the prompt it was given, which is what most of these assert on."""
-
-    provider_name = "test"
-    model = "test/model"
 
     def __init__(self, result: Any = DESCRIPTION) -> None:
         self.result = result

@@ -23,6 +23,7 @@ from gateway import caching, pricing
 from gateway.provider import Hooks, Request, RunOutcome
 from gateway.tool_schemas import function_tool, to_openai_tool
 from observability.logging import get_logger
+from observability.tracing import annotate, trace_span
 from tools.base import BaseTool, RunContext
 
 log = get_logger(__name__)
@@ -354,6 +355,7 @@ class OpenAICompatProvider:
         resp = None
         rate_limited = 0
         attempt = 0
+        annotate(llm_model=model, llm_max_tokens=max_tokens, llm_tools=len(tools))
         while attempt <= EMPTY_RESPONSE_RETRIES:
             try:
                 resp = await self.client.chat.completions.create(**kwargs)
@@ -396,11 +398,22 @@ class OpenAICompatProvider:
             for tc in (msg.tool_calls or [])
             if getattr(tc, "type", "function") == "function"
         ]
+        usage = usage_from(resp, model, self.base_url)
+        # On the span rather than only in the ledger: a trace that shows where the time
+        # went and not where the money went answers half the question anyone opens it for.
+        annotate(
+            llm_input_tokens=usage.input_tokens,
+            llm_output_tokens=usage.output_tokens,
+            llm_cache_read_tokens=usage.cache_read_tokens,
+            llm_cache_hit_rate=round(usage.cache_hit_rate, 3),
+            llm_cost_usd=usage.cost_usd,
+            llm_finish_reason=str(choice.finish_reason or "stop"),
+        )
         return ChatTurn(
             content=msg.content,
             tool_calls=calls,
             finish_reason=str(choice.finish_reason or "stop"),
-            usage=usage_from(resp, model, self.base_url),
+            usage=usage,
             raw_message=_assistant_message(msg),
             refusal=getattr(msg, "refusal", None),
         )
@@ -443,13 +456,14 @@ class OpenAICompatProvider:
         while turns < req.max_iterations + reminders:
             t0 = time.monotonic()
             try:
-                turn = await self._complete(
-                    messages=messages,
-                    tools=tool_defs,
-                    tool_choice="auto",
-                    max_tokens=req.max_tokens,
-                    model=self.model_for(req.tier),
-                )
+                with trace_span("llm_call", role=req.role, tier=req.tier):
+                    turn = await self._complete(
+                        messages=messages,
+                        tools=tool_defs,
+                        tool_choice="auto",
+                        max_tokens=req.max_tokens,
+                        model=self.model_for(req.tier),
+                    )
             except _InvalidToolCall as e:
                 rejected += 1
                 if rejected > INVALID_TOOL_CALL_RETRIES:
@@ -588,6 +602,12 @@ class OpenAICompatProvider:
     async def _call_tool(
         self, call: ToolCallReq, by_name: dict[str, BaseTool], ctx: RunContext, hooks: Hooks
     ) -> str:
+        with trace_span(f"tool.{call.name}"):
+            return await self._call_tool_inner(call, by_name, ctx, hooks)
+
+    async def _call_tool_inner(
+        self, call: ToolCallReq, by_name: dict[str, BaseTool], ctx: RunContext, hooks: Hooks
+    ) -> str:
         try:
             args = json.loads(call.arguments or "{}")
             if not isinstance(args, dict):
@@ -597,6 +617,7 @@ class OpenAICompatProvider:
         tool = by_name.get(call.name)
         if tool is None:
             return f"ERROR: unknown tool {call.name!r}; available: {sorted(by_name)}"
+        annotate(tool_name=tool.name)
         reason = await hooks.before_tool(tool.name, args)
         if reason:
             res = ToolResult(content=f"denied: {reason}", is_error=True, denied_by="harness")
@@ -629,13 +650,14 @@ class OpenAICompatProvider:
         total = Usage()
         last_error = "no structured output produced"
         for _attempt in range(2):
-            turn = await self._complete(
-                messages=messages,
-                tools=[tool],
-                tool_choice=choice,
-                max_tokens=req.max_tokens,
-                model=self.model_for(req.tier),
-            )
+            with trace_span("llm_call", role=req.role, tier=req.tier, structured=output.__name__):
+                turn = await self._complete(
+                    messages=messages,
+                    tools=[tool],
+                    tool_choice=choice,
+                    max_tokens=req.max_tokens,
+                    model=self.model_for(req.tier),
+                )
             total = total.add(turn.usage)
             if turn.refusal or turn.finish_reason == "content_filter":
                 raise ProviderError(f"refusal: {turn.refusal or turn.content}")

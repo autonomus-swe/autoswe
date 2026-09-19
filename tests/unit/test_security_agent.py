@@ -28,7 +28,7 @@ from core.errors import AgentError
 from gateway.provider import LLMProvider
 from repo import diff as d
 from repo.github import gitleaks_gate
-from tests.fakes import make_ctx
+from tests.fakes import FakeProviderBase, make_ctx
 
 pytestmark = pytest.mark.unit
 
@@ -75,11 +75,8 @@ class _NullHooks:
         return None
 
 
-class Provider:
+class Provider(FakeProviderBase):
     """Scripted: submits the report it was built with, and nothing else."""
-
-    provider_name = "test"
-    model = "test/model"
 
     def __init__(self, report: SecurityReport | None) -> None:
         self.report = report

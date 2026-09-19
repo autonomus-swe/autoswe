@@ -25,7 +25,7 @@ from contracts.plan import ImplementationPlan, Task, TaskSpec
 from core.errors import AgentError
 from gateway.provider import LLMProvider
 from repo import diff as d
-from tests.fakes import make_ctx
+from tests.fakes import FakeProviderBase, make_ctx
 
 pytestmark = pytest.mark.unit
 
@@ -88,10 +88,7 @@ async def test_the_models_blocking_boolean_is_overruled_in_both_directions() -> 
     """A model that has just written four findings is the last thing that should rule on
     whether they block. It fills the field in; the harness decides."""
 
-    class Provider:
-        provider_name = "test"
-        model = "test/model"
-
+    class Provider(FakeProviderBase):
         def __init__(self, report: ReviewReport) -> None:
             self.report = report
 
@@ -178,10 +175,7 @@ async def test_what_the_verifier_rejected_is_recorded_not_discarded() -> None:
     real = finding(file="src/a.py", line=10, category="off-by-one")
     noise = finding(file="src/b.py", line=99, category="style")
 
-    class Provider:
-        provider_name = "test"
-        model = "test/model"
-
+    class Provider(FakeProviderBase):
         async def run_tools(self, req: Any, tools: Any, ctx: Any, hooks: Any) -> Any:
             ctx.submitted[reviewer.REVIEW_KEY] = ReviewReport(
                 findings=[real],
@@ -249,10 +243,7 @@ def test_a_rejection_with_a_blank_reason_does_not_count_as_explained() -> None:
 async def test_a_reviewer_that_submits_nothing_is_an_error_not_an_empty_review() -> None:
     """An empty report and a missing one mean different things: one says the diff is clean."""
 
-    class Silent:
-        provider_name = "test"
-        model = "test/model"
-
+    class Silent(FakeProviderBase):
         async def run_tools(self, req: Any, tools: Any, ctx: Any, hooks: Any) -> Any:
             return type("O", (), {"stop_reason": "max_iterations", "turns": 40, "usage": Usage()})()
 
@@ -270,10 +261,7 @@ async def test_a_pre_pass_that_dies_degrades_the_review_rather_than_the_run() ->
     """It leaves the verification pass with nothing to check — which is a worse review, not
     no review, because that pass reads the code itself."""
 
-    class Broken:
-        provider_name = "test"
-        model = "test/model"
-
+    class Broken(FakeProviderBase):
         async def parse(self, req: Any, output: Any) -> Any:
             raise TimeoutError("the model did not answer")
 
@@ -290,10 +278,7 @@ async def test_the_pre_pass_caps_what_it_hands_on() -> None:
     """Ninety concerns is a pass that has stopped discriminating, and the verifier would
     spend its whole budget rejecting them one at a time."""
 
-    class Flood:
-        provider_name = "test"
-        model = "test/model"
-
+    class Flood(FakeProviderBase):
         async def parse(self, req: Any, output: Any) -> Any:
             many = [finding(line=i, category=f"c{i}") for i in range(100)]
             return ReviewCandidates(findings=many), Usage()

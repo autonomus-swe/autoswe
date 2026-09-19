@@ -14,6 +14,9 @@ dependencies = [
   "structlog>=24.1",
   "opentelemetry-api>=1.27",
   "opentelemetry-sdk>=1.27",
+  # OTLP over HTTP rather than gRPC: it is the protocol every collector accepts, and it is
+  # what Langfuse's OTLP endpoint speaks, which is how traces reach it without a second SDK.
+  "opentelemetry-exporter-otlp-proto-http>=1.27",
   "orjson>=3.10",
   "typer>=0.12",
 ]

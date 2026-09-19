@@ -235,7 +235,7 @@ def test_triage_is_capped_so_one_broken_commit_is_not_a_giant_prompt() -> None:
 
 
 async def test_triage_with_nothing_to_classify_does_not_call_a_model() -> None:
-    class Provider:
+    class Provider(FakeProviderBase):
         async def parse(self, req: Any, output: Any) -> Any:
             raise AssertionError("no model call should happen")
 
@@ -244,7 +244,7 @@ async def test_triage_with_nothing_to_classify_does_not_call_a_model() -> None:
 
 
 async def test_a_triage_failure_does_not_fail_the_run() -> None:
-    class Provider:
+    class Provider(FakeProviderBase):
         async def parse(self, req: Any, output: Any) -> Any:
             raise TimeoutError("the model did not answer")
 
@@ -257,7 +257,7 @@ async def test_a_triage_failure_does_not_fail_the_run() -> None:
 async def test_triage_ignores_classifications_for_tests_it_did_not_ask_about() -> None:
     from contracts import FailureClassification, Triage
 
-    class Provider:
+    class Provider(FakeProviderBase):
         async def parse(self, req: Any, output: Any) -> Any:
             return (
                 Triage(
