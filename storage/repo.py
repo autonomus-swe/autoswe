@@ -446,3 +446,20 @@ async def symbols_named(
         .limit(limit)
     )
     return list(res.scalars())
+
+
+async def symbols_for_sha(
+    s: AsyncSession, repo_sha: str, limit: int = 100_000
+) -> list[RepoSymbolRow]:
+    """Every symbol at one commit, for the repo map's ranking pass.
+
+    Bounded because a very large repository could otherwise pull hundreds of thousands of
+    rows into memory to rank a map that shows a few dozen files.
+    """
+    res = await s.execute(
+        select(RepoSymbolRow)
+        .where(RepoSymbolRow.repo_sha == repo_sha)
+        .order_by(RepoSymbolRow.path, RepoSymbolRow.start_line)
+        .limit(limit)
+    )
+    return list(res.scalars())

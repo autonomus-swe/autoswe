@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING
 
 from observability.logging import get_logger
 from repo.languages import Language, for_path
-from repo.repomap import SKIP_DIRS
+from repo.walk import SKIP_DIRS
 
 if TYPE_CHECKING:  # the grammars are a worker dependency; the types are free
     from tree_sitter import Node
