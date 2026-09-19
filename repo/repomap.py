@@ -178,6 +178,10 @@ def render_map(worktree: Path, max_lines: int = 150) -> str:
 # forty thousand tokens of tree, not an accounting figure.
 CHARS_PER_TOKEN = 4
 DEFAULT_TOKEN_BUDGET = 3_500
+# Held back from the block budget for the "other files" header and its "… and N more"
+# line. Generous: the two together are under a hundred characters, and spending a few more
+# on a map is cheaper than a map that quietly exceeds the budget it advertises.
+TAIL_RESERVE_CHARS = 160
 # A test is worth showing and rarely worth showing first, unless the goal is about tests.
 TEST_PENALTY = 0.7
 TEST_WORDS = ("test", "tests", "spec", "pytest", "coverage", "fixture")
@@ -267,6 +271,10 @@ def render_symbol_map(
     Files that did not fit are listed by path alone under "other files", because "this file
     exists and I ran out of room" and "this file does not exist" are different facts and a
     truncated map should not conflate them.
+
+    That tail is inside the budget too. It used to be appended after the loop had finished,
+    which made `token_budget` a budget for the ranked half and not for the map — on a two
+    thousand file repository the overshoot was half as much again.
     """
     files = sorted({s.path for s in symbols})
     if not files:
@@ -277,6 +285,11 @@ def render_symbol_map(
 
     order = rank_files(files, symbols, ranks, goal=goal, pinned=pinned)
     budget = token_budget * CHARS_PER_TOKEN
+    # Room held back for the "other files" tail, which is only known to be needed once the
+    # blocks have been laid out. Without it the blocks fill the budget exactly and the tail
+    # goes over — measured on sympy at forty characters, entirely header. The reserve is
+    # returned when nothing is omitted.
+    block_budget = max(budget - TAIL_RESERVE_CHARS, budget // 2)
     lines: list[str] = []
     used = 0
     omitted: list[str] = []
@@ -288,13 +301,41 @@ def render_symbol_map(
             label = sym.signature or f"{sym.kind} {sym.name}"
             block.append(f"{indent}{label}  [L{sym.start_line}-{sym.end_line}]")
         cost = sum(len(line) + 1 for line in block)
-        if used + cost > budget and lines:
+        if used + cost > block_budget and lines:
             omitted.append(path)
             continue
         lines.extend(block)
         used += cost
 
     if omitted:
-        lines.append(f"\nother files ({len(omitted)}):")
-        lines.extend(f"  {p}" for p in omitted[:200])
+        # Inside the budget, not after it. This tail used to be a flat `omitted[:200]`
+        # appended once the loop had finished, which meant the map overshot its own budget
+        # by however long the tail was — measured on sympy: a 3 500-token budget rendering
+        # a 5 300-token map, because 1 200 omitted paths capped at 200 is still ~1 800
+        # tokens of trailing list.
+        header = f"\nother files ({len(omitted)}):"
+        used += len(header) + 1
+        listed = 0
+        for path in omitted:
+            line = f"  {path}"
+            if used + len(line) + 1 > budget:
+                break
+            used += len(line) + 1
+            listed += 1
+        lines.append(header)
+        if listed < len(omitted):
+            # The count in the header is the real one; this says how much of it is shown,
+            # so a reader can tell a short list from a complete one. Its own length is
+            # charged too, dropping listed paths until it fits — the first version of this
+            # fix appended it after the check and put the map forty characters over, which
+            # is the same mistake it was written to correct, just smaller.
+            suffix = f"  … and {len(omitted) - listed} more not shown"
+            while listed > 0 and used + len(suffix) + 1 > budget:
+                listed -= 1
+                used -= len(f"  {omitted[listed]}") + 1
+                suffix = f"  … and {len(omitted) - listed} more not shown"
+            lines.extend(f"  {p}" for p in omitted[:listed])
+            lines.append(suffix)
+        else:
+            lines.extend(f"  {p}" for p in omitted[:listed])
     return "\n".join(lines)
