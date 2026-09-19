@@ -35,6 +35,7 @@ from contracts import (
 from core.errors import AgentError, BudgetExhausted, RepoError, SandboxError
 from gateway import caching
 from gateway.routing import DOWNGRADE, ROUTES, Route, route_for
+from observability import metrics
 from observability.logging import bind_run, get_logger
 from orchestrator.approvals import ApprovalGate
 from orchestrator.budgets import BudgetGate
@@ -1174,6 +1175,7 @@ async def test_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     state.preexisting_failures |= set(inherited)
     if report.passed and state.tasks is not None and state.current_task_id is not None:
         state.tasks.by_id(state.current_task_id).status = "done"
+        metrics.record_task_done(state.attempts.get(state.current_task_id, 0))
         async with session(deps.engine) as s:
             await db.upsert_tasks(s, state.run_id, state.tasks)
         if state.tasks.next_ready() is None:

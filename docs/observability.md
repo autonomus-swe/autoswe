@@ -70,7 +70,72 @@ cost and how long it took.
 
 ## Metrics
 
-Prometheus counters and histograms arrive with Step 5.7b (`observability/metrics.py`,
-`/metrics` on the API and `:9100/metrics` on the worker). Until then the numbers are in
-`llm_calls` — `storage.repo.run_cost` per run and `storage.repo.step_costs` per step, both
-carrying `cache_hit_rate`.
+A trace tells you about one run. These tell you whether the agent is getting better or
+worse across all of them, which is a different question and the only one that can justify
+a change to a prompt or a route.
+
+| Metric | Type | Labels |
+|---|---|---|
+| `autoswe_runs_total` | counter | `outcome` (done / failed / cancelled) |
+| `autoswe_task_attempts` | histogram | — |
+| `autoswe_first_pass_test_success_total` | counter | — |
+| `autoswe_debug_success_total` | counter | — |
+| `autoswe_tokens_per_solved_task` | histogram | — |
+| `autoswe_cache_hit_rate` | histogram | — |
+| `autoswe_sandbox_exec_seconds` | histogram | — |
+| `autoswe_cost_usd_total` | counter | `role` |
+
+### Two targets, not one
+
+The API and the worker are separate processes with separate registries. Neither can see
+the other's counters, so a scrape config needs both:
+
+```yaml
+scrape_configs:
+  - job_name: autoswe-api
+    static_configs: [{targets: ["api:8000"]}]     # /metrics
+  - job_name: autoswe-worker
+    static_configs: [{targets: ["worker:9100"]}]  # /metrics
+```
+
+The API's are about requests; the worker's are about runs. `METRICS_PORT=0` turns the
+worker's endpoint off, which is what a second worker on the same host needs.
+
+Both endpoints are unauthenticated, like `/healthz`. A scraper is infrastructure and
+cannot hold an API key, and that is only defensible while every label is a role or an
+outcome — never a repository, a goal, or a customer. There is a test asserting exactly
+that set.
+
+### The queries worth having
+
+**Cost per solved task**, which is the metric — not cost per run. A run that spent half as
+much and finished one task instead of three cost more per unit of work, and a total alone
+hides that completely:
+
+```promql
+rate(autoswe_cost_usd_total[1d]) / rate(autoswe_first_pass_test_success_total[1d])
+histogram_quantile(0.5, rate(autoswe_tokens_per_solved_task_bucket[1d]))
+```
+
+**Is the debug loop covering for a worse Coder?** A rise in the second without a rise in
+the first reads as success on any dashboard that only counts finished tasks:
+
+```promql
+rate(autoswe_first_pass_test_success_total[1d])
+rate(autoswe_debug_success_total[1d])
+```
+
+**Is caching working?** Below 0.5 after the first step of a run, something in the prefix is
+moving — see `gateway/caching.py`:
+
+```promql
+histogram_quantile(0.5, rate(autoswe_cache_hit_rate_bucket[1h]))
+```
+
+### Live spend
+
+`runs.cost_usd` is incremented on every model call, so `GET /runs/{id}` and the console
+move during a long step rather than jumping at each step boundary. It is an increment
+(`cost_usd = cost_usd + delta`) rather than a `SUM` over `llm_calls`, because it runs once
+per call; `llm_calls` remains the source of truth and every step boundary reconciles
+against it.

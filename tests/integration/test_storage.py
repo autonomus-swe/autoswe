@@ -267,3 +267,45 @@ async def test_a_symbol_is_findable_by_name_and_by_file(db: AsyncSession) -> Non
     assert in_file[0].refs == ["chunk"], "the array round-trips"
 
     assert await repo.symbols_named(db, "d" * 40, "paginate") == []
+
+
+async def test_run_cost_accumulates_without_reading_it_back(db: AsyncSession) -> None:
+    """`cost_usd = cost_usd + :delta` in the database, not read-modify-write in Python.
+
+    Two steps of one run can have model calls in flight at once, and a read followed by a
+    write would lose one of them. Recorded here against a real database because that is
+    the only place the expression is actually evaluated.
+    """
+    run_id = await repo.create_run(
+        db,
+        repo_url="https://github.com/a/b",
+        base_branch="main",
+        goal="g",
+        budget=Budget(),
+        provider="openai_compat",
+    )
+
+    await asyncio.gather(*(repo.add_run_cost(db, run_id, 0.01) for _ in range(10)))
+    row = await repo.get_run(db, run_id)
+
+    assert row is not None and float(row.cost_usd) == pytest.approx(0.1)
+
+
+async def test_a_refund_does_not_move_the_live_cost(db: AsyncSession) -> None:
+    """The column is for liveness; `llm_calls` stays the source of truth and `set_run_cost`
+    reconciles against it at every step boundary. A negative increment here would let the
+    two disagree in the one direction nobody checks."""
+    run_id = await repo.create_run(
+        db,
+        repo_url="https://github.com/a/b",
+        base_branch="main",
+        goal="g",
+        budget=Budget(),
+        provider="openai_compat",
+    )
+    await repo.add_run_cost(db, run_id, 1.0)
+
+    await repo.add_run_cost(db, run_id, -0.5)
+    row = await repo.get_run(db, run_id)
+
+    assert row is not None and float(row.cost_usd) == pytest.approx(1.0)

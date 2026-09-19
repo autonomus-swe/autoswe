@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 
 from core.errors import RunCancelled
+from observability import metrics
 from observability.logging import bind_run, clear_run, get_logger
 from observability.tracing import trace_span
 from orchestrator.checkpoint import save
@@ -146,6 +147,16 @@ async def _run_phases(
 
 async def _finished(deps: Deps, state: RunState, status: str) -> None:
     from orchestrator.nodes import _emit
+
+    tasks = state.tasks.tasks if state.tasks is not None else []
+    metrics.record_run_finished(
+        outcome=status,
+        # Every task's attempt count, including the ones that never needed a debug pass —
+        # a histogram of only the tasks that struggled would say the agent always struggles.
+        attempts=[state.attempts.get(t.id, 0) for t in tasks],
+        tasks_done=sum(1 for t in tasks if t.status == "done"),
+        total_tokens=state.usage.total_tokens,
+    )
 
     await _emit(
         deps,

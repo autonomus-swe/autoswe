@@ -356,7 +356,13 @@ def node_io(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyPat
     monkeypatch.setattr("gateway.budget.record_llm_call", noop)
     monkeypatch.setattr("storage.repo.start_step", start_step)
     monkeypatch.setattr("storage.repo.run_cost", run_cost)
-    for name in ("insert_tool_call", "save_artifact", "finish_step", "upsert_tasks"):
+    for name in (
+        "insert_tool_call",
+        "save_artifact",
+        "finish_step",
+        "upsert_tasks",
+        "add_run_cost",
+    ):
         monkeypatch.setattr(f"storage.repo.{name}", noop)
     monkeypatch.setattr(
         nodes,

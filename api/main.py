@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import artifacts, control, events, health, runs
+from api.routes import artifacts, control, events, health, metrics, runs
 from core.settings import Settings, get_settings
 from observability.logging import configure_logging, get_logger
 from storage.db import make_engine
@@ -75,6 +75,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return FileResponse(static_dir / "index.html")
 
     app.include_router(health.router)
+    app.include_router(metrics.router)
     app.include_router(runs.router)
     app.include_router(events.router)
     app.include_router(control.router)

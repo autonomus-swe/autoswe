@@ -23,6 +23,7 @@ from docker.types import Mount
 
 from contracts import ExecResult
 from core.errors import SandboxError
+from observability import metrics
 from observability.logging import get_logger
 from observability.tracing import annotate, trace_span
 from sandbox.base import cap_output
@@ -265,6 +266,7 @@ class DockerSandbox:
         stdout, t1 = cap_output(out, max_output_bytes)
         stderr, t2 = cap_output(err, max_output_bytes)
         annotate(exit_code=code, truncated=t1 or t2, timed_out=code == EXIT_TIMEOUT)
+        metrics.record_sandbox_exec(duration_ms / 1000)
         return ExecResult(
             exit_code=code,
             stdout=stdout,

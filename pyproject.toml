@@ -17,6 +17,9 @@ dependencies = [
   # OTLP over HTTP rather than gRPC: it is the protocol every collector accepts, and it is
   # what Langfuse's OTLP endpoint speaks, which is how traces reach it without a second SDK.
   "opentelemetry-exporter-otlp-proto-http>=1.27",
+  # Prometheus counters and histograms. In the base dependencies rather than an extra
+  # because both the API and the worker expose an endpoint, and they share nothing else.
+  "prometheus-client>=0.20",
   "orjson>=3.10",
   "typer>=0.12",
 ]

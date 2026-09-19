@@ -28,8 +28,3 @@ async def healthz(request: Request, response: Response) -> dict[str, Any]:
     ok = all(v == "ok" for v in checks.values())
     response.status_code = status.HTTP_200_OK if ok else status.HTTP_503_SERVICE_UNAVAILABLE
     return {"status": "ok" if ok else "degraded", "checks": checks}
-
-
-@router.get("/metrics")
-async def metrics() -> dict[str, str]:
-    return {"detail": "prometheus metrics arrive in Phase 5"}
