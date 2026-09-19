@@ -71,6 +71,11 @@ class RunState(StateModel):
     test_command: str = DEFAULT_TEST_COMMAND
 
     facts: RepoFacts | None = None
+    # The container image this run was given, decided once in SETUP from the detected
+    # facts. Checkpointed rather than re-derived so a resume gets the toolchain its first
+    # attempt got — retries cross deploys, and a change to the mapping in between would
+    # otherwise swap the toolchain under a half-finished run.
+    sandbox_image: str | None = None
     repo: RepoProfile | None = None
     plan: ImplementationPlan | None = None
     answers: list[tuple[str, str]] = Field(default_factory=list)

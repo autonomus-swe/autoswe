@@ -13,6 +13,10 @@ TRUNCATION_MARKER = "\n…[truncated {n} bytes]…\n"
 class Sandbox(Protocol):
     id: str
     workspace: Path  # host path bind-mounted at /workspace
+    # What this container is actually running. Read back rather than assumed: the factory
+    # may have fallen back to the default when the chosen image was not built here, and a
+    # run that pins the image it *asked* for would resume into the same failure.
+    image: str
 
     async def start(self) -> None: ...
 
@@ -38,6 +42,16 @@ class Sandbox(Protocol):
         ...
 
     async def connect_install_network(self) -> None: ...
+
+    async def set_cpus(self, cpus: float) -> None:
+        """Change the CPU allowance of a running container.
+
+        On the protocol because the orchestrator raises it for a compiling install and
+        lowers it afterwards, and it holds a `Sandbox` rather than a `DockerSandbox`.
+        Implementations that have no such dial may do nothing — a sandbox that cannot be
+        throttled is not a sandbox that has failed.
+        """
+        ...
 
     async def disconnect_network(self) -> None: ...
 

@@ -52,6 +52,7 @@ from repo.gitcmd import git
 from repo.github import gitleaks_gate, open_pr, push_branch
 from repo.repomap import render_map
 from repo.worktree import Worktree
+from sandbox import select
 from sandbox.base import Sandbox
 from storage import repo as db
 from storage.db import session
@@ -154,13 +155,33 @@ async def setup_node(state: RunState, deps: Deps, res: RunResources) -> RunState
     state.base_sha = await resolve_sha(bare, state.base_branch)
     res.worktree = await wt.create(bare, deps.worktrees_dir(), state.run_id, state.base_branch)
 
-    sandbox = deps.sandbox_factory(state.run_id, res.worktree.path)
-    res.sandbox = sandbox
-    await sandbox.start()
-
-    # deterministic facts first: SETUP uses the detected install command, and ANALYZE
-    # gets them as context rather than re-deriving what a file read can settle
+    # Deterministic facts first: SETUP uses the detected install command, ANALYZE gets them
+    # as context rather than re-deriving what a file read can settle, and — since this
+    # step — the *container itself* is chosen from them. `collect` is a host-side walk of a
+    # worktree that already exists; it needs no sandbox, so the only thing that ever kept
+    # it below this line was the order it was written in.
     state.facts = repo_profile.collect(res.worktree.path)
+    # Pinned on the state, not re-derived later. A resumed run must get the image its first
+    # attempt got: retries cross deploys, and re-deciding would let a change to the mapping
+    # swap the toolchain under a half-finished run.
+    sandbox = deps.sandbox_factory(state.run_id, res.worktree.path, state.facts)
+    res.sandbox = sandbox
+    # Read back rather than predicted: the factory falls back to the default image when the
+    # chosen one was never built on this host, and pinning what we *asked* for would make
+    # every resume repeat the same failure.
+    state.sandbox_image = sandbox.image
+    limits = select.limits_for(state.facts, sandbox.image)
+    # Before `start`, not after: starting is the step that fails when an image is missing
+    # or the daemon is unhappy, and the first question then is which image it was.
+    log.info(
+        "sandbox_selected",
+        image=state.sandbox_image,
+        package_manager=state.facts.package_manager,
+        files=state.facts.file_count,
+        mem_limit=limits.mem_limit,
+        tmpfs=limits.tmpfs_size,
+    )
+    await sandbox.start()
 
     # The symbol index, host-side and before the sandbox needs to exist: it reads files and
     # writes rows and wants a container for neither. Keyed by the base SHA, so a second run
@@ -181,9 +202,21 @@ async def setup_node(state: RunState, deps: Deps, res: RunResources) -> RunState
     res.embedding_task = asyncio.create_task(
         _index_embeddings(deps, res.worktree.path, state.base_sha or "HEAD")
     )
+    # The install is the only CPU-bound part of a run — a Go build, a node-gyp build — and
+    # it is also the only part with a network. Everything after is mostly waiting on a
+    # model, so the extra cores are handed back rather than held for the whole run.
     await sandbox.connect_install_network()
+    if limits.raises_cpus_to_install:
+        await sandbox.set_cpus(limits.install_cpus)
     install = install_command(res.worktree.path, state.facts)
-    result = await sandbox.exec(install, timeout_s=INSTALL_TIMEOUT_S)
+    try:
+        result = await sandbox.exec(install, timeout_s=INSTALL_TIMEOUT_S)
+    finally:
+        # In a `finally` because `exec` raises on a hung command or a container that went
+        # away, and an install that died holding four cores would keep them for the rest
+        # of the run — on a worker running two jobs, that is the other run's share.
+        if limits.raises_cpus_to_install:
+            await sandbox.set_cpus(limits.cpus)
     if not result.ok:
         # Not fatal on its own: the repo may vendor its dependencies. TEST will say so
         # clearly if the suite cannot run, and the output is on the step for diagnosis.

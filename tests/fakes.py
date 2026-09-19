@@ -45,6 +45,8 @@ class FakeSandbox:
         self.started = False
         self.stopped = False
         self.killed = False
+        self.cpus: list[float] = []
+        self.image = "fake-sandbox:test"
 
     async def start(self) -> None:
         self.started = True
@@ -66,6 +68,9 @@ class FakeSandbox:
 
     async def connect_install_network(self) -> None:
         self.networked = True
+
+    async def set_cpus(self, cpus: float) -> None:
+        self.cpus.append(cpus)
 
     async def disconnect_network(self) -> None:
         self.networked = False
