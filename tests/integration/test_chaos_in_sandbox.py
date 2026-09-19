@@ -32,10 +32,10 @@ from contracts import TestReport
 from orchestrator.nodes import install_command
 from repo import profile as repo_profile
 from repo.gitcmd import git
+from repo.stacks import PYTHON
 from sandbox.docker import DockerSandbox
 from tests.e2e.chaos import materialise
 from tools.test_report import parse_json_report
-from tools.tests import REPORT_REL
 from tools.tests import test_command as build_test_command
 
 pytestmark = pytest.mark.integration
@@ -95,9 +95,9 @@ async def installed(host_tmp: Path) -> AsyncIterator[tuple[DockerSandbox, Path]]
 
 async def run_branch(sandbox: DockerSandbox, root: Path, branch: str) -> TestReport:
     await git("checkout", "-q", branch, cwd=root)
-    (root / REPORT_REL).unlink(missing_ok=True)
+    (root / PYTHON.report_rel).unlink(missing_ok=True)
     await sandbox.exec(build_test_command(TEST_COMMAND, ""), timeout_s=600)
-    report_file = root / REPORT_REL
+    report_file = root / PYTHON.report_rel
     assert report_file.is_file(), f"{branch} produced no report"
     return parse_json_report(json.loads(report_file.read_text()), TEST_COMMAND, worktree=root)
 

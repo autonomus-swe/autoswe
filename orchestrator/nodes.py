@@ -44,7 +44,7 @@ from orchestrator.events import emit
 from orchestrator.hooks import OrchestratorHooks
 from orchestrator.state import Phase, RunState
 from orchestrator.transition import MAX_DEBUG_ATTEMPTS
-from repo import diff, embeddings, graph, pr_body, repomap, symbols
+from repo import diff, embeddings, graph, pr_body, repomap, stacks, symbols
 from repo import profile as repo_profile
 from repo import worktree as wt
 from repo.clone import ensure_bare_clone, repo_key, resolve_sha
@@ -103,7 +103,6 @@ async def _renew_forever(deps: Deps, key: str, owner: str) -> None:
 
 # run_tests needs these in the *project* venv: `uv run --no-sync pytest` ignores anything
 # installed globally in the image, so they are installed while the network is still up.
-HARNESS_PACKAGES = "pytest pytest-json-report pytest-timeout"
 
 
 def install_command(worktree: Path, facts: RepoFacts | None = None) -> str:
@@ -113,15 +112,24 @@ def install_command(worktree: Path, facts: RepoFacts | None = None) -> str:
     a repository with no recognised manifest working.
     """
     detected = facts.install_command if facts else None
+    stack = stacks.stack_for(facts)
     if detected:
         deps = f"({detected})"
+    elif stack is not stacks.PYTHON:
+        # A recognised non-Python stack with nothing detected. `uv venv` here would create
+        # a Python virtualenv in a Go checkout and then fail to install pytest into it.
+        deps = "true"
     elif (worktree / "pyproject.toml").is_file():
         deps = "(uv sync --all-extras || uv sync)"
     elif (worktree / "requirements.txt").is_file():
         deps = "uv venv && uv pip install -r requirements.txt"
     else:
         deps = "uv venv"
-    return f"{deps} && uv pip install {HARNESS_PACKAGES}"
+    # The harness install is the stack's, and for Node and Go it is empty — node 20 ships
+    # its own test runner and JUnit reporter, and `gotestsum` is baked into the image. This
+    # used to append `uv pip install pytest …` unconditionally, so a Node repository was
+    # given a Node container and then told to install pytest into it.
+    return f"{deps} && {stack.harness_install}" if stack.harness_install else deps
 
 
 MAX_CODER_FILES = 6
@@ -389,6 +397,7 @@ def _run_context(
         work_branch=state.work_branch,
         base_sha=state.base_sha or "HEAD",
         test_command=state.test_command,
+        stack=stacks.stack_for(state.facts).name,
         view_hashes=res.view_hashes,
     )
 
@@ -474,7 +483,12 @@ async def analyze_node(state: RunState, deps: Deps, res: RunResources) -> RunSta
             deps.provider, ctx, state.goal, facts, repo_map, hooks
         )
         state.repo = profile
-        state.test_command = profile.test_command
+        stack = stacks.stack_for(state.facts)
+        # For Python the repository's own command is authoritative — it carries `uv run`,
+        # a plugin, whatever the project needs. For Node and Go the harness runs its own
+        # runner to get a report it can parse, so the model's answer here would be
+        # discarded anyway; taking the stack's is the honest version of that.
+        state.test_command = profile.test_command if stack is stacks.PYTHON else stack.fallback_test
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
         raise

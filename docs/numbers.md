@@ -48,7 +48,7 @@ Audited by agents told to disprove each one, not to confirm it.
 | Compaction blocks preserved (`provider.compacted`) | **not met** — needs the Anthropic provider |
 | Budget downgrade table | **partly** — table correct, no second tier to downgrade *to* |
 | OTel spans and `/metrics` | **met** |
-| Node/Go repos end to end; egress allow/deny | **partly** — egress met, stacks not |
+| Node/Go repos end to end; egress allow/deny | **met** — both halves, tested in the real images |
 | Scale run, PR opened, under $5 | **not met** — needs quota |
 
 ### Indexing: partly

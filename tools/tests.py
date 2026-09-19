@@ -8,16 +8,22 @@ from pathlib import Path
 from typing import Any
 
 from contracts import ToolResult
+from repo import stacks
 from tools.base import BaseTool, RunContext, schema
+from tools.junit import parse_junit
 from tools.test_report import environment_report, parse_json_report, summarize
 
-REPORT_REL = ".autoswe/report.json"
 TIMEOUT_S = 600
 
 
-def test_command(base: str, selector: str) -> str:
-    sel = f" {selector.strip()}" if selector and selector.strip() else ""
-    return f"{base}{sel} --json-report --json-report-file={REPORT_REL} -p no:cacheprovider"
+def test_command(base: str, selector: str, stack: str = "python") -> str:
+    """The repository's test command with a selector and a report destination.
+
+    This used to staple pytest's flags onto whatever it was given, so a Go repository was
+    asked to run `go test ./... --json-report --json-report-file=…`. What a selector means
+    and where the report goes are both properties of the toolchain — see `repo/stacks`.
+    """
+    return stacks.by_name(stack).test_command(base, selector)
 
 
 class RunTestsTool(BaseTool):
@@ -33,8 +39,9 @@ class RunTestsTool(BaseTool):
 
     async def run(self, ctx: RunContext, **kwargs: Any) -> ToolResult:
         selector = str(kwargs.get("selector") or "")
-        cmd = test_command(ctx.test_command, selector)
-        report_path = ctx.worktree / REPORT_REL
+        stack = stacks.by_name(ctx.stack)
+        cmd = test_command(ctx.test_command, selector, ctx.stack)
+        report_path = ctx.worktree / stack.report_rel
 
         def _prepare() -> None:
             report_path.parent.mkdir(exist_ok=True)
@@ -45,9 +52,12 @@ class RunTestsTool(BaseTool):
         output = (res.stdout + "\n" + res.stderr).strip()
         report = None
         if await asyncio.to_thread(report_path.is_file):
+            raw = await asyncio.to_thread(report_path.read_text)
             try:
-                data = json.loads(await asyncio.to_thread(report_path.read_text))
-                report = parse_json_report(data, cmd, output, worktree=ctx.worktree)
+                if stack.report_format == "junit":
+                    report = parse_junit(raw, cmd, output, worktree=ctx.worktree)
+                else:
+                    report = parse_json_report(json.loads(raw), cmd, output, worktree=ctx.worktree)
             except (json.JSONDecodeError, ValueError):
                 report = None
         if report is None:
@@ -61,5 +71,5 @@ class RunTestsTool(BaseTool):
         )
 
 
-def report_path(worktree: Path) -> Path:
-    return worktree / REPORT_REL
+def report_path(worktree: Path, stack: str = "python") -> Path:
+    return worktree / stacks.by_name(stack).report_rel

@@ -22,6 +22,10 @@ class RunContext:
     work_branch: str
     base_sha: str
     test_command: str
+    # Which toolchain this repository uses, by name — see `repo/stacks`. A name rather than
+    # the object because the context is rebuilt per step and a string is the thing that
+    # survives being written down.
+    stack: str = "python"
     bus: RedisBus | None = None
     # The database, for tools that read an index built earlier in the run. `None` in unit
     # tests and wherever a tool needs no index — `search_code` falls back to text search.

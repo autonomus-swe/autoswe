@@ -62,19 +62,23 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
 - [x] One OpenTelemetry trace per run with phase, step, llm_call, tool_call and sandbox_exec spans; `/metrics` exposes the §4.10 metrics.
       All five spans exist and nest; all seven metrics named in ARCHITECTURE §4.10 are
       present and served.
-- [~] Node and Go fixture repositories run end to end in their images; installs go through the egress proxy and are denied for a non-allow-listed host.
-      **The egress half is met** and tested against a real proxy. **The stacks half is
-      not**: no Node or Go fixture repositories exist, and `install_command` and
-      `test_command` emit Python-only commands, so a non-Python repository cannot complete
-      a run whatever image it is given. The images are built and verified; the pipeline
-      around them is not.
+- [x] Node and Go fixture repositories run end to end in their images; installs go through the egress proxy and are denied for a non-allow-listed host.
+      Both halves met. `repo/stacks.py` makes the install, the test command and the report
+      format properties of the toolchain rather than assumptions about Python, and
+      `tests/integration/test_stacks.py` drives a real Node and a real Go fixture through
+      a real image — install, test, parse — and then breaks the *source* of each and
+      asserts the failure comes back with a file and a line the Debugger can act on.
 - [ ] Scale run: PR opened on the 3 000-file repo, total cost under $5, numbers recorded.
       The host-side numbers are recorded. The run needs quota.
 - [ ] Tag `v0.5.0`.
 
-**Not a pass.** Three criteria are blocked on model quota, one on a provider deferred to
-Phase 6, and one — the Node/Go pipeline — is genuine unfinished work rather than an
-external dependency. The tag is the maintainer's call with that in view.
+**Not a pass, but everything within reach is done.** Three criteria are blocked on model
+quota — $10 of OpenRouter credit is the whole dependency — and one on the Anthropic
+provider deferred to Phase 6. Nothing remains that does not need one of those two things.
+
+The indexing criterion stays partial on a technicality worth keeping visible: the largest
+repository measured is 2 122 files, so "under 60 s at 3 000" is an extrapolation from a
+stable rate rather than a measurement.
 
 
 ---

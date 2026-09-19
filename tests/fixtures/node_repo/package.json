@@ -1,0 +1,16 @@
+{
+  "name": "node-fixture",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tiny Node fixture repository used by autoswe's sandbox tests.",
+  "type": "module",
+  "main": "src/ops.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

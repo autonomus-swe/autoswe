@@ -19,7 +19,6 @@ from contracts import (
     TestReport,
 )
 from orchestrator.nodes import (
-    HARNESS_PACKAGES,
     NODES,
     RunResources,
     install_command,
@@ -28,6 +27,7 @@ from orchestrator.nodes import (
 )
 from orchestrator.state import TERMINAL, Phase, RunState, status_for
 from orchestrator.transition import transition
+from repo.stacks import PYTHON
 from tests.fakes import FakeSandbox
 
 pytestmark = pytest.mark.unit
@@ -176,7 +176,7 @@ def test_install_command_prefers_the_detected_facts(tmp_path: Path) -> None:
     facts = RepoFacts(install_command="poetry install", package_manager="poetry")
     cmd = install_command(tmp_path, facts)
     assert cmd.startswith("(poetry install)")
-    assert cmd.endswith("uv pip install " + HARNESS_PACKAGES)
+    assert cmd.endswith(PYTHON.harness_install)
 
     # no facts, or facts without a command, falls back to inspecting the tree
     assert install_command(tmp_path, RepoFacts()).startswith("(uv sync")
@@ -187,7 +187,7 @@ def test_install_command_matches_the_manifest_and_always_adds_the_harness(
     tmp_path: Path,
 ) -> None:
     # run_tests needs pytest-json-report inside the project venv, whatever the repo uses
-    assert install_command(tmp_path) == "uv venv && uv pip install " + HARNESS_PACKAGES
+    assert install_command(tmp_path) == "uv venv && " + PYTHON.harness_install
     (tmp_path / "requirements.txt").write_text("pytest\n")
     with_reqs = install_command(tmp_path)
     assert with_reqs.startswith("uv venv && uv pip install -r requirements.txt")
@@ -195,7 +195,7 @@ def test_install_command_matches_the_manifest_and_always_adds_the_harness(
     with_project = install_command(tmp_path)
     assert with_project.startswith("(uv sync --all-extras || uv sync)")
     for cmd in (with_reqs, with_project):
-        assert cmd.endswith("uv pip install " + HARNESS_PACKAGES)
+        assert cmd.endswith(PYTHON.harness_install)
 
 
 def test_synthetic_task_carries_the_goal() -> None:
