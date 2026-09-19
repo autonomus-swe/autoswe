@@ -10,6 +10,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, ClassVar
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -27,6 +28,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+# Must match `repo.embeddings.DIMENSIONS`. Named here rather than imported because
+# `storage` sits below `repo` and the column width is a schema fact, not a model choice.
+EMBEDDING_DIMENSIONS = 1024
 
 
 class Base(DeclarativeBase):
@@ -228,6 +233,43 @@ class RepoSymbolRow(Base):
     created_at: Mapped[datetime] = _created_at()
 
 
+class RepoEmbeddingRow(Base):
+    """One embedded chunk of one file, at one repository SHA.
+
+    Keyed by SHA for the same reason `repo_symbols` is: the embedding describes a commit,
+    so two runs against the same base share it and re-indexing is free.
+
+    `text` is stored beside the vector because a search result has to show something a
+    reader recognises, and re-reading the file to reconstruct the chunk would mean the
+    index stops working the moment the worktree is gone.
+    """
+
+    __tablename__ = "repo_embeddings"
+    # The HNSW index is declared here and not only in the migration: `compare_metadata`
+    # reads the models, so an index the migration creates in raw SQL reads as drift and
+    # the next autogenerate proposes dropping it. Caught by
+    # `test_handwritten_migration_matches_models`.
+    __table_args__ = (
+        Index("ix_repo_embeddings_sha", "repo_sha"),
+        Index(
+            "ix_repo_embeddings_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    repo_sha: Mapped[str] = mapped_column(Text, nullable=False)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    chunk_id: Mapped[str] = mapped_column(Text, nullable=False)
+    start_line: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    embedding: Mapped[Any] = mapped_column(Vector(EMBEDDING_DIMENSIONS), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+
+
 CORE_TABLES: tuple[str, ...] = (
     "runs",
     "tasks",
@@ -238,4 +280,5 @@ CORE_TABLES: tuple[str, ...] = (
     "events",
     "artifacts",
     "repo_symbols",
+    "repo_embeddings",
 )

@@ -23,6 +23,9 @@ class RunContext:
     base_sha: str
     test_command: str
     bus: RedisBus | None = None
+    # The database, for tools that read an index built earlier in the run. `None` in unit
+    # tests and wherever a tool needs no index — `search_code` falls back to text search.
+    engine: Any = None
     view_hashes: dict[str, str] = field(default_factory=dict)  # editor staleness (path -> sha256)
     submitted: dict[str, Any] = field(default_factory=dict)  # payloads from submit_* tools
     # Answers a human gave to `ask_user`, keyed by question. `before_tool` can only

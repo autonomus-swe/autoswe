@@ -361,7 +361,9 @@ def node_io(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyPat
     monkeypatch.setattr(
         nodes,
         "_run_context",
-        lambda state, res, step_id, role: make_ctx(tmp_path, FakeSandbox(tmp_path), role=role),
+        lambda state, res, step_id, role, engine=None: make_ctx(
+            tmp_path, FakeSandbox(tmp_path), role=role, engine=engine
+        ),
     )
     return monkeypatch
 
