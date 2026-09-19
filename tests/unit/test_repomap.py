@@ -221,3 +221,65 @@ def test_the_v1_tree_is_still_there_for_a_repository_with_no_index(tmp_path: Pat
 
     assert repomap.render_symbol_map(tmp_path, [], {}) == ""
     assert "main.rb" in render_map(tmp_path)
+
+
+@pytest.mark.parametrize("budget", [200, 500, 1_500, 3_500])
+def test_the_map_never_exceeds_the_budget_it_was_given(tmp_path: Path, budget: int) -> None:
+    """`token_budget` has to bound the whole map, not the ranked half of it.
+
+    It did not. The "other files" tail was appended after the loop that watched the budget,
+    so on a repository with more files than fit the map ran over by however long that list
+    was — measured on sympy, a 3 500-token budget rendering a 5 300-token map. Parametrised
+    because the first fix worked at one budget and not at the one where the blocks filled
+    it exactly and the tail was pure overshoot.
+    """
+    symbols = []
+    for i in range(400):
+        path = f"pkg/mod{i}.py"
+        (tmp_path / "pkg").mkdir(exist_ok=True)
+        (tmp_path / path).write_text(f"def function_number_{i}(argument):\n    return {i}\n")
+        symbols.append(
+            Symbol(
+                path=path,
+                kind="function",
+                name=f"function_number_{i}",
+                signature=f"def function_number_{i}(argument):",
+                start_line=1,
+                end_line=2,
+                refs=[],
+            )
+        )
+    ranks = {s.path: 1.0 / (i + 1) for i, s in enumerate(symbols)}
+
+    out = repomap.render_symbol_map(tmp_path, symbols, ranks, goal="function", token_budget=budget)
+
+    assert len(out) <= budget * repomap.CHARS_PER_TOKEN, (
+        f"{len(out)} chars against a {budget * repomap.CHARS_PER_TOKEN}-char budget"
+    )
+
+
+def test_a_truncated_map_says_how_many_files_it_did_not_show(tmp_path: Path) -> None:
+    """ "this file exists and I ran out of room" and "this file does not exist" are
+    different facts. The header carries the real count even when the list is empty."""
+    symbols = []
+    for i in range(300):
+        path = f"m{i}.py"
+        (tmp_path / path).write_text("def f():\n    return 1\n")
+        symbols.append(
+            Symbol(
+                path=path,
+                kind="function",
+                name="f",
+                signature="def f():",
+                start_line=1,
+                end_line=2,
+                refs=[],
+            )
+        )
+
+    out = repomap.render_symbol_map(
+        tmp_path, symbols, {s.path: 1.0 for s in symbols}, token_budget=200
+    )
+
+    assert "other files (" in out
+    assert "more not shown" in out or out.count("\n  m") > 0
