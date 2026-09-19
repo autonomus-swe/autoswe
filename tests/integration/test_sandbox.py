@@ -245,3 +245,40 @@ async def test_a_limit_change_on_a_container_that_is_gone_does_not_raise(
     await sb.stop(remove=True)
 
     await sb.set_cpus(2.0)  # must not raise
+
+
+# ---- the toolchain actually works ---------------------------------------------------------
+
+
+@requires_docker
+async def test_git_can_clone_inside_the_sandbox(box: DockerSandbox) -> None:
+    """The agent's `git_*` tools shell out to this git, and a Go module resolved by VCS
+    path or a `pip install` from a git URL runs a clone inside the container.
+
+    This exists because that was broken and nothing noticed. An image built from a base
+    layer cached long enough carried libpcre2 10.42-1 rather than 10.42-1+deb12u1, and
+    `git clone` died with `fatal: fetch-pack: invalid index-pack output` — index-pack
+    segfaulting inside a library git links. The message names neither the library nor the
+    stale image, and every other sandbox test passed.
+
+    Cloned over `file://` from a repository in the workspace, so this needs no network and
+    still takes the pack transport that `--local` would skip — verified to fail on the
+    broken image and pass on a rebuilt one.
+    """
+    origin = box.workspace / "origin"
+    origin.mkdir()
+    for i in range(40):
+        (origin / f"m{i}.py").write_text(f"def f{i}():\n    return {i}\n")
+
+    setup = await box.exec(
+        "mkdir -p /tmp/home && git config --global --add safe.directory '*' && "
+        "cd /workspace/origin && git init -q . && git config user.email t@t && "
+        "git config user.name t && git add -A && git commit -qm init && echo ready"
+    )
+    assert "ready" in setup.stdout, setup.stderr
+
+    cloned = await box.exec(
+        "cd /tmp && rm -rf c && git clone file:///workspace/origin c 2>&1 | tail -2; ls c | wc -l"
+    )
+
+    assert cloned.stdout.strip().splitlines()[-1] == "40", cloned.stdout
