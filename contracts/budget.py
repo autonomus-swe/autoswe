@@ -76,6 +76,19 @@ class Usage(StateModel):
         )
 
     @property
+    def cache_hit_rate(self) -> float:
+        """How much of what the model read came from cache.
+
+        Against `input + cache_read` rather than `total_tokens`: output tokens were never
+        candidates for a cache hit, so counting them would make a long answer look like a
+        caching failure. Cache *writes* are excluded for the same reason from the
+        denominator — a write is the price of the next call's read, and it is charged
+        separately.
+        """
+        read = self.input_tokens + self.cache_read_tokens
+        return self.cache_read_tokens / read if read else 0.0
+
+    @property
     def total_tokens(self) -> int:
         return (
             self.input_tokens

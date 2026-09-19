@@ -198,9 +198,26 @@ class OrchestratorHooks:
         if self.budget is not None:
             # After the row is written, so the reconciliation it may trigger sees this turn.
             await self.budget.on_turn()
+        # Per call, because a cache miss is invisible in the output and shows up only on
+        # the bill: a prefix that stopped matching looks exactly like one that never did.
+        log.info(
+            "llm_call",
+            role=self.role,
+            model=self.model,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            cache_hit_rate=round(usage.cache_hit_rate, 3),
+            latency_ms=latency_ms,
+        )
         if self.bus is not None:
             await self.bus.emit(
                 self.run_id,
                 "agent_text",
-                {"tokens": usage.total_tokens, "cost_usd": usage.cost_usd},
+                {
+                    "tokens": usage.total_tokens,
+                    "cost_usd": usage.cost_usd,
+                    "cache_hit_rate": round(usage.cache_hit_rate, 3),
+                },
             )

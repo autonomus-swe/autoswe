@@ -15,7 +15,11 @@ from tools.base import BaseTool, RunContext
 @dataclass
 class Request:
     role: str  # ROUTES key
-    system: str
+    system: str  # the role prompt: static per role, and kept that way — see gateway/caching
+    # Repository facts, conventions and map: fixed for a whole run, so it sits in the
+    # cached prefix rather than in the messages, where it would be re-sent uncached on
+    # every call of every step.
+    run_block: str | None = None
     messages: list[dict[str, Any]] = field(default_factory=list)  # chat messages after system
     max_tokens: int = 16_000
     max_iterations: int = 60

@@ -138,7 +138,6 @@ class DebuggerAgent(Agent):
             hooks,
             extra_tools=[hypothesis_tool, result_tool],
             must_call=result_tool.name,
-            test_command=ctx.test_command,
         )
         hypothesis = ctx.submitted.get(HYPOTHESIS_KEY)
         if not isinstance(hypothesis, DebugHypothesis):

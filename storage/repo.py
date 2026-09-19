@@ -311,6 +311,45 @@ async def run_cost(s: AsyncSession, run_id: uuid.UUID) -> Usage:
     )
 
 
+async def step_costs(s: AsyncSession, run_id: uuid.UUID) -> list[tuple[str, str, Usage]]:
+    """`(agent, phase, usage)` per step, oldest first.
+
+    The per-step view of what `run_cost` totals. Cache hit rate is read off the `Usage`
+    rather than stored: it is a ratio of two columns already in `llm_calls`, and a stored
+    ratio is a number that can disagree with the rows it came from.
+    """
+    stmt = (
+        select(
+            StepRow.agent,
+            StepRow.phase,
+            func.coalesce(func.sum(LLMCallRow.input_tokens), 0),
+            func.coalesce(func.sum(LLMCallRow.output_tokens), 0),
+            func.coalesce(func.sum(LLMCallRow.cache_read_tokens), 0),
+            func.coalesce(func.sum(LLMCallRow.cache_write_tokens), 0),
+            func.coalesce(func.sum(LLMCallRow.cost_usd), 0),
+        )
+        .select_from(StepRow)
+        .join(LLMCallRow, LLMCallRow.step_id == StepRow.id)
+        .where(StepRow.run_id == run_id)
+        .group_by(StepRow.id, StepRow.agent, StepRow.phase, StepRow.started_at)
+        .order_by(StepRow.started_at)
+    )
+    return [
+        (
+            str(agent),
+            str(phase),
+            Usage(
+                input_tokens=int(inp),
+                output_tokens=int(out),
+                cache_read_tokens=int(cr),
+                cache_write_tokens=int(cw),
+                cost_usd=float(cost),
+            ),
+        )
+        for agent, phase, inp, out, cr, cw, cost in (await s.execute(stmt)).all()
+    ]
+
+
 # ---- checkpoints / events / artifacts ---------------------------------------
 
 
