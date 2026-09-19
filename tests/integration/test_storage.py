@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from pathlib import Path
 
 import pytest
 from alembic.autogenerate import compare_metadata
@@ -309,3 +310,51 @@ async def test_a_refund_does_not_move_the_live_cost(db: AsyncSession) -> None:
     row = await repo.get_run(db, run_id)
 
     assert row is not None and float(row.cost_usd) == pytest.approx(1.0)
+
+
+async def test_a_second_index_pass_on_the_same_sha_does_no_work(
+    engine: AsyncEngine, db: AsyncSession, host_tmp: Path
+) -> None:
+    """The reuse check in `index_repo`, not just the predicate it calls.
+
+    The test above is named for this and does not do it: it exercises
+    `symbols_indexed` directly, so deleting the `if` in `index_repo` leaves it green —
+    mutation-checked. The skip is what makes indexing a large repository affordable on
+    every run, and `repo_symbols` has no unique constraint, so a regression silently
+    doubles the table rather than failing.
+    """
+    from repo import symbols as sym
+
+    tree = host_tmp / "tree"
+    tree.mkdir()
+    for i in range(5):
+        (tree / f"m{i}.py").write_text(f"def f{i}():\n    return {i}\n")
+    sha = "c" * 40
+
+    first = await sym.index_repo(engine, tree, sha)
+    rows_after_first = len(await repo.symbols_for_sha(db, sha))
+    second = await sym.index_repo(engine, tree, sha)
+    rows_after_second = len(await repo.symbols_for_sha(db, sha))
+
+    assert first.skipped == 0 and first.symbols == 5
+    assert second.skipped == 1, "the second pass re-parsed the tree"
+    assert second.symbols == 0
+    assert rows_after_second == rows_after_first > 0, "the second pass duplicated rows"
+
+
+async def test_a_different_sha_is_indexed_again(
+    engine: AsyncEngine, db: AsyncSession, host_tmp: Path
+) -> None:
+    """The control. Without it the test above passes against an `index_repo` that never
+    indexes anything at all."""
+    from repo import symbols as sym
+
+    tree = host_tmp / "tree2"
+    tree.mkdir()
+    (tree / "a.py").write_text("def a():\n    return 1\n")
+
+    await sym.index_repo(engine, tree, "d" * 40)
+    other = await sym.index_repo(engine, tree, "e" * 40)
+
+    assert other.skipped == 0 and other.symbols == 1
+    assert len(await repo.symbols_for_sha(db, "e" * 40)) == 1

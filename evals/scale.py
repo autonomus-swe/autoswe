@@ -63,7 +63,7 @@ class ScaleRow:
 
 def _tokens(text: str) -> int:
     """The same divisor the map's own budget uses, so the number means the same thing."""
-    return len(text) // repomap.CHARS_PER_TOKEN
+    return int(len(text) / repomap.CHARS_PER_TOKEN)
 
 
 def _count_files(root: Path) -> int:

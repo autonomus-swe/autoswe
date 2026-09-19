@@ -50,7 +50,10 @@ MAX_ITERATIONS = 40
 MAX_CANDIDATES = 40
 # Rough characters-per-token. Used only to decide when to split the pre-pass by file, so
 # being off by a third costs one extra request rather than a wrong answer.
-CHARS_PER_TOKEN = 4
+# Characters per token, calibrated against a BPE tokenizer on real code — see
+# `repo/repomap.CHARS_PER_TOKEN` for the measurement. It was 4, which is the prose figure
+# and overestimates code by a third.
+CHARS_PER_TOKEN = 2.6
 PRE_PASS_TOKEN_BUDGET = 60_000
 
 
@@ -101,7 +104,7 @@ def group_for_budget(files: list[diffmod.FileDiff]) -> list[list[diffmod.FileDif
     anything. Grouped by file so no file is ever cut in half — a half-read function invites
     exactly the confident wrong finding this design is trying to avoid.
     """
-    budget = PRE_PASS_TOKEN_BUDGET * CHARS_PER_TOKEN
+    budget = int(PRE_PASS_TOKEN_BUDGET * CHARS_PER_TOKEN)
     groups: list[list[diffmod.FileDiff]] = [[]]
     size = 0
     for f in files:
