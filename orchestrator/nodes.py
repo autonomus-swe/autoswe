@@ -41,7 +41,7 @@ from orchestrator.events import emit
 from orchestrator.hooks import OrchestratorHooks
 from orchestrator.state import Phase, RunState
 from orchestrator.transition import MAX_DEBUG_ATTEMPTS
-from repo import diff, graph, pr_body, repomap, symbols
+from repo import diff, embeddings, graph, pr_body, repomap, symbols
 from repo import profile as repo_profile
 from repo import worktree as wt
 from repo.clone import ensure_bare_clone, repo_key, resolve_sha
@@ -74,6 +74,9 @@ class RunResources:
     lock_key: str | None = None
     lock_owner: str | None = None
     renewer: asyncio.Task[None] | None = None
+    # The embedding pass, which runs while ANALYZE and PLAN do. Held so teardown can
+    # cancel it rather than leaving it writing rows after the run is over.
+    embedding_task: asyncio.Task[None] | None = None
     view_hashes: dict[str, str] = field(default_factory=dict)
 
 
@@ -161,6 +164,16 @@ async def setup_node(state: RunState, deps: Deps, res: RunResources) -> RunState
         await symbols.index_repo(deps.engine, res.worktree.path, state.base_sha or "HEAD")
     except Exception as e:
         log.warning("symbol_index_failed", error=f"{type(e).__name__}: {e}")
+
+    # Embeddings, in the background. The phase document says ANALYZE and PLAN must not wait
+    # for it, and they do not: the task is left running and whoever calls `search_code`
+    # first either finds an index or is told there is none and gets text search instead.
+    #
+    # Held on `res` so teardown can cancel it. A task nobody holds is a task that outlives
+    # the run and writes rows for a commit nothing is working on any more.
+    res.embedding_task = asyncio.create_task(
+        _index_embeddings(deps, res.worktree.path, state.base_sha or "HEAD")
+    )
     await sandbox.connect_install_network()
     install = install_command(res.worktree.path, state.facts)
     result = await sandbox.exec(install, timeout_s=INSTALL_TIMEOUT_S)
@@ -179,6 +192,36 @@ async def setup_node(state: RunState, deps: Deps, res: RunResources) -> RunState
 
     await _emit(deps, state.run_id, "phase_changed", {"phase": Phase.ANALYZE.value})
     return state
+
+
+async def _index_embeddings(deps: Deps, worktree: Path, repo_sha: str) -> None:
+    """Embed this commit's definitions, off the critical path.
+
+    Reads the symbol index rather than re-parsing — it was just written, by the line above
+    the task that starts this.
+    """
+    try:
+        async with session(deps.engine) as s:
+            rows = await db.symbols_for_sha(s, repo_sha)
+        if not rows:
+            return
+        indexed = [
+            symbols.Symbol(
+                path=r.path,
+                kind=r.kind,
+                name=r.name,
+                signature=r.signature,
+                start_line=r.start_line,
+                end_line=r.end_line,
+                refs=list(r.refs or []),
+            )
+            for r in rows
+        ]
+        await embeddings.index_repo(deps.engine, worktree, repo_sha, indexed)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log.warning("embedding_task_failed", error=f"{type(e).__name__}: {e}")
 
 
 def _approval_gate(state: RunState, deps: Deps, res: RunResources) -> ApprovalGate:
@@ -239,7 +282,7 @@ async def _baseline(state: RunState, deps: Deps, res: RunResources) -> set[str]:
     preview = ""
     error: str | None = None
     try:
-        ctx = _run_context(state, res, step_id, "tester")
+        ctx = _run_context(state, res, step_id, "tester", deps.engine)
         result = await RunTestsTool()(ctx, selector="")
         report = TestReport.model_validate(result.artifact)
         preview = result.content[:2000]
@@ -287,9 +330,12 @@ async def _baseline(state: RunState, deps: Deps, res: RunResources) -> set[str]:
     return set(signatures)
 
 
-def _run_context(state: RunState, res: RunResources, step_id: UUID, role: str) -> RunContext:
+def _run_context(
+    state: RunState, res: RunResources, step_id: UUID, role: str, engine: object = None
+) -> RunContext:
     assert res.sandbox is not None and res.worktree is not None
     return RunContext(
+        engine=engine,
         run_id=state.run_id,
         step_id=step_id,
         role=role,
@@ -484,7 +530,7 @@ async def _begin(
     route = route_for(agent)
     # The context comes first: the hooks hold its `submitted` dict by reference so a gate
     # can see a submission the moment a tool records it, mid-loop.
-    ctx = _run_context(state, res, step_id, agent)
+    ctx = _run_context(state, res, step_id, agent, deps.engine)
     hooks = OrchestratorHooks(
         run_id=state.run_id,
         step_id=step_id,
@@ -594,7 +640,7 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     await _emit(deps, state.run_id, "agent_started", {"agent": "coder", "task_id": task.id})
 
     route = route_for("coder")
-    ctx = _run_context(state, res, step_id, "coder")
+    ctx = _run_context(state, res, step_id, "coder", deps.engine)
     hooks = OrchestratorHooks(
         run_id=state.run_id,
         step_id=step_id,
@@ -702,7 +748,7 @@ async def debug_node(state: RunState, deps: Deps, res: RunResources) -> RunState
     await _emit(deps, state.run_id, "agent_started", {"agent": "debugger", "task_id": task.id})
 
     route = route_for("debugger")
-    ctx = _run_context(state, res, step_id, "debugger")
+    ctx = _run_context(state, res, step_id, "debugger", deps.engine)
     hooks = OrchestratorHooks(
         run_id=state.run_id,
         step_id=step_id,
@@ -989,7 +1035,7 @@ async def test_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
         step_id = await db.start_step(
             s, run_id=state.run_id, task_id=None, agent="tester", phase=Phase.TEST.value
         )
-    ctx = _run_context(state, res, step_id, "tester")
+    ctx = _run_context(state, res, step_id, "tester", deps.engine)
     task = state.task
     selector = task.test_selector if task else ""
     runs: list[_TestRun] = []
@@ -1588,10 +1634,11 @@ NODES: dict[Phase, Node] = {
 
 async def teardown(state: RunState, deps: Deps, res: RunResources) -> None:
     """Always runs. Never raises: a teardown failure must not mask the real error."""
-    if res.renewer is not None:
-        res.renewer.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await res.renewer
+    for task in (res.renewer, res.embedding_task):
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
     if res.sandbox is not None:
         keep = deps.settings.keep_failed_sandbox and state.phase is Phase.FAILED
         with contextlib.suppress(Exception):

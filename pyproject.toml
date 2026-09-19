@@ -30,6 +30,8 @@ worker = [
     # Repo map v2's lexical half. The centrality half is fifteen lines in `repo/graph.py`
     # rather than networkx, whose `pagerank` needs scipy — forty megabytes for one call.
     "rank-bm25>=0.2.2",
+    # pgvector's SQLAlchemy type, so `vector(1024)` round-trips as a list of floats.
+    "pgvector>=0.3",
     # pip-audit queries the advisory database over the network, so it runs on the worker
     # and never in the sandbox. A dependency rather than a binary because the worker runs
     # as a host process in development and in a container in compose, and it has to be

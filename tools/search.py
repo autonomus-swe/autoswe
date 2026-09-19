@@ -112,8 +112,11 @@ def parse_rg_json(stdout: str, max_results: int) -> tuple[list[str], int]:
 class SearchCodeTool(BaseTool):
     name = "search_code"
     description = (
-        "Search the repository with ripgrep. Returns path:line: text entries. Use a regular "
-        "expression, or set fixed_string for a literal. Never searches .git or .venv."
+        "Search the repository. Text mode with ripgrep: pass a `pattern`, a regular "
+        "expression or a literal with fixed_string. Meaning mode: set `semantic` and pass "
+        "a `query` in plain words — 'where is rate limiting handled' finds a TokenBucket "
+        "class in a file that never says 'rate limit'. Pass both to get both. "
+        "Never searches .git or .venv."
     )
     input_schema = schema(
         {
@@ -122,17 +125,72 @@ class SearchCodeTool(BaseTool):
             "max_results": {"type": "integer", "description": "Default 50."},
             "fixed_string": {"type": "boolean", "description": "Treat pattern as a literal."},
             "context": {"type": "integer", "description": "Lines of context, default 0."},
+            "semantic": {
+                "type": "boolean",
+                "description": "Search by meaning over the symbol index rather than by text.",
+            },
+            "query": {
+                "type": "string",
+                "description": "Plain-words question, for semantic mode.",
+            },
         },
-        required=["pattern"],
+        required=[],
     )
     mutating = False
     parallel_safe = True
 
     async def run(self, ctx: RunContext, **kwargs: Any) -> ToolResult:
         pattern = str(kwargs.get("pattern", ""))
-        if not pattern:
-            return ToolResult(content="error: pattern is required", is_error=True)
+        query = str(kwargs.get("query", "")).strip()
+        semantic = bool(kwargs.get("semantic")) or bool(query and not pattern)
         max_results = min(int(kwargs.get("max_results") or 50), HARD_CAP)
+
+        if semantic:
+            found = await self._semantic(ctx, query or pattern, max_results)
+            if found is not None and not pattern:
+                return found
+            if found is not None:
+                # Hybrid: both were asked for and both worked. The text hits follow the
+                # semantic ones rather than being merged, because a line number from
+                # ripgrep and a chunk from an index are different kinds of answer and a
+                # single interleaved list hides which is which.
+                text = await self._text(ctx, pattern, max_results, kwargs)
+                return ToolResult(content=f"{found.content}\n\n{text.content}")
+            if not pattern:
+                # No index, and nothing to fall back to but the words of the question.
+                terms = [w for w in re.split(r"\W+", query) if len(w) > 3][:6]
+                if not terms:
+                    return ToolResult(
+                        content="no semantic index for this commit, and the query has no "
+                        "searchable words — try `pattern` with a regular expression",
+                        is_error=False,
+                    )
+                fallback = await self._text(ctx, "|".join(terms), max_results, {})
+                return ToolResult(
+                    content="no semantic index for this commit; searched the query's words "
+                    f"as text instead\n\n{fallback.content}"
+                )
+
+        if not pattern:
+            return ToolResult(content="error: pattern or query is required", is_error=True)
+        return await self._text(ctx, pattern, max_results, kwargs)
+
+    async def _semantic(self, ctx: RunContext, query: str, limit: int) -> ToolResult | None:
+        """Chunks nearest the query, or None when there is no index to ask."""
+        if ctx.engine is None or not query:
+            return None
+        from repo import embeddings
+
+        hits = await embeddings.search(ctx.engine, ctx.base_sha, query, limit=min(limit, 20))
+        if not hits:
+            return None
+        lines = [f"{len(hits)} chunk(s) by meaning for {query!r}:"]
+        lines.extend(f"{path}:{line}  ({score:.2f})  {first}" for path, line, first, score in hits)
+        return ToolResult(content="\n".join(lines))
+
+    async def _text(
+        self, ctx: RunContext, pattern: str, max_results: int, kwargs: dict[str, Any]
+    ) -> ToolResult:
         rg = ripgrep_path()
         if rg is None:  # ripgrep is a fast path, not a requirement
             hits, omitted = await asyncio.to_thread(

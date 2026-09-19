@@ -18,6 +18,7 @@ from storage.models import (
     CheckpointRow,
     EventRow,
     LLMCallRow,
+    RepoEmbeddingRow,
     RepoSymbolRow,
     RunRow,
     StepRow,
@@ -463,3 +464,45 @@ async def symbols_for_sha(
         .limit(limit)
     )
     return list(res.scalars())
+
+
+async def embeddings_indexed(s: AsyncSession, repo_sha: str) -> bool:
+    """Whether this commit has embeddings already."""
+    res = await s.execute(
+        select(RepoEmbeddingRow.id).where(RepoEmbeddingRow.repo_sha == repo_sha).limit(1)
+    )
+    return res.scalar_one_or_none() is not None
+
+
+async def insert_embeddings(s: AsyncSession, repo_sha: str, rows: list[dict[str, Any]]) -> int:
+    """Bulk-insert one commit's chunks."""
+    if not rows:
+        return 0
+    inserted = 0
+    chunk = 500
+    for start in range(0, len(rows), chunk):
+        batch = [
+            {**r, "id": uuid.uuid4(), "repo_sha": repo_sha} for r in rows[start : start + chunk]
+        ]
+        await s.execute(insert(RepoEmbeddingRow), batch)
+        inserted += len(batch)
+    return inserted
+
+
+async def nearest_chunks(
+    s: AsyncSession, repo_sha: str, query: list[float], limit: int = 10
+) -> list[tuple[RepoEmbeddingRow, float]]:
+    """The chunks closest to a query vector, nearest first.
+
+    Cosine *distance* from pgvector, converted to a similarity so callers read a bigger
+    number as a better match — the opposite convention to the operator, and the one every
+    other score in this codebase uses.
+    """
+    distance = RepoEmbeddingRow.embedding.cosine_distance(query).label("distance")
+    res = await s.execute(
+        select(RepoEmbeddingRow, distance)
+        .where(RepoEmbeddingRow.repo_sha == repo_sha)
+        .order_by(distance)
+        .limit(limit)
+    )
+    return [(row, 1.0 - float(d)) for row, d in res.all()]
