@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     sandbox_uid: int = Field(default_factory=os.getuid)
     sandbox_gid: int = Field(default_factory=os.getgid)
     keep_failed_sandbox: bool = False
+    # The worker's Prometheus endpoint. 0 turns it off, which is what a developer running
+    # one worker on a laptop wants and what a second worker on the same host needs.
+    metrics_port: int = 9100
 
     # ---- misc ----
     environment: Literal["dev", "test", "prod"] = "dev"

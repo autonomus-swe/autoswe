@@ -60,6 +60,25 @@ def apply_ca_bundle(settings: Settings) -> None:
     log.info("ca_bundle_applied", path=path)
 
 
+def start_metrics_server(port: int) -> None:
+    """Expose this worker's registry, if a port was asked for.
+
+    The worker has no HTTP server of its own, so `prometheus_client` brings one up on a
+    background thread. A failure here is logged and ignored: a port already taken — the
+    normal case when a second worker starts on the same host — is a reason to lose the
+    metrics, not a reason to refuse the runs.
+    """
+    if port <= 0:
+        return
+    try:
+        from prometheus_client import start_http_server
+
+        start_http_server(port)
+        log.info("metrics_server_started", port=port)
+    except Exception as e:
+        log.warning("metrics_server_failed", port=port, error=f"{type(e).__name__}: {e}")
+
+
 async def configure_worker(ctx: dict[str, Any]) -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -68,6 +87,7 @@ async def configure_worker(ctx: dict[str, Any]) -> None:
     settings.require_worker()
     apply_ca_bundle(settings)
     configure_tracing("autoswe-worker")
+    start_metrics_server(settings.metrics_port)
     log.info(
         "worker_started",
         provider=settings.llm_provider,

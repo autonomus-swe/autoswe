@@ -375,3 +375,27 @@ async def test_all_five_named_kinds_come_back(
 
     pr = await client.get(f"/runs/{run_id}/artifacts/pr", headers={"X-API-Key": KEY})
     assert pr.json()["description"]["title"] == "feat: x", "the description, where it lives"
+
+
+# ---- the scrape endpoint -------------------------------------------------------------------
+
+
+async def test_metrics_needs_no_key(api: tuple[httpx.AsyncClient, FakeArq]) -> None:
+    """A scraper is infrastructure and cannot hold an API key. Unauthenticated like
+    `/healthz`, and defensible only because every label is a role or an outcome."""
+    client, _ = api
+
+    res = await client.get("/metrics")
+
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("text/plain")
+    assert "autoswe_runs_total" in res.text
+
+
+async def test_metrics_is_not_in_the_public_schema(api: tuple[httpx.AsyncClient, FakeArq]) -> None:
+    """It is an operational endpoint, not part of the API anyone codes against."""
+    client, _ = api
+
+    schema = (await client.get("/openapi.json")).json()
+
+    assert "/metrics" not in schema["paths"]

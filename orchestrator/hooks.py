@@ -9,6 +9,7 @@ from agents.debugger import HYPOTHESIS_KEY
 from contracts import ToolResult, Usage
 from core.errors import BudgetExhausted, RunCancelled
 from gateway import budget
+from observability import metrics
 from observability.logging import get_logger
 from orchestrator.approvals import ApprovalGate
 from orchestrator.budgets import ALWAYS_ALLOWED, BudgetGate
@@ -184,6 +185,7 @@ class OrchestratorHooks:
 
     async def on_message(self, message: Any, usage: Usage, latency_ms: int) -> None:
         self.usage = self.usage.add(usage)
+        metrics.record_llm_call(self.role, usage.cost_usd, usage.cache_hit_rate)
         async with session(self.engine) as s:
             await budget.record_llm_call(
                 s,
@@ -195,6 +197,12 @@ class OrchestratorHooks:
                 latency_ms=latency_ms,
                 stop_reason=getattr(message, "finish_reason", None),
             )
+            # Live spend, so `GET /runs/{id}` and the console move during a long step
+            # rather than jumping at each step boundary. An increment rather than a SUM
+            # over `llm_calls`: this runs once per model call, and `_end` re-reconciles
+            # from the ledger at every step boundary, so any drift is corrected within a
+            # step and the authoritative number is still the one the rows add up to.
+            await repo.add_run_cost(s, self.run_id, usage.cost_usd)
         if self.budget is not None:
             # After the row is written, so the reconciliation it may trigger sees this turn.
             await self.budget.on_turn()

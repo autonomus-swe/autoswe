@@ -108,6 +108,23 @@ async def finish_run(
     )
 
 
+async def add_run_cost(s: AsyncSession, run_id: uuid.UUID, delta_usd: float) -> None:
+    """Add to the run's running cost, in the database rather than in Python.
+
+    `cost_usd = cost_usd + :delta` rather than read-modify-write: two steps of one run can
+    have model calls in flight at the same time, and a read followed by a write would lose
+    one of them. The column is the source of *liveness*; `llm_calls` remains the source of
+    truth, and `set_run_cost` reconciles against it at every step boundary.
+    """
+    if delta_usd <= 0:
+        return
+    await s.execute(
+        update(RunRow)
+        .where(RunRow.id == run_id)
+        .values(cost_usd=RunRow.cost_usd + Decimal(str(round(delta_usd, 6))))
+    )
+
+
 async def set_run_cost(s: AsyncSession, run_id: uuid.UUID, cost_usd: float) -> None:
     await s.execute(
         update(RunRow).where(RunRow.id == run_id).values(cost_usd=Decimal(str(round(cost_usd, 4))))
