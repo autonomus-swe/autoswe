@@ -779,9 +779,9 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     result = None
     outcome = None
     try:
-        result, outcome = await CoderAgent(run_block, route.tier).run(
-            deps.provider, ctx, state.goal, task, hooks, files=_task_files(res, task)
-        )
+        result, outcome = await CoderAgent(
+            run_block, route.tier, state.budget.task_budget("coder")
+        ).run(deps.provider, ctx, state.goal, task, hooks, files=_task_files(res, task))
         state.task_results[task.id] = result
     except AgentError as e:
         # A Coder that did the work and then stopped without submitting has not killed
@@ -888,7 +888,9 @@ async def debug_node(state: RunState, deps: Deps, res: RunResources) -> RunState
     hypothesis = None
     result = None
     try:
-        hypothesis, result, _outcome = await DebuggerAgent(run_block, route.tier).run(
+        hypothesis, result, _outcome = await DebuggerAgent(
+            run_block, route.tier, state.budget.task_budget("debugger")
+        ).run(
             deps.provider,
             ctx,
             state.goal,

@@ -14,6 +14,26 @@ class Budget(StateModel):
     max_usd: float = Field(default=10.0, gt=0)
     max_tokens: int | None = Field(default=None, gt=0)
     warn_at_fraction: float = Field(default=0.9, gt=0, le=1)
+    # Tokens one step of a role may spend before its loop is stopped. The run budget
+    # already bounds the whole thing; this bounds a single runaway step, which the run
+    # budget only catches after it has already spent the money.
+    #
+    # The phase document asks for Anthropic's server-side `task_budget`, which this build
+    # cannot use — it has no Anthropic provider. Enforced here instead, from the same
+    # numbers, with the same effect on the one thing that matters: a Coder that has read
+    # the whole repository stops rather than continuing to pay for it.
+    task_budget_tokens: dict[str, int] = Field(
+        default_factory=lambda: {"coder": 80_000, "debugger": 60_000}
+    )
+
+    def task_budget(self, role: str) -> int | None:
+        """The per-step ceiling for this role, or None where there is none.
+
+        Most roles have none on purpose: they make one or two calls, so a per-step ceiling
+        would only ever fire on a genuinely broken request, where the run budget is the
+        better guard.
+        """
+        return self.task_budget_tokens.get(role)
 
     def fraction_used(
         self, usage: Usage, elapsed_s: float, *, cost_measurable: bool = True
