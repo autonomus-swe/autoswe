@@ -48,6 +48,10 @@ def _created_at() -> Mapped[datetime]:
 
 class RunRow(Base):
     __tablename__ = "runs"
+    # For the collector's "which runs finished before this?", asked every ten minutes
+    # forever. Declared here as well as in migration 0005 so `compare_metadata` does not
+    # read it as drift and propose dropping it.
+    __table_args__ = (Index("ix_runs_status_finished_at", "status", "finished_at"),)
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     repo_url: Mapped[str] = mapped_column(Text, nullable=False)

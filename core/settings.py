@@ -83,6 +83,19 @@ class Settings(BaseSettings):
     sandbox_uid: int = Field(default_factory=os.getuid)
     sandbox_gid: int = Field(default_factory=os.getgid)
     keep_failed_sandbox: bool = False
+    # Reaping. `teardown` removes a worktree only when the run pushed — a failed run's tree
+    # is the evidence — so nothing reaps the rest, and they accumulate. Measured on a
+    # development machine after Phase 5: 42 worktrees (332 MB), 55 bare clones, and 26
+    # exited containers still labelled `autoswe.run_id`.
+    gc_enabled: bool = True
+    # Generous on purpose. These are the window in which a human can still look at what a
+    # failed run left behind, and the cost of waiting is disk rather than correctness.
+    sandbox_ttl_s: int = 3600
+    worktree_ttl_s: int = 3600
+    # A worktree with no run at all — a row deleted, a directory made by hand. Longer,
+    # because "I cannot explain this directory" is a worse reason to delete something.
+    orphan_grace_s: int = 24 * 3600
+    bare_clone_ttl_days: int = 14
     # The worker's Prometheus endpoint. 0 turns it off, which is what a developer running
     # one worker on a laptop wants and what a second worker on the same host needs.
     metrics_port: int = 9100

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -365,6 +365,56 @@ async def step_costs(s: AsyncSession, run_id: uuid.UUID) -> list[tuple[str, str,
         )
         for agent, phase, inp, out, cr, cw, cost in (await s.execute(stmt)).all()
     ]
+
+
+TERMINAL_STATUSES = ("done", "failed", "cancelled")
+
+
+async def runs_finished_before(
+    s: AsyncSession, cutoff: datetime, *, limit: int = 500
+) -> list[RunRow]:
+    """Runs that are over and have been over since before `cutoff`.
+
+    A terminal *status* alone does not mean the run is finished. `set_run_phase` writes
+    `status="done"` or `"failed"` from `status_for(phase)` the moment the phase machine
+    transitions, while the run is still inside its loop with a live worktree and container;
+    only `finish_run` sets `finished_at`, and it is the last thing a run does.
+
+    `finished_at IS NOT NULL` is stated rather than left to SQL. It is strictly redundant
+    today — `NULL < cutoff` is NULL, so such a row is already excluded — and it is here
+    because the next person to touch this query will be tempted by
+    `COALESCE(finished_at, created_at)`, which would quietly reap live runs. The clause
+    that actually protects them is in `runs_unfinished` below; there is a test that fails
+    when it is removed.
+    """
+    stmt = (
+        select(RunRow)
+        .where(
+            RunRow.status.in_(TERMINAL_STATUSES),
+            RunRow.finished_at.is_not(None),
+            RunRow.finished_at < cutoff,
+        )
+        .order_by(RunRow.finished_at)
+        .limit(limit)
+    )
+    return list((await s.execute(stmt)).scalars())
+
+
+async def runs_unfinished(s: AsyncSession) -> list[RunRow]:
+    """Every run that is not provably over — the set nothing may be reaped for.
+
+    This is the clause that does the protecting. `finished_at IS NULL` puts a run that has
+    a terminal status but has not called `finish_run` into the do-not-touch set — and
+    `tests/integration/test_gc.py` deletes a live worktree when it is removed.
+
+    Deliberately the complement of the query above rather than a list of running ones: a
+    row in an unexpected state, or one whose worker died before writing anything, lands
+    here and is left alone. The failure mode of being too careful is disk.
+    """
+    stmt = select(RunRow).where(
+        or_(RunRow.status.not_in(TERMINAL_STATUSES), RunRow.finished_at.is_(None))
+    )
+    return list((await s.execute(stmt)).scalars())
 
 
 # ---- checkpoints / events / artifacts ---------------------------------------
