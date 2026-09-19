@@ -154,7 +154,7 @@ def test_the_estimate_counts_tool_call_arguments_too() -> None:
         }
     ]
 
-    assert context.estimate_tokens(messages) == 2_000
+    assert context.estimate_tokens(messages) == int(8_000 / context.CHARS_PER_TOKEN)
 
 
 def test_content_blocks_are_measured_as_well_as_strings() -> None:
@@ -166,7 +166,11 @@ def test_content_blocks_are_measured_as_well_as_strings() -> None:
         {"role": "tool", "content": [{"type": "text", "text": "x" * 4_000}]}
     ]
 
-    assert context.estimate_tokens(plain) == context.estimate_tokens(blocked) == 1_000
+    # Derived from the constant rather than written out: the divisor is a calibration that
+    # has already moved once, and a test that pins its value fails for a reason that has
+    # nothing to do with what it is testing.
+    assert context.estimate_tokens(plain) == context.estimate_tokens(blocked)
+    assert context.estimate_tokens(plain) == int(4_000 / context.CHARS_PER_TOKEN)
 
 
 # ---- the task budget ---------------------------------------------------------------------

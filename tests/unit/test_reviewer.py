@@ -295,7 +295,7 @@ async def test_the_pre_pass_caps_what_it_hands_on() -> None:
 async def test_a_diff_too_large_for_one_request_is_split_by_file() -> None:
     """Grouped by file so no file is ever cut in half: a half-read function invites exactly
     the confident wrong finding this design exists to avoid."""
-    big = "+" + "x" * (reviewer.PRE_PASS_TOKEN_BUDGET * reviewer.CHARS_PER_TOKEN // 2)
+    big = "+" + "x" * int(reviewer.PRE_PASS_TOKEN_BUDGET * reviewer.CHARS_PER_TOKEN / 2)
     files = [file_diff(path=f"src/f{i}.py", body=big) for i in range(4)]
 
     groups = reviewer.group_for_budget(files)
@@ -307,7 +307,7 @@ async def test_a_diff_too_large_for_one_request_is_split_by_file() -> None:
 
 def test_a_single_file_larger_than_the_budget_is_still_one_group() -> None:
     """Splitting inside a file is worse than one oversized request."""
-    huge = "+" + "x" * (reviewer.PRE_PASS_TOKEN_BUDGET * reviewer.CHARS_PER_TOKEN * 2)
+    huge = "+" + "x" * int(reviewer.PRE_PASS_TOKEN_BUDGET * reviewer.CHARS_PER_TOKEN * 2)
     groups = reviewer.group_for_budget([file_diff(body=huge)])
     assert len(groups) == 1 and len(groups[0]) == 1
 

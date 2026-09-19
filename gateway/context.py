@@ -39,9 +39,10 @@ from observability.logging import get_logger
 
 log = get_logger(__name__)
 
-# The same rough divisor the repo map's budget uses, and the same caveat: being a third out
-# costs a slightly early or slightly late trim, not a wrong one.
-CHARS_PER_TOKEN = 4
+# Characters per token, calibrated against a BPE tokenizer on real code — see
+# `repo/repomap.CHARS_PER_TOKEN` for the measurement. It was 4, which is the prose figure
+# and overestimates code by a third.
+CHARS_PER_TOKEN = 2.6
 # Below this the transcript is not the problem and clearing would spend a cache write for
 # nothing.
 TRIGGER_TOKENS = 40_000
@@ -68,7 +69,7 @@ def estimate_tokens(messages: list[dict[str, Any]]) -> int:
             )
         for call in message.get("tool_calls") or []:
             total += len(str(call.get("function", {}).get("arguments", "")))
-    return total // CHARS_PER_TOKEN
+    return int(total / CHARS_PER_TOKEN)
 
 
 def _text_of(message: dict[str, Any]) -> str:

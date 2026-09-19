@@ -197,14 +197,33 @@ def test_the_rendered_map_shows_definitions_rather_than_file_sizes(tmp_path: Pat
 
 def test_the_token_budget_is_honoured_and_what_fell_out_is_named(tmp_path: Path) -> None:
     """A truncated map that silently drops files reads as a complete one. "This exists and
-    I ran out of room" and "this does not exist" are different facts."""
+    I ran out of room" and "this does not exist" are different facts.
+
+    The budget here is large enough to hold the tail. It used to be 12 tokens, and passed
+    only because the tail was appended outside the budget — once the budget was actually
+    enforced, 12 tokens could not hold "other files (…)" and the assertion failed. The
+    floor case is its own test below, because it is a different claim.
+    """
     files, symbols = auth_service(tmp_path)
     ranks = graph.build(tmp_path, files, symbols).rank
 
-    out = repomap.render_symbol_map(tmp_path, symbols, ranks, goal="token", token_budget=12)
+    out = repomap.render_symbol_map(tmp_path, symbols, ranks, goal="token", token_budget=40)
 
     assert "other files (" in out
-    assert len(out) <= 12 * repomap.CHARS_PER_TOKEN + 400, "the budget plus the omitted list"
+    assert len(out) <= int(40 * repomap.CHARS_PER_TOKEN)
+
+
+def test_a_budget_too_small_for_anything_still_names_one_file(tmp_path: Path) -> None:
+    """The floor. A map cannot say less than which file it would have shown, so below that
+    the budget loses — but it loses to one path, not to a whole file's worth of symbols and
+    a list of four hundred more."""
+    files, symbols = auth_service(tmp_path)
+    ranks = graph.build(tmp_path, files, symbols).rank
+
+    out = repomap.render_symbol_map(tmp_path, symbols, ranks, goal="token", token_budget=1)
+
+    assert out.count("\n") == 0, f"more than one line at a one-token budget: {out!r}"
+    assert out in files
 
 
 def test_tokenize_splits_the_two_house_styles(tmp_path: Path) -> None:
@@ -253,8 +272,8 @@ def test_the_map_never_exceeds_the_budget_it_was_given(tmp_path: Path, budget: i
 
     out = repomap.render_symbol_map(tmp_path, symbols, ranks, goal="function", token_budget=budget)
 
-    assert len(out) <= budget * repomap.CHARS_PER_TOKEN, (
-        f"{len(out)} chars against a {budget * repomap.CHARS_PER_TOKEN}-char budget"
+    assert len(out) <= int(budget * repomap.CHARS_PER_TOKEN), (
+        f"{len(out)} chars against a {int(budget * repomap.CHARS_PER_TOKEN)}-char budget"
     )
 
 

@@ -31,16 +31,51 @@ Suggested duration: 6–8 days. Steps 5.1–5.3 (repository intelligence), 5.4�
 
 ## 1. Exit criteria
 
-- [ ] Indexing a 3 000-file repository takes under 60 s on the worker; re-running on the same SHA is a no-op (test with timing assertion on the fixture, manual check on the scale repo).
-- [ ] The repo map for a goal that names a function ranks that function's file first (test exists); the rendered map is under 4 000 tokens for the scale repo.
-- [ ] `search_code(semantic=True, query="where is rate limiting handled")` returns the right file on the fixture auth service (e2e).
-- [ ] On a Coder step with three or more turns, `llm_calls.cache_read_tokens > 0` from the second turn onward; run-level cache hit rate is above 60 % on the fixture repo (e2e, recorded).
-- [ ] A Coder session that exceeds the context trigger completes with compaction blocks preserved (log line `provider.compacted`) instead of failing (e2e on a deliberately long task).
-- [ ] At 90 % of the dollar budget, `review`, `decompose`, and `planner` route to Sonnet 5 and a `budget_warning` event carries `{"downgraded": [...]}` (table test).
-- [ ] One OpenTelemetry trace per run with phase, step, llm_call, tool_call, and sandbox_exec spans, visible in Langfuse or any OTLP backend; `/metrics` exposes the README §4.10 metrics.
-- [ ] Node and Go fixture repositories run end to end in their images; installs go through the egress proxy and are denied for a non-allow-listed host (test exists).
+Audited by agents instructed to *disprove* each one. `docs/numbers.md` carries the
+evidence; the verdicts are recorded here rather than the boxes being ticked.
+
+- [~] Indexing a 3 000-file repository takes under 60 s on the worker; re-running on the same SHA is a no-op.
+      **The no-op half is met and tested** — the test named for it only exercised the
+      storage predicate, so deleting the reuse check left the suite green; there is now one
+      that drives `index_repo` twice and fails without it. **The 60 s half is an
+      extrapolation**: the largest repository measured is sympy at 2 122 files, and the
+      figure is also parse-only and measured host-side rather than on the worker.
+- [x] The repo map ranks the named function's file first; the rendered map is under 4 000 tokens for the scale repo.
+      Met **after a correction**. `CHARS_PER_TOKEN` was 4 — the prose figure — and code
+      measures 2.69–2.90, so a map "inside its 3 500-token budget" was really 5 193 tokens
+      and this criterion was being reported as met while missed by a third.
+- [ ] `search_code(semantic=True, …)` returns the right file on the fixture auth service (e2e).
+      No fixture auth service exists and there is no e2e test. Integration coverage uses a
+      three-file tree and the lexical hash provider, which by its own docstring cannot
+      connect "rate limiting" to `TokenBucket` — so the *semantic* claim is untested.
+- [ ] Cache read tokens from the second turn; run-level cache hit rate above 60 %.
+      `tests/e2e/test_m5_cache.py` exists and has never run: free tier, 50 requests/day.
+- [ ] A Coder session that exceeds the context trigger completes with compaction blocks preserved (`provider.compacted`).
+      Not achievable as written: no Anthropic provider, no compaction code, and
+      `provider.compacted` is logged nowhere. `gateway/context.py` serves the same intent
+      host-side and logs `cleared_tool_results`. Moved to Phase 6 with the provider.
+- [~] At 90 % of the dollar budget, three roles route to Sonnet 5 and `budget_warning` carries `{"downgraded": […]}`.
+      The table is correct and tested, including the `decompose`/`decomposer` name trap the
+      document's own example contains. But **no Sonnet 5 is reachable in this build**, so
+      on any single-model deployment the downgrade is real policy with no effect — which
+      `_downgraded_roles` reports honestly as an empty list.
+- [x] One OpenTelemetry trace per run with phase, step, llm_call, tool_call and sandbox_exec spans; `/metrics` exposes the §4.10 metrics.
+      All five spans exist and nest; all seven metrics named in ARCHITECTURE §4.10 are
+      present and served.
+- [~] Node and Go fixture repositories run end to end in their images; installs go through the egress proxy and are denied for a non-allow-listed host.
+      **The egress half is met** and tested against a real proxy. **The stacks half is
+      not**: no Node or Go fixture repositories exist, and `install_command` and
+      `test_command` emit Python-only commands, so a non-Python repository cannot complete
+      a run whatever image it is given. The images are built and verified; the pipeline
+      around them is not.
 - [ ] Scale run: PR opened on the 3 000-file repo, total cost under $5, numbers recorded.
+      The host-side numbers are recorded. The run needs quota.
 - [ ] Tag `v0.5.0`.
+
+**Not a pass.** Three criteria are blocked on model quota, one on a provider deferred to
+Phase 6, and one — the Node/Go pipeline — is genuine unfinished work rather than an
+external dependency. The tag is the maintainer's call with that in view.
+
 
 ---
 

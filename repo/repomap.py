@@ -171,12 +171,22 @@ def render_map(worktree: Path, max_lines: int = 150) -> str:
 
 # ---- v2: ranked by centrality and lexical relevance -------------------------------------
 
-# Characters per token. The phase document asks for a calibration against
-# `client.messages.count_tokens` on a sample map; that needs a funded key, so this is the
-# same rough divisor the reviewer's budget uses. Being a third out costs a slightly short
-# or slightly long map, not a wrong one — the budget is a guard against sending a model
-# forty thousand tokens of tree, not an accounting figure.
-CHARS_PER_TOKEN = 4
+# Characters per token, measured rather than assumed.
+#
+# This was 4 — the rule of thumb for English prose — and for code it is badly wrong.
+# Measured with a real BPE tokenizer (`cl100k_base`) over the rendered map of two large
+# repositories: 2.69 chars/token on sympy, 2.90 on pydantic. Identifiers, punctuation and
+# the `[L12-34]` line ranges all tokenize densely.
+#
+# The consequence was not academic: a map budgeted at 3 500 "tokens" rendered 5 193 real
+# ones on sympy, so the Phase 5 criterion of "under 4 000 tokens" was being reported as met
+# while it was missed by a third. The phase document asks for exactly this calibration and
+# says it needs a funded key for `count_tokens`; it does not — a local tokenizer settles it.
+#
+# 2.6 rather than the measured 2.69, because the safe direction is to overestimate tokens:
+# that makes the map slightly shorter than it could be, where the other direction makes
+# every budget a lie.
+CHARS_PER_TOKEN = 2.6
 DEFAULT_TOKEN_BUDGET = 3_500
 # Held back from the block budget for the "other files" header and its "… and N more"
 # line. Generous: the two together are under a hundred characters, and spending a few more
@@ -257,6 +267,31 @@ def rank_files(
     return scored
 
 
+def _fit_block(block: list[str], budget: int) -> list[str]:
+    """As much of one file's block as fits, keeping the path and saying what was dropped."""
+    kept = [block[0]]
+    used = len(block[0]) + 1
+    for line in block[1:]:
+        if used + len(line) + 1 > budget:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    dropped = len(block) - len(kept)
+    while dropped:
+        note = f"  … {dropped} more definitions"
+        if used + len(note) + 1 <= budget:
+            kept.append(note)
+            break
+        if len(kept) == 1:
+            # Not even the path and a note fit. The path alone is the floor — a map cannot
+            # say less than which file it would have shown — so the note goes rather than
+            # the budget.
+            break
+        used -= len(kept.pop()) + 1
+        dropped = len(block) - len(kept)
+    return kept
+
+
 def render_symbol_map(
     worktree: Path,
     symbols: list[Symbol],
@@ -284,7 +319,7 @@ def render_symbol_map(
         by_file.setdefault(sym.path, []).append(sym)
 
     order = rank_files(files, symbols, ranks, goal=goal, pinned=pinned)
-    budget = token_budget * CHARS_PER_TOKEN
+    budget = int(token_budget * CHARS_PER_TOKEN)
     # Room held back for the "other files" tail, which is only known to be needed once the
     # blocks have been laid out. Without it the blocks fill the budget exactly and the tail
     # goes over — measured on sympy at forty characters, entirely header. The reserve is
@@ -301,9 +336,17 @@ def render_symbol_map(
             label = sym.signature or f"{sym.kind} {sym.name}"
             block.append(f"{indent}{label}  [L{sym.start_line}-{sym.end_line}]")
         cost = sum(len(line) + 1 for line in block)
-        if used + cost > block_budget and lines:
-            omitted.append(path)
-            continue
+        if used + cost > block_budget:
+            if lines:
+                omitted.append(path)
+                continue
+            # The first block, and it does not fit on its own. It still goes in — a map
+            # with nothing in it answers no question — but truncated to the allowance
+            # rather than whole. Emitting it whole is what `and lines` used to do, and on a
+            # small budget against a large file that was a fifty-fold overshoot: the
+            # budget stopped being a bound in exactly the case a caller set a small one for.
+            block = _fit_block(block, block_budget)
+            cost = sum(len(line) + 1 for line in block)
         lines.extend(block)
         used += cost
 
@@ -314,6 +357,10 @@ def render_symbol_map(
         # a 5 300-token map, because 1 200 omitted paths capped at 200 is still ~1 800
         # tokens of trailing list.
         header = f"\nother files ({len(omitted)}):"
+        if used + len(header) + 1 > budget:
+            # No room even to say how many were left out. Saying it anyway is how the
+            # budget became advisory in the first place.
+            return "\n".join(lines)
         used += len(header) + 1
         listed = 0
         for path in omitted:
@@ -335,7 +382,8 @@ def render_symbol_map(
                 used -= len(f"  {omitted[listed]}") + 1
                 suffix = f"  … and {len(omitted) - listed} more not shown"
             lines.extend(f"  {p}" for p in omitted[:listed])
-            lines.append(suffix)
+            if used + len(suffix) + 1 <= budget:
+                lines.append(suffix)
         else:
             lines.extend(f"  {p}" for p in omitted[:listed])
     return "\n".join(lines)

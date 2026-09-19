@@ -1,94 +1,113 @@
 # Numbers
 
-What this project costs, measured rather than estimated. Every figure here was produced by
-`evals/scale.py` or by a run that wrote a row to `evals/results/`; nothing in this file is
-somebody's guess.
+What this project costs, measured rather than estimated. Every figure here came from
+`evals/scale.py` or from a run that wrote a row to `evals/results/`.
 
-Where a number is missing, the row says so. A half-full table presented as a full one is
-worse than an empty one.
+Where a number is missing the row says so, and where a criterion is **not** met this file
+says that too. A previous version of this document reported the map as meeting its budget
+when it did not — see "the calibration was wrong" below.
 
 ## Repository intelligence, measured
 
-`uv run python -m evals.scale <checkout>` — no model, no key, no network. Two repositories,
-so the per-file rates have a second point rather than one.
+`uv run python -m evals.scale <checkout>` — no model, no key, no network.
 
 | | sympy | pydantic |
 |---|---|---|
 | Files in the checkout | 2 122 | 879 |
-| Files indexed | 1 608 | 453 |
+| Files with symbols (what the map ranks) | 1 393 | 427 |
 | Symbols | 40 595 | 14 161 |
-| **Index** | **12.1 s** | **3.9 s** |
-| Graph + PageRank | 7.5 s | 1.3 s |
-| Repo map v2 render | 0.6 s | 0.3 s |
-| **Map tokens (v2)** | **3 499** | **3 499** |
-| Map tokens (v1 tree) | 829 | 817 |
+| **Parse** | **22.8–25.4 s** | **6.7 s** |
+| Graph + PageRank | 10.2–15.3 s | 1.5 s |
+| **Map tokens (v2)** | **3 490** | **3 484** |
+| Map tokens (v1 tree) | 1 275 | 1 258 |
 | Embedding chunks | 47 755 | 14 675 |
-| Embeddings (hash provider) | 23.6 s | 6.0 s |
+| Embeddings (hash provider) | 31.9–41.4 s | 6.8 s |
 
-Machine: 12 CPUs, 38 GiB. Index and embedding are parallel across 8 workers.
+Machine: 12 CPUs, 38 GiB, 8 parse workers. Two sympy rows are recorded because the rate
+moves a lot with load — 55 and 61 files/s here, against 115–120 on the same machine when
+idle. That spread is the reason the extrapolation below is stated as a range.
 
-### Against the phase's exit criteria
+### Two honest caveats on the parse figure
 
-- **"Indexing a 3 000-file repository takes under 60 s."** Met, with room. 1 608 files in
-  12.1 s is ~120 files/s, so 3 000 files extrapolates to ~25 s. The rate is stable across
-  both repositories (115 and 111 files/s), which is what makes the extrapolation worth
-  making.
-- **"The rendered map is under 4 000 tokens for the scale repo."** Met — **after fixing the
-  bug this measurement found.** It did not hold before: see below.
+- **It is parse only.** `index_repo` also writes the rows, and `evals/scale.py` does not
+  time that. On sympy's 40 595 symbols the insert is several seconds more.
+- **It is measured host-side**, with `python -m evals.scale`. The criterion says "on the
+  worker". The work is the same code either way, but nothing here has measured it inside a
+  worker process.
 
-### The bug this found
+## Against the phase's exit criteria
 
-The first measurement produced a **5 300-token map from a 3 500-token budget**.
+Audited by agents told to disprove each one, not to confirm it.
 
-`render_symbol_map` watched its budget while laying out ranked file blocks, then appended
-an `other files (…)` tail of up to 200 paths *after* the loop. On a repository where most
-files do not fit, that tail was ~1 800 tokens of pure overshoot, and `token_budget` was a
-budget for the ranked half rather than for the map.
+| Criterion | Verdict |
+|---|---|
+| Index a 3 000-file repo under 60 s; same-SHA re-run is a no-op | **partly** — see below |
+| Repo map ranks the named function's file first; under 4 000 tokens | **met**, after the calibration fix |
+| `search_code(semantic=True)` on a fixture auth service (e2e) | **not met** — no such fixture, no e2e |
+| Cache hit rate above 60 % on a real run | **not met** — needs quota |
+| Compaction blocks preserved (`provider.compacted`) | **not met** — needs the Anthropic provider |
+| Budget downgrade table | **partly** — table correct, no second tier to downgrade *to* |
+| OTel spans and `/metrics` | **met** |
+| Node/Go repos end to end; egress allow/deny | **partly** — egress met, stacks not |
+| Scale run, PR opened, under $5 | **not met** — needs quota |
 
-Fixing it took two passes, and the second is the instructive one. Charging the tail to the
-budget left the map 40 characters over at exactly the budget where the blocks filled the
-allowance completely — the overshoot was then the tail's *header*, added when there was no
-room for anything. The fix is a reserve held back before the blocks are laid out.
-`tests/unit/test_repomap.py` now asserts the invariant across four budgets, because the
-first fix passed at one and failed at another.
+### Indexing: partly
 
-Both repositories now render at 3 499 tokens against a 3 500 budget.
+The no-op half is met and now actually tested — the test named for it only exercised the
+storage predicate, so deleting the reuse check left the suite green. There is now a test
+that drives `index_repo` twice and checks both the skip and the row count, verified to fail
+when the check is removed. (`repo_symbols` has no unique constraint, so a regression there
+would silently double the table rather than error.)
+
+The 60-second half is an **extrapolation, not a measurement**. The largest repository
+measured is sympy at 2 122 files. At the rates above, 3 000 files is 25–55 s loaded and
+~25 s idle — inside 60 s, but the loaded margin is not large, and nobody has run a
+3 000-file repository.
+
+### The calibration was wrong, and the map criterion was not met
+
+`CHARS_PER_TOKEN` was **4**, the rule of thumb for English prose. Code is much denser.
+Measured with a BPE tokenizer over the rendered map: **2.69 chars/token on sympy, 2.90 on
+pydantic**.
+
+So a map "under its 3 500-token budget" was really **5 193 tokens on sympy** — the 4 000
+criterion missed by a third, while this document reported it as met. The divisor is now
+2.6, calibrated from that measurement and rounded down because overestimating tokens is the
+safe direction. Both maps now render at ~3 450 and ~3 080 **real** tokens.
+
+The phase document asks for exactly this calibration and says it needs a funded key for
+`count_tokens`. It does not: a local tokenizer settles it, and the answer was a third out.
+
+Two budget escapes were fixed alongside it. The `other files` tail was appended after the
+loop that watched the budget, and the top-ranked file's block was emitted whole however
+large — a fifty-fold overshoot at small budgets, in exactly the case a caller sets a small
+budget for. The invariant now holds across nine budgets on both repositories.
 
 ### The ablation
 
-The v1 tree is much smaller — 829 tokens against 3 499 — because it is a list of paths and
-the v2 map carries every signature with line ranges. The two are not substitutes and the
-token count alone does not say which is better: the question the phase document asks is
-whether ranking puts the right file first, which `tests/unit/test_repomap.py` answers on a
-fixture and a real run would answer on a real goal.
-
-Running the ablation properly — the same goal with `repomap=off`, comparing tasks,
-attempts and cost — needs the model half below.
+v1 renders 1 275 tokens against v2's 3 490 — but they are not substitutes. v1 is a path
+list; v2 carries every signature with line ranges. Which is better is a question about
+whether ranking puts the right file first, and answering that on a real goal needs a model.
 
 ## The model half: not measured
 
-Blocked on quota, not on code. The OpenRouter key on this machine is still free tier —
-**50 requests a day** — and one end-to-end run against a repository this size spends several
-hundred model calls across analyzer, planner, decomposer, per-task coder loops, tester,
-reviewer, security and the PR writer.
+Blocked on quota, not on code. The OpenRouter key here is free tier — **50 requests a
+day** — and one end-to-end run against a repository this size spends several hundred model
+calls.
 
-| Number | Where it will come from | State |
-|---|---|---|
-| Tasks, attempts, review rounds | `tests/e2e/test_m3.py`, `m4.py` | blocked on quota |
-| Per-role cost, cost per solved task | `runs` + `llm_calls`, PR footer | blocked on quota |
-| Cache hit rate | `tests/e2e/test_m5_cache.py` | blocked on quota |
-| Wall clock, total cost for a scale run | `evals/scale.py` + a real run | blocked on quota |
-| Compaction on a long session | needs the Anthropic provider | Phase 6 |
+| Number | Where it will come from |
+|---|---|
+| Tasks, attempts, review rounds | `tests/e2e/test_m3.py`, `m4.py` |
+| Per-role cost, cost per solved task | `runs` + `llm_calls`, PR footer |
+| Cache hit rate | `tests/e2e/test_m5_cache.py` |
+| Wall clock and total cost for a scale run | a real run |
 
-`evals/results/` holds a row per run, so these populate themselves the moment there is
-quota — no further code is needed for any of them except the last.
-
-**What unblocks it:** $10 of OpenRouter credit, which raises the free-model allowance from
-50 to 1 000 requests a day. That is the whole dependency.
+`evals/results/` takes a row per run, so these populate themselves the moment there is
+quota. **$10 of OpenRouter credit** raises the allowance from 50 to 1 000 requests a day
+and is the whole dependency.
 
 ## Cost per solved task
 
 The metric, when there is one — not cost per run. A run that spent half as much and
-finished one task instead of three cost more per unit of work, and a total alone hides that
-completely. It is in the PR footer as `$X.XX ($Y.YY/task)` and in
-`autoswe_tokens_per_solved_task`, divided by tasks **done** rather than tasks planned.
+finished one task instead of three cost more per unit of work. It is in the PR footer as
+`$X.XX ($Y.YY/task)` and in `autoswe_tokens_per_solved_task`, divided by tasks **done**.
