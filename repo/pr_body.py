@@ -102,6 +102,25 @@ def _elapsed(seconds: float) -> str:
     return f"{total // 60:02d}:{total % 60:02d}"
 
 
+def _per_task(facts: BodyFacts) -> str:
+    """Cost per *completed* task, when there were any.
+
+    The number to compare two runs with, and the reason a cheaper model is not
+    automatically a saving: a run that spent half as much and finished one task instead
+    of three cost more per unit of work, and a total alone hides that entirely.
+
+    Per task *done*, not per task planned. A run that planned four and finished one spent
+    all of it on the one, and dividing by four would flatter it.
+
+    Derived here rather than stored on `runs`: it is two numbers already recorded, and a
+    stored ratio is a number that can disagree with the rows it came from.
+    """
+    done = sum(1 for t in facts.tasks.tasks if t.status == "done") if facts.tasks else 0
+    if not done or facts.cost_usd <= 0:
+        return ""
+    return f" (${facts.cost_usd / done:.2f}/task)"
+
+
 def title(description: PullRequestDescription, facts: BodyFacts) -> str:
     """The title, capped host-side and prefixed when the run did not complete.
 
@@ -324,7 +343,7 @@ def render(description: PullRequestDescription, facts: BodyFacts) -> str:
             f"{facts.debug_attempts} debug attempt{'s' if facts.debug_attempts != 1 else ''}",
             f"{review_rounds + security_rounds} fix round"
             f"{'s' if review_rounds + security_rounds != 1 else ''}",
-            f"${facts.cost_usd:.2f}",
+            f"${facts.cost_usd:.2f}{_per_task(facts)}",
             _elapsed(facts.elapsed_s),
         ]
     )

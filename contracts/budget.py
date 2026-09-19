@@ -47,6 +47,26 @@ class Budget(StateModel):
         fractions = self.fraction_used(usage, elapsed_s, cost_measurable=cost_measurable)
         return max(fractions, key=lambda k: fractions[k])
 
+    def past_cost_warning(
+        self, usage: Usage, elapsed_s: float, *, cost_measurable: bool = True
+    ) -> bool:
+        """Whether the *dollar* budget is past its warning line.
+
+        Separate from `crossed_warning`, which fires once per limit per run for the sake of
+        a human reading events. This one is a standing condition a routing decision reads
+        every time it is made, so it has no memory.
+
+        Only dollars, because that is the limit a cheaper model helps with. A run near its
+        wall clock is not helped by downgrading — a cheaper model is not a faster one, and
+        on a hard task it is a slower one.
+
+        `False` when cost cannot be measured. An unpriced model has not cost nothing; we
+        cannot say. Downgrading on the strength of a number nobody has would be worse than
+        not downgrading.
+        """
+        fractions = self.fraction_used(usage, elapsed_s, cost_measurable=cost_measurable)
+        return fractions.get("budget_usd", 0.0) >= self.warn_at_fraction
+
     def crossed_warning(
         self, usage: Usage, elapsed_s: float, *, cost_measurable: bool = True
     ) -> list[str]:

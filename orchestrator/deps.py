@@ -49,6 +49,11 @@ def build_provider(settings: Settings) -> LLMProvider:
         api_key=key,
         base_url=settings.llm_base_url,
         timeout_s=settings.llm_timeout_s,
+        models={
+            "opus": settings.llm_model_opus or "",
+            "sonnet": settings.llm_model_sonnet or "",
+            "haiku": settings.llm_model_haiku or "",
+        },
     )
 
 

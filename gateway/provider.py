@@ -16,6 +16,10 @@ from tools.base import BaseTool, RunContext
 class Request:
     role: str  # ROUTES key
     system: str  # the role prompt: static per role, and kept that way — see gateway/caching
+    # Which model tier to use, when the caller has decided one. `None` means the
+    # provider's default, which is what every call was before budget-aware routing: a
+    # tier the provider has no model for also resolves to the default.
+    tier: str | None = None
     # Repository facts, conventions and map: fixed for a whole run, so it sits in the
     # cached prefix rather than in the messages, where it would be re-sent uncached on
     # every call of every step.
@@ -62,6 +66,15 @@ class NullHooks:
 class LLMProvider(Protocol):
     provider_name: str
     model: str
+
+    def model_for(self, tier: str | None) -> str:
+        """The model this tier resolves to, for the ledger and for the router.
+
+        On the provider because only it knows which model ids its endpoint accepts. The
+        router decides tiers; it must not have to know that one deployment calls the
+        middle tier `claude-sonnet-5` and another calls it `qwen/qwen3-coder`.
+        """
+        ...
 
     async def parse[T: BaseModel](self, req: Request, output: type[T]) -> tuple[T, Usage]: ...
 

@@ -164,6 +164,53 @@ def test_the_footer_carries_what_the_run_cost_and_how_hard_it_was() -> None:
     assert "1 task" in body and "2 debug attempts" in body
     assert "2 fix rounds" in body, "review and security rounds are both the run's cost"
     assert "$0.42" in body and "03:05" in body
+    assert "$0.42/task" in body, "one task done, so the per-task cost is the whole cost"
+
+
+def graph_of(*statuses: str) -> TaskGraph:
+    return TaskGraph(
+        tasks=[
+            Task(
+                spec=TaskSpec(
+                    id=f"t{i}",
+                    title="t",
+                    description="d",
+                    depends_on=[],
+                    files=[],
+                    acceptance_criteria=["x"],
+                    test_selector="",
+                ),
+                status=cast("Any", status),
+            )
+            for i, status in enumerate(statuses, 1)
+        ]
+    )
+
+
+def test_cost_per_task_counts_the_tasks_that_finished() -> None:
+    """The number to compare two runs with. A run that planned four and finished one spent
+    all of it on the one, and dividing by four would flatter it."""
+    body = pr_body.render(
+        description(), facts(tasks=graph_of("done", "failed", "pending", "done"), cost_usd=1.0)
+    )
+
+    assert "$0.50/task" in body, "two of four finished"
+
+
+def test_a_run_that_finished_nothing_quotes_no_rate() -> None:
+    """Dividing by zero tasks is not a large number, it is not a number. A footer reading
+    `$2.00/task` on a run that completed none would be worse than saying nothing."""
+    body = pr_body.render(description(), facts(tasks=graph_of("failed", "pending"), cost_usd=2.0))
+
+    assert "$2.00" in body and "/task" not in body
+
+
+def test_an_unpriced_run_quotes_no_rate_either() -> None:
+    """A free or local model reports zero, which is a measurement rather than a missing
+    number — but `$0.00/task` still reads as a claim about efficiency."""
+    body = pr_body.render(description(), facts(tasks=graph_of("done"), cost_usd=0.0))
+
+    assert "/task" not in body
 
 
 # ---- the draft flag is the run's, not the description's ---------------------------------

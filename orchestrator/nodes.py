@@ -34,7 +34,7 @@ from contracts import (
 )
 from core.errors import AgentError, BudgetExhausted, RepoError, SandboxError
 from gateway import caching
-from gateway.routing import route_for
+from gateway.routing import DOWNGRADE, ROUTES, Route, route_for
 from observability.logging import bind_run, get_logger
 from orchestrator.approvals import ApprovalGate
 from orchestrator.budgets import BudgetGate
@@ -427,11 +427,11 @@ async def analyze_node(state: RunState, deps: Deps, res: RunResources) -> RunSta
     state.facts = facts
     repo_map = await _repo_map(state, deps, res)
 
-    step_id, hooks, ctx = await _begin(state, deps, res, "analyzer", Phase.ANALYZE)
+    step_id, hooks, ctx, route = await _begin(state, deps, res, "analyzer", Phase.ANALYZE)
     error: str | None = None
     profile = None
     try:
-        profile, _outcome = await AnalyzerAgent().run(
+        profile, _outcome = await AnalyzerAgent(tier=route.tier).run(
             deps.provider, ctx, state.goal, facts, repo_map, hooks
         )
         state.repo = profile
@@ -451,11 +451,11 @@ async def plan_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     """Produce the implementation plan. Open questions park the run for a human."""
     assert res.worktree is not None and state.repo is not None
     repo_map = await _repo_map(state, deps, res)
-    step_id, hooks, ctx = await _begin(state, deps, res, "planner", Phase.PLAN)
+    step_id, hooks, ctx, route = await _begin(state, deps, res, "planner", Phase.PLAN)
     error: str | None = None
     plan = None
     try:
-        plan, _outcome = await PlannerAgent().run(
+        plan, _outcome = await PlannerAgent(tier=route.tier).run(
             deps.provider,
             ctx,
             state.goal,
@@ -478,11 +478,11 @@ async def decompose_node(state: RunState, deps: Deps, res: RunResources) -> RunS
     """Turn the plan into a validated task graph."""
     assert res.worktree is not None and state.repo is not None and state.plan is not None
     repo_map = await _repo_map(state, deps, res)
-    step_id, hooks, _ctx = await _begin(state, deps, res, "decomposer", Phase.DECOMPOSE)
+    step_id, hooks, _ctx, route = await _begin(state, deps, res, "decomposer", Phase.DECOMPOSE)
     error: str | None = None
     graph = None
     try:
-        graph = await DecomposerAgent().run(
+        graph = await DecomposerAgent(tier=route.tier).run(
             deps.provider, state.goal, state.plan, state.repo, repo_map
         )
         state.tasks = graph
@@ -538,8 +538,14 @@ async def awaiting_input_node(state: RunState, deps: Deps, res: RunResources) ->
 
 async def _begin(
     state: RunState, deps: Deps, res: RunResources, agent: str, phase: Phase
-) -> tuple[UUID, OrchestratorHooks, RunContext]:
-    """Open a step, its hooks and a run context. Shared by the single-shot agents."""
+) -> tuple[UUID, OrchestratorHooks, RunContext, Route]:
+    """Open a step, its hooks, a run context and the route it was given.
+
+    The route comes back so the node can build its agent on the same tier the hooks are
+    recording. Computing it twice would let the two disagree — the ledger would name one
+    model and the request would use another the moment a reconciliation landed between
+    the two calls.
+    """
     step_input: dict[str, Any] = {"goal": state.goal}
     if state.answers:
         # a re-plan after a pause is driven by what the human said; the audit trail has
@@ -556,7 +562,7 @@ async def _begin(
         )
     bind_run(state.run_id, step_id=step_id)
     await _emit(deps, state.run_id, "agent_started", {"agent": agent})
-    route = route_for(agent)
+    route = _route(state, deps, agent)
     # The context comes first: the hooks hold its `submitted` dict by reference so a gate
     # can see a submission the moment a tool records it, mid-loop.
     ctx = _run_context(state, res, step_id, agent, deps.engine)
@@ -566,7 +572,7 @@ async def _begin(
         engine=deps.engine,
         bus=deps.bus,
         provider_name=deps.provider.provider_name,
-        model=deps.provider.model,
+        model=deps.provider.model_for(route.tier),
         effort=route.effort,
         role=agent,
         submitted=ctx.submitted,
@@ -574,22 +580,63 @@ async def _begin(
         answers=ctx.answers,
         budget=_budget_gate(state, deps),
     )
-    return step_id, hooks, ctx
+    return step_id, hooks, ctx, route
 
 
 def _tester_hooks(state: RunState, deps: Deps, step_id: UUID) -> OrchestratorHooks:
     """Hooks for the TEST phase, which is deterministic apart from one triage call."""
+    route = _route(state, deps, "tester")
     return OrchestratorHooks(
         run_id=state.run_id,
         step_id=step_id,
         engine=deps.engine,
         bus=deps.bus,
         provider_name=deps.provider.provider_name,
-        model=deps.provider.model,
-        effort=route_for("tester").effort,
+        model=deps.provider.model_for(route.tier),
+        effort=route.effort,
         role="tester",
         budget=_budget_gate(state, deps),
     )
+
+
+def _downgraded_roles(deps: Deps) -> list[str]:
+    """Which roles a downgrade would actually move to a different model.
+
+    Not simply `sorted(DOWNGRADE)`: on a single-model deployment every tier resolves to
+    the same model, so the downgrade is real policy with no effect. Reporting those roles
+    as downgraded would be claiming a saving that was never made, and the first person to
+    check the ledger against the event would stop trusting both.
+    """
+    return sorted(
+        role
+        for role, tier in DOWNGRADE.items()
+        if deps.provider.model_for(tier) != deps.provider.model_for(ROUTES[role].tier)
+    )
+
+
+def _route(state: RunState, deps: Deps, role: str) -> Route:
+    """The route for this step, downgraded if the run is short of money.
+
+    Read fresh at every step rather than latched: `state.usage` is reconciled from
+    `llm_calls`, so this follows the real number in both directions. A run that crosses the
+    line and is then refunded — a provider correcting a charge, a reconciliation finding a
+    step double-counted — goes back to the better model rather than staying punished.
+    """
+    downgrade = state.budget.past_cost_warning(
+        state.usage, state.elapsed_s(), cost_measurable=state.cost_measurable
+    )
+    route = route_for(role, downgrade=downgrade)
+    if route != ROUTES[role]:
+        # A new cache namespace for this role: the prefix is keyed per model, so the first
+        # call after a downgrade writes rather than reads. Logged because a cache hit rate
+        # that falls off a cliff mid-run otherwise looks like the caching broke.
+        log.info(
+            "role_downgraded",
+            role=role,
+            was=deps.provider.model_for(ROUTES[role].tier),
+            now=deps.provider.model_for(route.tier),
+        )
+    return route
 
 
 def _budget_gate(state: RunState, deps: Deps) -> BudgetGate:
@@ -597,9 +644,13 @@ def _budget_gate(state: RunState, deps: Deps) -> BudgetGate:
     warning is emitted once per run rather than once per phase."""
 
     async def warn(kind: str, fraction: float) -> None:
-        await _emit(
-            deps, state.run_id, "budget_warning", {"kind": kind, "fraction": round(fraction, 3)}
-        )
+        payload: dict[str, Any] = {"kind": kind, "fraction": round(fraction, 3)}
+        if kind == "budget_usd":
+            # Named on the warning rather than left to be inferred from the ledger: the
+            # next few steps cost less and produce different-looking output, and a reader
+            # who cannot see why would read it as the run degrading on its own.
+            payload["downgraded"] = _downgraded_roles(deps)
+        await _emit(deps, state.run_id, "budget_warning", payload)
 
     return BudgetGate(
         run_id=state.run_id,
@@ -668,7 +719,7 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     bind_run(state.run_id, task_id=task.id, step_id=step_id)
     await _emit(deps, state.run_id, "agent_started", {"agent": "coder", "task_id": task.id})
 
-    route = route_for("coder")
+    route = _route(state, deps, "coder")
     run_block = await _ensure_run_block(state, deps, res)
     ctx = _run_context(state, res, step_id, "coder", deps.engine)
     hooks = OrchestratorHooks(
@@ -677,7 +728,7 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
         engine=deps.engine,
         bus=deps.bus,
         provider_name=deps.provider.provider_name,
-        model=deps.provider.model,
+        model=deps.provider.model_for(route.tier),
         effort=route.effort,
         role="coder",
         submitted=ctx.submitted,
@@ -689,7 +740,7 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     result = None
     outcome = None
     try:
-        result, outcome = await CoderAgent(run_block).run(
+        result, outcome = await CoderAgent(run_block, route.tier).run(
             deps.provider, ctx, state.goal, task, hooks, files=_task_files(res, task)
         )
         state.task_results[task.id] = result
@@ -777,7 +828,7 @@ async def debug_node(state: RunState, deps: Deps, res: RunResources) -> RunState
     bind_run(state.run_id, task_id=task.id, step_id=step_id)
     await _emit(deps, state.run_id, "agent_started", {"agent": "debugger", "task_id": task.id})
 
-    route = route_for("debugger")
+    route = _route(state, deps, "debugger")
     run_block = await _ensure_run_block(state, deps, res)
     ctx = _run_context(state, res, step_id, "debugger", deps.engine)
     hooks = OrchestratorHooks(
@@ -786,7 +837,7 @@ async def debug_node(state: RunState, deps: Deps, res: RunResources) -> RunState
         engine=deps.engine,
         bus=deps.bus,
         provider_name=deps.provider.provider_name,
-        model=deps.provider.model,
+        model=deps.provider.model_for(route.tier),
         effort=route.effort,
         role="debugger",
         submitted=ctx.submitted,
@@ -798,7 +849,7 @@ async def debug_node(state: RunState, deps: Deps, res: RunResources) -> RunState
     hypothesis = None
     result = None
     try:
-        hypothesis, result, _outcome = await DebuggerAgent(run_block).run(
+        hypothesis, result, _outcome = await DebuggerAgent(run_block, route.tier).run(
             deps.provider,
             ctx,
             state.goal,
@@ -1008,11 +1059,11 @@ async def _replan_task(state: RunState, deps: Deps, res: RunResources, task_obj:
     """Split a task that failed its attempts into smaller ones. True when it changed."""
     assert state.tasks is not None
     hypotheses = await _previous_hypotheses(deps, state.run_id, task_obj.id)
-    step_id, hooks, _ctx = await _begin(state, deps, res, "decomposer", Phase.ESCALATE)
+    step_id, hooks, _ctx, route = await _begin(state, deps, res, "decomposer", Phase.ESCALATE)
     error: str | None = None
     graph = None
     try:
-        graph = await DecomposerAgent().replan(
+        graph = await DecomposerAgent(tier=route.tier).replan(
             deps.provider, state.goal, task_obj.spec, state.last_test_report, hypotheses, hooks
         )
     except Exception as e:  # a failed replan is not a crash: the human path is still open
@@ -1109,7 +1160,7 @@ async def test_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
         # Hooks even for one call: it is how the triage reaches llm_calls, which is what
         # budgets are enforced from. A model call the run cannot see is worse than one it
         # cannot afford.
-        kinds = await tester.TesterAgent().classify_unknown(
+        kinds = await tester.TesterAgent(tier=_route(state, deps, "tester").tier).classify_unknown(
             deps.provider, unknown, _tester_hooks(state, deps, step_id)
         )
         for test_id, note in tester.render_triage(kinds).items():
@@ -1241,11 +1292,11 @@ async def review_node(state: RunState, deps: Deps, res: RunResources) -> RunStat
         return state
 
     run_block = await _ensure_run_block(state, deps, res)
-    pre_id, pre_hooks, _ = await _begin(state, deps, res, "review_pre", Phase.REVIEW)
+    pre_id, pre_hooks, _, pre_route = await _begin(state, deps, res, "review_pre", Phase.REVIEW)
     candidates: list[ReviewFinding] = []
     error: str | None = None
     try:
-        candidates = await reviewer.ReviewPreAgent(run_block).run(
+        candidates = await reviewer.ReviewPreAgent(run_block, pre_route.tier).run(
             deps.provider, state.goal, state.plan, state.tasks, files, pre_hooks
         )
     except Exception as e:  # the pre-pass is the expendable half
@@ -1254,12 +1305,12 @@ async def review_node(state: RunState, deps: Deps, res: RunResources) -> RunStat
     finally:
         await _end(state, deps, pre_id, pre_hooks, None, error, None)
 
-    step_id, hooks, ctx = await _begin(state, deps, res, "review", Phase.REVIEW)
+    step_id, hooks, ctx, route = await _begin(state, deps, res, "review", Phase.REVIEW)
     report = None
     dropped: list[ReviewFinding] = []
     error = None
     try:
-        report, dropped, _outcome = await reviewer.ReviewAgent(run_block).run(
+        report, dropped, _outcome = await reviewer.ReviewAgent(run_block, route.tier).run(
             deps.provider, ctx, state.goal, candidates, files, hooks
         )
         state.review = report
@@ -1380,11 +1431,11 @@ async def security_node(state: RunState, deps: Deps, res: RunResources) -> RunSt
     found = await scanners.run_all(res.sandbox, res.worktree.path, state.base_sha or "HEAD", files)
 
     run_block = await _ensure_run_block(state, deps, res)
-    step_id, hooks, ctx = await _begin(state, deps, res, "security", Phase.SECURITY)
+    step_id, hooks, ctx, route = await _begin(state, deps, res, "security", Phase.SECURITY)
     report = None
     error = None
     try:
-        report, _outcome = await security.SecurityAgent(run_block).run(
+        report, _outcome = await security.SecurityAgent(run_block, route.tier).run(
             deps.provider, ctx, state.goal, found, files, hooks
         )
         state.security = report
@@ -1583,11 +1634,11 @@ async def _push_and_open(state: RunState, deps: Deps, res: RunResources) -> str:
 
     # `state.phase`, not a literal: this also runs from ESCALATE, and a step that
     # claims to be in PR when it was not makes the audit trail lie.
-    step_id, hooks, _ctx = await _begin(state, deps, res, "pr_writer", state.phase)
+    step_id, hooks, _ctx, route = await _begin(state, deps, res, "pr_writer", state.phase)
     description = None
     error: str | None = None
     try:
-        description = await pr_writer.PRWriterAgent().run(
+        description = await pr_writer.PRWriterAgent(tier=route.tier).run(
             deps.provider, facts, commits, results, hooks
         )
     except Exception as e:

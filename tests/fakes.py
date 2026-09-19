@@ -90,3 +90,20 @@ def make_ctx(worktree: Path, sandbox: FakeSandbox | None = None, **kw: object) -
     )
     defaults.update(kw)
     return RunContext(**defaults)  # type: ignore[arg-type]
+
+
+class FakeProviderBase:
+    """The parts of `LLMProvider` that are not about answering a question.
+
+    Here rather than redefined per test file because `model_for` was added to the protocol
+    after four fakes already existed, and three of them broke at runtime rather than at
+    type-check time — a fake passed as `Any` satisfies no protocol. A shared base means the
+    fifth fake inherits whatever the fourth had to learn.
+    """
+
+    provider_name = "test"
+    model = "test/model"
+
+    def model_for(self, tier: str | None) -> str:
+        """One model for every tier, which is what a single-model deployment does."""
+        return self.model

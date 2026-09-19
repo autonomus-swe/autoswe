@@ -30,15 +30,20 @@ class Agent:
     tool_names: ClassVar[list[str]] = []
     max_iterations: ClassVar[int] = 60
 
-    def __init__(self, run_block: str | None = None) -> None:
-        """``run_block`` is the repository context that is fixed for a whole run.
+    def __init__(self, run_block: str | None = None, tier: str | None = None) -> None:
+        """Per-run context and the model tier this step was routed to.
 
         Held on the agent rather than threaded through every ``run()`` signature: each
         agent takes different arguments, and a parameter that all eleven of them accept
-        and none of them read is a parameter that gets dropped by the twelfth. It reaches
-        the request in one place — the two methods below — so it cannot be forgotten.
+        and none of them read is a parameter that gets dropped by the twelfth. Both reach
+        the request in one place — the two methods below — so neither can be forgotten.
+
+        ``tier`` defaults to ``None``, which the provider resolves to its own model. An
+        agent constructed without one therefore behaves exactly as it did before routing
+        could change it.
         """
         self.run_block = run_block
+        self.tier = tier
 
     def system_prompt(self, **vars: Any) -> str:
         template = load_prompt(self.prompt_file)
@@ -63,6 +68,7 @@ class Agent:
             role=self.role,
             system=self.system_prompt(**prompt_vars),
             run_block=self.run_block,
+            tier=self.tier,
             messages=[{"role": "user", "content": user_content}],
             max_iterations=self.max_iterations,
             must_call=must_call,
@@ -90,6 +96,7 @@ class Agent:
             role=self.role,
             system=self.system_prompt(**prompt_vars),
             run_block=self.run_block,
+            tier=self.tier,
             messages=[{"role": "user", "content": user_content}],
         )
         if max_tokens:

@@ -21,7 +21,7 @@ from gateway.provider import LLMProvider
 from orchestrator import nodes
 from orchestrator.nodes import RunResources
 from orchestrator.state import Phase, RunState
-from tests.fakes import FakeSandbox, make_ctx
+from tests.fakes import FakeProviderBase, FakeSandbox, make_ctx
 from tools import test_report as tr
 
 pytestmark = pytest.mark.unit
@@ -315,7 +315,7 @@ class FakeDeps:
     def __init__(self, provider: Any = None) -> None:
         self.engine = None
         self.bus = None
-        self.provider = provider or object()
+        self.provider = provider or FakeProviderBase()
         self.events: list[tuple[str, dict[str, Any]]] = []
 
 
@@ -523,10 +523,7 @@ async def test_an_unclassifiable_failure_is_triaged_into_a_note(
 ) -> None:
     from contracts import FailureClassification, Triage
 
-    class Provider:
-        provider_name = "test"
-        model = "test/model"
-
+    class Provider(FakeProviderBase):
         async def parse(self, req: Any, output: Any) -> Any:
             return (
                 Triage(

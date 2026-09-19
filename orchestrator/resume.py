@@ -13,6 +13,7 @@ from uuid import UUID
 
 from core.errors import AutosweError, SandboxError
 from gateway.pricing import priced
+from gateway.routing import ROUTES
 from observability.logging import get_logger
 from orchestrator.checkpoint import load_latest
 from orchestrator.deps import Deps
@@ -58,14 +59,35 @@ async def load_state(deps: Deps, run_id: UUID) -> tuple[RunState, bool]:
     #
     # Re-derived on resume too, deliberately: a checkpoint carries whatever was true when
     # it was written, and the model behind a resumed run can have changed under it.
-    state.cost_measurable = priced(deps.provider.model, deps.settings.llm_base_url)
+    unpriced = unpriced_models(deps.provider, deps.settings.llm_base_url)
+    state.cost_measurable = not unpriced
     if not state.cost_measurable:
         log.warning(
             "cost_not_measurable",
-            model=deps.provider.model,
+            models=unpriced,
             note="the dollar budget cannot bound this run; the wall clock is the only limit",
         )
     return state, resumed
+
+
+def reachable_models(provider: Any) -> list[str]:
+    """Every model this run could send a call to.
+
+    Not just `provider.model`: budget-aware routing sends a step to a different tier when
+    the money runs low, and on a deployment with per-tier models that is a different model
+    id with a different price.
+    """
+    return sorted({provider.model} | {provider.model_for(r.tier) for r in ROUTES.values()})
+
+
+def unpriced_models(provider: Any, base_url: str | None) -> list[str]:
+    """Those of them this build has no price for.
+
+    Any one is enough to make the run's dollar total untrustworthy, so the caller treats a
+    non-empty list as "cost cannot be measured" rather than pricing what it can and
+    quietly omitting the rest.
+    """
+    return [m for m in reachable_models(provider) if not priced(m, base_url)]
 
 
 async def reattach(state: RunState, deps: Deps, res: RunResources, worker_id: str) -> None:

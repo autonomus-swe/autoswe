@@ -277,8 +277,13 @@ class OpenAICompatProvider:
         base_url: str,
         client: Any | None = None,
         timeout_s: float = 600.0,
+        models: dict[str, str] | None = None,
     ) -> None:
         self.model = model
+        # Tier -> model id, for deployments that have more than one model to offer. Empty
+        # is the normal case and means every tier resolves to `model`, which is exactly
+        # what every call did before budget-aware routing existed.
+        self.models = {tier: name for tier, name in (models or {}).items() if name}
         self.base_url = base_url
         self._api_key = api_key
         self._timeout_s = timeout_s
@@ -315,6 +320,7 @@ class OpenAICompatProvider:
         tools: list[dict[str, Any]],
         tool_choice: Any,
         max_tokens: int,
+        model: str | None = None,
     ) -> ChatTurn:
         """One model turn, retrying responses that carry no usable content.
 
@@ -324,8 +330,13 @@ class OpenAICompatProvider:
         """
         from openai import APIError
 
+        # The request's model, not the provider's: after a budget downgrade they differ,
+        # and `usage_from` prices the answer against whichever one is passed here. Pricing
+        # a Sonnet answer at Opus rates would make the downgrade look like it saved
+        # nothing, which is the one number the whole feature is judged on.
+        model = model or self.model
         kwargs: dict[str, Any] = {
-            "model": self.model,
+            "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
         }
@@ -350,7 +361,7 @@ class OpenAICompatProvider:
                     rate_limited += 1
                     log.warning(
                         "provider_rate_limited",
-                        model=self.model,
+                        model=model,
                         wait_s=round(wait_s, 1),
                         attempt=rate_limited,
                         retries=RATE_LIMIT_RETRIES,
@@ -363,7 +374,7 @@ class OpenAICompatProvider:
             if attempt < EMPTY_RESPONSE_RETRIES:
                 log.warning(
                     "provider_empty_response",
-                    model=self.model,
+                    model=model,
                     attempt=attempt + 1,
                     retries=EMPTY_RESPONSE_RETRIES,
                 )
@@ -371,8 +382,7 @@ class OpenAICompatProvider:
             attempt += 1  # only an empty answer counts against this budget
         if resp is None or not resp.choices:
             raise ProviderError(
-                f"provider returned no choices {EMPTY_RESPONSE_RETRIES + 1} times "
-                f"(model {self.model!r})"
+                f"provider returned no choices {EMPTY_RESPONSE_RETRIES + 1} times (model {model!r})"
             )
         choice = resp.choices[0]
         msg = choice.message
@@ -385,10 +395,16 @@ class OpenAICompatProvider:
             content=msg.content,
             tool_calls=calls,
             finish_reason=str(choice.finish_reason or "stop"),
-            usage=usage_from(resp, self.model, self.base_url),
+            usage=usage_from(resp, model, self.base_url),
             raw_message=_assistant_message(msg),
             refusal=getattr(msg, "refusal", None),
         )
+
+    def model_for(self, tier: str | None) -> str:
+        """The model a tier resolves to. The default whenever this deployment has not been
+        given a model for it — a single-model endpoint is the common case, and failing a
+        run because a router asked for `sonnet` would be absurd."""
+        return self.models.get(tier or "", self.model)
 
     # ---- the cached prefix ------------------------------------------------------
 
@@ -427,6 +443,7 @@ class OpenAICompatProvider:
                     tools=tool_defs,
                     tool_choice="auto",
                     max_tokens=req.max_tokens,
+                    model=self.model_for(req.tier),
                 )
             except _InvalidToolCall as e:
                 rejected += 1
@@ -541,7 +558,11 @@ class OpenAICompatProvider:
         last_error = "no structured output produced"
         for _attempt in range(2):
             turn = await self._complete(
-                messages=messages, tools=[tool], tool_choice=choice, max_tokens=req.max_tokens
+                messages=messages,
+                tools=[tool],
+                tool_choice=choice,
+                max_tokens=req.max_tokens,
+                model=self.model_for(req.tier),
             )
             total = total.add(turn.usage)
             if turn.refusal or turn.finish_reason == "content_filter":

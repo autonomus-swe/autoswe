@@ -23,11 +23,13 @@ from contracts import (
     TestReport,
     Usage,
 )
+from gateway.routing import ROUTES
 from orchestrator.nodes import RunResources, escalate_node
 from orchestrator.state import Phase, RunState
 from orchestrator.transition import MAX_DEBUG_ATTEMPTS
 from repo.gitcmd import git
 from repo.worktree import Worktree
+from tests.fakes import FakeProviderBase
 
 pytestmark = pytest.mark.unit
 
@@ -80,7 +82,7 @@ class FakeDeps:
         self.events: list[tuple[str, dict[str, Any]]] = []
         self._replan = replan
         self._steps = steps or []
-        self.provider = object()
+        self.provider = FakeProviderBase()
         self.settings = None
         # A real Deps always has this. None means "no GitHub client", which is what stops
         # `_fail` from trying to open a draft pull request in these tests — relying on the
@@ -103,11 +105,13 @@ def _stub_io(monkeypatch: pytest.MonkeyPatch) -> None:
             )
         ]
 
-    async def begin(st: Any, deps: Any, res: Any, agent: str, phase: Any) -> tuple[Any, Any, Any]:
+    async def begin(
+        st: Any, deps: Any, res: Any, agent: str, phase: Any
+    ) -> tuple[Any, Any, Any, Any]:
         class Hooks:
             usage = Usage()
 
-        return uuid4(), Hooks(), None
+        return uuid4(), Hooks(), None, ROUTES["decomposer"]
 
     async def end(*a: Any, **k: Any) -> None:
         return None
@@ -118,6 +122,9 @@ def _stub_io(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(nodes, "_end", end)
 
     class FakeDecomposer:
+        def __init__(self, run_block: Any = None, tier: Any = None) -> None:
+            self.tier = tier
+
         async def replan(
             self, provider: Any, goal: str, task: Any, rep: Any, hyps: Any, hooks: Any = None
         ) -> Any:
@@ -142,7 +149,7 @@ def _stub_io(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def deps_with(replan: TaskGraphSpec | None = None) -> Any:
     d = FakeDeps()
-    d.provider = type("P", (), {"_replan_result": replan})()
+    d.provider = type("P", (FakeProviderBase,), {"_replan_result": replan})()
     return d
 
 
