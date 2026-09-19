@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from agents import pr_writer, reviewer, security, tester
 from agents.analyzer import AnalyzerAgent
+from agents.base import fence
 from agents.coder import CoderAgent
 from agents.debugger import DebuggerAgent
 from agents.decomposer import DecomposerAgent
@@ -32,6 +33,7 @@ from contracts import (
     TestReport,
 )
 from core.errors import AgentError, BudgetExhausted, RepoError, SandboxError
+from gateway import caching
 from gateway.routing import route_for
 from observability.logging import bind_run, get_logger
 from orchestrator.approvals import ApprovalGate
@@ -77,6 +79,10 @@ class RunResources:
     # The embedding pass, which runs while ANALYZE and PLAN do. Held so teardown can
     # cancel it rather than leaving it writing rows after the run is over.
     embedding_task: asyncio.Task[None] | None = None
+    # Repository facts, conventions and map, rendered once and then left alone. It is the
+    # cached half of every later request's prefix, so rebuilding it per step — even to the
+    # same bytes — is a risk with no upside. See gateway/caching.
+    run_block: str | None = None
     view_hashes: dict[str, str] = field(default_factory=dict)
 
 
@@ -391,6 +397,29 @@ async def _repo_map(state: RunState, deps: Deps, res: RunResources) -> str:
     return render_map(res.worktree.path)
 
 
+async def _ensure_run_block(state: RunState, deps: Deps, res: RunResources) -> str:
+    """The repository context every looping agent shares, built once and then frozen.
+
+    Built lazily rather than at the end of ANALYZE because a resumed run starts in a fresh
+    process with an empty `RunResources` and never re-enters that node. Lazily and *once*:
+    the value is the cached half of the request prefix, so rebuilding it per step — even to
+    the same bytes, which the goal-ranked map does not guarantee — would spend the cache
+    for nothing.
+    """
+    if res.run_block is None:
+        rendered = caching.render_run_block(
+            state.facts, state.repo, await _repo_map(state, deps, res)
+        )
+        # Fenced, because this block sits in `system` and everything in it is derived from
+        # the repository: file names the repository chose, signatures it wrote, and a
+        # profile a model summarised from both. Unfenced in `system` it would read as the
+        # operator's own instructions, which is a worse place for it than the messages it
+        # used to travel in.
+        res.run_block = fence("repository context", rendered) if rendered else ""
+        log.info("run_block_built", chars=len(res.run_block))
+    return res.run_block
+
+
 async def analyze_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     """Survey the repository. Fills state.repo and the test command every later phase uses."""
     assert res.worktree is not None
@@ -640,6 +669,7 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     await _emit(deps, state.run_id, "agent_started", {"agent": "coder", "task_id": task.id})
 
     route = route_for("coder")
+    run_block = await _ensure_run_block(state, deps, res)
     ctx = _run_context(state, res, step_id, "coder", deps.engine)
     hooks = OrchestratorHooks(
         run_id=state.run_id,
@@ -659,7 +689,7 @@ async def code_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     result = None
     outcome = None
     try:
-        result, outcome = await CoderAgent().run(
+        result, outcome = await CoderAgent(run_block).run(
             deps.provider, ctx, state.goal, task, hooks, files=_task_files(res, task)
         )
         state.task_results[task.id] = result
@@ -748,6 +778,7 @@ async def debug_node(state: RunState, deps: Deps, res: RunResources) -> RunState
     await _emit(deps, state.run_id, "agent_started", {"agent": "debugger", "task_id": task.id})
 
     route = route_for("debugger")
+    run_block = await _ensure_run_block(state, deps, res)
     ctx = _run_context(state, res, step_id, "debugger", deps.engine)
     hooks = OrchestratorHooks(
         run_id=state.run_id,
@@ -767,7 +798,7 @@ async def debug_node(state: RunState, deps: Deps, res: RunResources) -> RunState
     hypothesis = None
     result = None
     try:
-        hypothesis, result, _outcome = await DebuggerAgent().run(
+        hypothesis, result, _outcome = await DebuggerAgent(run_block).run(
             deps.provider,
             ctx,
             state.goal,
@@ -1209,11 +1240,12 @@ async def review_node(state: RunState, deps: Deps, res: RunResources) -> RunStat
         await _emit(deps, state.run_id, "review_report", {"findings": 0, "blocking": False})
         return state
 
+    run_block = await _ensure_run_block(state, deps, res)
     pre_id, pre_hooks, _ = await _begin(state, deps, res, "review_pre", Phase.REVIEW)
     candidates: list[ReviewFinding] = []
     error: str | None = None
     try:
-        candidates = await reviewer.ReviewPreAgent().run(
+        candidates = await reviewer.ReviewPreAgent(run_block).run(
             deps.provider, state.goal, state.plan, state.tasks, files, pre_hooks
         )
     except Exception as e:  # the pre-pass is the expendable half
@@ -1227,7 +1259,7 @@ async def review_node(state: RunState, deps: Deps, res: RunResources) -> RunStat
     dropped: list[ReviewFinding] = []
     error = None
     try:
-        report, dropped, _outcome = await reviewer.ReviewAgent().run(
+        report, dropped, _outcome = await reviewer.ReviewAgent(run_block).run(
             deps.provider, ctx, state.goal, candidates, files, hooks
         )
         state.review = report
@@ -1347,11 +1379,12 @@ async def security_node(state: RunState, deps: Deps, res: RunResources) -> RunSt
 
     found = await scanners.run_all(res.sandbox, res.worktree.path, state.base_sha or "HEAD", files)
 
+    run_block = await _ensure_run_block(state, deps, res)
     step_id, hooks, ctx = await _begin(state, deps, res, "security", Phase.SECURITY)
     report = None
     error = None
     try:
-        report, _outcome = await security.SecurityAgent().run(
+        report, _outcome = await security.SecurityAgent(run_block).run(
             deps.provider, ctx, state.goal, found, files, hooks
         )
         state.security = report

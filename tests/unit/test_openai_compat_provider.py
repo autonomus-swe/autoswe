@@ -15,7 +15,7 @@ from agents.submit import submit_tool
 from contracts import LLMModel, TaskResult, ToolResult, Usage
 from contracts.plan import TaskGraphSpec
 from core.errors import ProviderError
-from gateway import pricing
+from gateway import caching, pricing
 from gateway.openai_compat_provider import (
     RATE_LIMIT_FALLBACK_WAIT_S,
     RATE_LIMIT_MAX_WAIT_S,
@@ -648,3 +648,107 @@ VALID_TASK = {
     "acceptance_criteria": ["subtract(3, 2) returns 1"],
     "test_selector": "tests/test_ops.py",
 }
+
+
+# ---- the cached prefix -----------------------------------------------------------------
+#
+# What gets *sent*, as opposed to what `gateway/caching` computes. The two can drift: a
+# provider that builds the blocks correctly and then rebuilds them per turn caches nothing,
+# and every unit test of the builder would still pass.
+
+
+LONG_PROMPT = "You are the Coder. " + "Follow the conventions you see. " * 80
+
+
+async def test_the_system_message_is_the_role_prompt_then_the_run_block(tmp_path: Path) -> None:
+    provider = ScriptedProvider([turn("done")])
+
+    await provider.run_tools(
+        Request(role="coder", system=LONG_PROMPT, run_block="# Repository\ntest: pytest -q"),
+        tools_for("coder"),
+        make_ctx(tmp_path),
+        NullHooks(),
+    )
+
+    blocks = provider.requests[0]["messages"][0]["content"]
+    assert [b["text"] for b in blocks] == [LONG_PROMPT, "# Repository\ntest: pytest -q"]
+    assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+
+
+async def test_the_prefix_does_not_move_between_turns_of_one_loop(tmp_path: Path) -> None:
+    """The failure this exists for: a prefix rebuilt per turn is a cache nothing ever
+    reads, and the run looks identical apart from the bill."""
+    sb = FakeSandbox(tmp_path, lambda cmd: ok("out\n"))
+    provider = ScriptedProvider(
+        [
+            turn(calls=[("c1", "bash", {"command": "ls"})]),
+            turn(calls=[("c2", "bash", {"command": "ls"})]),
+            turn("done"),
+        ]
+    )
+
+    await provider.run_tools(
+        Request(role="coder", system=LONG_PROMPT, run_block="# Repository\nfixed"),
+        tools_for("coder"),
+        make_ctx(tmp_path, sb),
+        NullHooks(),
+    )
+
+    prefixes = {
+        caching.prefix_of(r["messages"][0]["content"], r["tools"]) for r in provider.requests
+    }
+    assert len(prefixes) == 1, "the cached prefix changed mid-loop"
+
+
+async def test_an_endpoint_that_does_not_read_cache_control_gets_a_plain_string(
+    tmp_path: Path,
+) -> None:
+    provider = ScriptedProvider([turn("done")])
+    provider.base_url = "https://api.openai.com/v1"
+    provider._breakpoints = False
+
+    await provider.run_tools(
+        Request(role="coder", system=LONG_PROMPT),
+        tools_for("coder"),
+        make_ctx(tmp_path),
+        NullHooks(),
+    )
+
+    assert provider.requests[0]["messages"][0]["content"] == LONG_PROMPT
+
+
+async def test_a_long_loop_marks_a_tool_result_so_the_transcript_caches_too(
+    tmp_path: Path,
+) -> None:
+    """Two static blocks cache the prefix; a forty-turn Coder loop grows a transcript far
+    larger than that, and none of it was covered."""
+    sb = FakeSandbox(tmp_path, lambda cmd: ok("out\n"))
+    calls = [
+        turn(calls=[(f"c{i}", "bash", {"command": "ls"})]) for i in range(caching.TOOL_RESULT_EVERY)
+    ]
+    provider = ScriptedProvider([*calls, turn("done")])
+
+    await provider.run_tools(
+        Request(role="coder", system=LONG_PROMPT, run_block="fixed"),
+        tools_for("coder"),
+        make_ctx(tmp_path, sb),
+        NullHooks(),
+    )
+
+    final = provider.requests[-1]["messages"]
+    assert any(caching._is_marked(m) for m in final), "no moving breakpoint was placed"
+    assert sum(caching._is_marked(m) for m in final) <= caching.MOVING_BREAKPOINTS
+
+
+def test_the_cache_hit_rate_is_what_the_model_read_from_cache() -> None:
+    assert Usage(input_tokens=200, cache_read_tokens=800).cache_hit_rate == 0.8
+    assert Usage(input_tokens=1000).cache_hit_rate == 0.0
+    assert Usage().cache_hit_rate == 0.0, "no call is not a missed cache"
+
+
+def test_output_tokens_do_not_count_against_the_cache_hit_rate() -> None:
+    """They were never candidates for a hit, so counting them would make a long answer
+    look like a caching failure."""
+    read_everything = Usage(input_tokens=0, cache_read_tokens=1000, output_tokens=5000)
+
+    assert read_everything.cache_hit_rate == 1.0

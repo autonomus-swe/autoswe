@@ -19,7 +19,7 @@ from pydantic import BaseModel, ValidationError
 
 from contracts import ToolResult, Usage
 from core.errors import PolicyViolation, ProviderError
-from gateway import pricing
+from gateway import caching, pricing
 from gateway.provider import Hooks, Request, RunOutcome
 from gateway.tool_schemas import function_tool, to_openai_tool
 from observability.logging import get_logger
@@ -284,6 +284,7 @@ class OpenAICompatProvider:
         self._timeout_s = timeout_s
         self._client = client
         self._extra_body: dict[str, Any] = {}
+        self._breakpoints = caching.supports_breakpoints(base_url)
         if "openrouter.ai" in base_url:
             self._extra_body["usage"] = {"include": True}  # exact cost per call
 
@@ -389,12 +390,24 @@ class OpenAICompatProvider:
             refusal=getattr(msg, "refusal", None),
         )
 
+    # ---- the cached prefix ------------------------------------------------------
+
+    def _system(self, req: Request) -> dict[str, Any]:
+        """The system message: role prompt then run block, marked cacheable where that is
+        read. See `gateway/caching` for why the split is where it is."""
+        return {
+            "role": "system",
+            "content": caching.build_system(
+                req.system, req.run_block, breakpoints=self._breakpoints
+            ),
+        }
+
     # ---- tool loop ------------------------------------------------------------
 
     async def run_tools(
         self, req: Request, tools: Sequence[BaseTool], ctx: RunContext, hooks: Hooks
     ) -> RunOutcome:
-        messages: list[dict[str, Any]] = [{"role": "system", "content": req.system}, *req.messages]
+        messages: list[dict[str, Any]] = [self._system(req), *req.messages]
         tool_defs = [to_openai_tool(t) for t in tools]
         by_name = {t.name: t for t in tools}
         total = Usage()
@@ -477,6 +490,10 @@ class OpenAICompatProvider:
                 called.add(call.name)
                 text = await self._call_tool(call, by_name, ctx, hooks)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
+            if self._breakpoints:
+                # A forty-turn Coder loop grows a transcript far larger than the system
+                # prefix, and the two static blocks cache none of it.
+                caching.moving_breakpoints(messages, turns)
         return RunOutcome("", turns, total, "max_iterations")
 
     async def _call_tool(
@@ -519,7 +536,7 @@ class OpenAICompatProvider:
         name = f"submit_{output.__name__}"
         tool = function_tool(name, f"Return the {output.__name__}.", output.model_json_schema())
         choice = {"type": "function", "function": {"name": name}}
-        messages: list[dict[str, Any]] = [{"role": "system", "content": req.system}, *req.messages]
+        messages: list[dict[str, Any]] = [self._system(req), *req.messages]
         total = Usage()
         last_error = "no structured output produced"
         for _attempt in range(2):

@@ -53,7 +53,6 @@ class CoderAgent(Agent):
             hooks,
             extra_tools=[submit],
             must_call=submit.name,
-            test_command=ctx.test_command,
         )
         result = ctx.submitted.get(SUBMIT_KEY)
         if not isinstance(result, TaskResult):
