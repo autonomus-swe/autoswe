@@ -7,6 +7,7 @@ import socket
 from typing import Any
 from uuid import UUID
 
+from arq import cron
 from arq.connections import RedisSettings
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -15,6 +16,7 @@ from core.settings import Settings, get_settings
 from observability.logging import configure_logging, get_logger
 from observability.tracing import configure_tracing
 from orchestrator.deps import Deps
+from orchestrator.gc import run_gc
 from orchestrator.nodes import RunResources
 from orchestrator.resume import load_state, reattach
 from orchestrator.runner import run
@@ -113,6 +115,12 @@ class _RedisOnlySettings(BaseSettings):
 
 class WorkerSettings:
     functions = [run_job]  # noqa: RUF012
+    # Every ten minutes. `unique=True` is arq's default and is what matters with more than
+    # one worker: the job is claimed once per tick rather than once per worker, so two
+    # workers do not race to remove the same directory.
+    cron_jobs = [  # noqa: RUF012
+        cron(run_gc, minute={0, 10, 20, 30, 40, 50}, run_at_startup=False, max_tries=1)
+    ]
     redis_settings = RedisSettings.from_dsn(_RedisOnlySettings().redis_url)
     max_jobs = 2
     job_timeout = 50 * 60
