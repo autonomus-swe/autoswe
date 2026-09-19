@@ -1,6 +1,15 @@
 # Pinned, not `python:3.12-slim`. That tag followed Debian from 12 to 13, which moved
 # glibc from 2.36 to 2.41 under an image we had already built and tested against.
 FROM python:3.12-slim-bookworm
+# Build this with `--pull` (which `make sandbox-image` does). The tag above pins the Debian
+# release and not its patch level, so a locally cached base layer keeps its original
+# package snapshot indefinitely — and apt inside the build sees that snapshot, so
+# `apt-get update` does not rescue it.
+#
+# Measured: a base cached long enough carried libpcre2 10.42-1 rather than
+# 10.42-1+deb12u1, and `git clone` in the resulting image failed with
+# `fatal: fetch-pack: invalid index-pack output` — index-pack segfaulting inside a library
+# git links. Nothing in that message mentions a library or a stale image.
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git ripgrep build-essential curl ca-certificates coreutils \
