@@ -19,7 +19,7 @@ from pydantic import BaseModel, ValidationError
 
 from contracts import ToolResult, Usage
 from core.errors import PolicyViolation, ProviderError
-from gateway import caching, pricing
+from gateway import caching, context, pricing
 from gateway.provider import Hooks, Request, RunOutcome
 from gateway.tool_schemas import function_tool, to_openai_tool
 from observability.logging import get_logger
@@ -51,6 +51,11 @@ _RECOVERABLE_MARKERS = (
 # ledger row, and a model that asks for twenty reads in one turn would otherwise take
 # twenty connections from a pool sized for five and deadlock the step it was speeding up.
 MAX_PARALLEL_TOOLS = 8
+# Turns a step gets after its token budget runs out, to commit and submit. Enough for a
+# cooperative model to land its work; not enough for one that ignores the instruction to
+# keep going to `max_iterations`, which is what makes the budget a bound rather than a
+# request.
+TASK_BUDGET_GRACE_TURNS = 3
 RATE_LIMIT_RETRIES = 6
 RATE_LIMIT_MAX_WAIT_S = 90.0
 RATE_LIMIT_FALLBACK_WAIT_S = 20.0
@@ -449,6 +454,9 @@ class OpenAICompatProvider:
         called: set[str] = set()
         reminders = 0
         rejected = 0
+        # The turn on which the task budget ran out, so it is said once rather than every
+        # turn afterwards.
+        over_budget: int | None = None
         # A reminder has to buy a turn, not spend the last one. Sharing the budget means a
         # model that explores to the cap gets told to submit and then has no turn left to
         # do it in, which is the same as never reminding it. Still bounded: the ceiling is
@@ -530,10 +538,39 @@ class OpenAICompatProvider:
                 strict=True,
             ):
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
+
+            # Order matters here. Trimming rewrites old messages, which moves the cached
+            # prefix, so the breakpoints are placed afterwards against the transcript that
+            # will actually be sent rather than the one that existed a moment ago.
+            context.trim(messages)
             if self._breakpoints:
                 # A forty-turn Coder loop grows a transcript far larger than the system
                 # prefix, and the two static blocks cache none of it.
                 caching.moving_breakpoints(messages, turns)
+
+            if over_budget is not None and turns - over_budget >= TASK_BUDGET_GRACE_TURNS:
+                # The allowance bought a few turns to land the work. A model that spent
+                # them on something else does not get more: without this the budget only
+                # *asks*, and a loop that ignores it runs to `max_iterations` anyway.
+                log.info(
+                    "task_budget_stopped",
+                    role=req.role,
+                    tokens=total.total_tokens,
+                    grace_turns=TASK_BUDGET_GRACE_TURNS,
+                )
+                return RunOutcome(turn.content or "", turns, total, "task_budget")
+            if over_budget is None and _over_task_budget(req, total):
+                # Not an abort. The step has spent its allowance, so it is told to land
+                # what it has — the work so far is usually most of the value, and throwing
+                # it away to save the last few thousand tokens is the wrong trade.
+                over_budget = turns
+                log.info(
+                    "task_budget_spent",
+                    role=req.role,
+                    budget=req.task_budget_tokens,
+                    tokens=total.total_tokens,
+                )
+                messages.append({"role": "user", "content": _land_it(req)})
         return RunOutcome("", turns, total, "max_iterations")
 
     @staticmethod
@@ -684,3 +721,25 @@ class OpenAICompatProvider:
                     {"role": "user", "content": f"Your output was not valid: {last_error}"}
                 )
         raise ProviderError(f"structured output failed validation twice: {last_error}")
+
+
+def _over_task_budget(req: Request, spent: Usage) -> bool:
+    """Whether this step has spent the allowance for its role."""
+    budget = req.task_budget_tokens
+    return budget is not None and spent.total_tokens >= budget
+
+
+def _land_it(req: Request) -> str:
+    """What a step is told when its budget runs out.
+
+    Deliberately not "stop". A Coder forty turns into a task has usually done most of the
+    work, and discarding it to save the last few thousand tokens is the wrong trade — so it
+    is asked to commit what is consistent and submit, which is the same thing the run-level
+    budget gate asks for.
+    """
+    finish = f" then call `{req.must_call}`" if req.must_call else ""
+    return (
+        "You have used this step's token budget. Do not start anything new. Commit whatever "
+        f"is already consistent with `git_commit`,{finish} and say plainly in the summary "
+        "what is unfinished."
+    )

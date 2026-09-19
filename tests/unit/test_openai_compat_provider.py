@@ -16,6 +16,7 @@ from contracts import LLMModel, TaskResult, ToolResult, Usage
 from contracts.plan import TaskGraphSpec
 from core.errors import ProviderError
 from gateway import caching, pricing
+from gateway import context as gateway_context
 from gateway.openai_compat_provider import (
     RATE_LIMIT_FALLBACK_WAIT_S,
     RATE_LIMIT_MAX_WAIT_S,
@@ -46,12 +47,26 @@ def turn(
         )
         for cid, name, args in (calls or [])
     ]
+    # `raw_message` carries the tool calls, as `_assistant_message` builds it from a real
+    # response. Without them the transcript this fake produces has no record of what was
+    # called, and anything that reads the history back — context trimming, a test of it —
+    # is measuring the fake rather than the loop.
+    raw: dict[str, Any] = {"role": "assistant", "content": content or ""}
+    if tool_calls:
+        raw["tool_calls"] = [
+            {
+                "id": c.id,
+                "type": "function",
+                "function": {"name": c.name, "arguments": c.arguments},
+            }
+            for c in tool_calls
+        ]
     return ChatTurn(
         content=content,
         tool_calls=tool_calls,
         finish_reason=finish or ("tool_calls" if tool_calls else "stop"),
         usage=Usage(input_tokens=tokens[0], output_tokens=tokens[1], cost_usd=0.001),
-        raw_message={"role": "assistant", "content": content or ""},
+        raw_message=raw,
     )
 
 
@@ -752,3 +767,111 @@ def test_output_tokens_do_not_count_against_the_cache_hit_rate() -> None:
     read_everything = Usage(input_tokens=0, cache_read_tokens=1000, output_tokens=5000)
 
     assert read_everything.cache_hit_rate == 1.0
+
+
+# ---- context editing and task budgets, through the loop --------------------------------------
+#
+# The joins. `context.trim` can be correct and the budget arithmetic can be correct, and
+# the feature still does nothing if the loop never calls one or never acts on the other.
+
+
+def big_call(i: int) -> ChatTurn:
+    # `bash`, not `read_file`: the editor tools read the real filesystem host-side, so a
+    # FakeSandbox handler never reaches them and the transcript stays small — which is how
+    # the first version of this test asserted trimming against a loop that had nothing to
+    # trim.
+    return turn(calls=[(f"c{i}", "bash", {"command": f"cat f{i}.py"})], tokens=(5_000, 100))
+
+
+async def test_a_long_loop_has_its_old_tool_results_cleared(tmp_path: Path) -> None:
+    """Measured through the real loop: the transcript that goes out on the last turn is
+    smaller than the one that would have, and the recent results are intact."""
+    big = "x" * 12_000
+    sb = FakeSandbox(tmp_path, lambda cmd: ok(big))
+    script = [big_call(i) for i in range(40)] + [turn("done")]
+    provider = ScriptedProvider(script)
+
+    await provider.run_tools(
+        Request(role="coder", system=LONG_PROMPT),
+        tools_for("coder"),
+        make_ctx(tmp_path, sb),
+        NullHooks(),
+    )
+
+    final = provider.requests[-1]["messages"]
+    results = [m for m in final if m.get("role") == "tool"]
+    cleared = [m for m in results if gateway_context.CLEARED in str(m["content"])]
+    assert cleared, "a forty-turn loop should have trimmed something"
+    assert all(gateway_context.CLEARED not in str(m["content"]) for m in results[-3:]), (
+        "the most recent results are what the model is working from"
+    )
+
+
+async def test_the_calls_survive_the_clearing(tmp_path: Path) -> None:
+    """A loop that forgets what it ran runs it again, which costs more than the clearing
+    saved."""
+    sb = FakeSandbox(tmp_path, lambda cmd: ok("x" * 12_000))
+    provider = ScriptedProvider([big_call(i) for i in range(40)] + [turn("done")])
+
+    await provider.run_tools(
+        Request(role="coder", system=LONG_PROMPT),
+        tools_for("coder"),
+        make_ctx(tmp_path, sb),
+        NullHooks(),
+    )
+
+    final = provider.requests[-1]["messages"]
+    assert sum(1 for m in final if m.get("tool_calls")) == 40
+
+
+async def test_a_step_that_spends_its_budget_is_asked_to_land_the_work(tmp_path: Path) -> None:
+    sb = FakeSandbox(tmp_path, lambda cmd: ok("out"))
+    provider = ScriptedProvider([big_call(i) for i in range(10)] + [turn("done")])
+
+    await provider.run_tools(
+        Request(role="coder", system=LONG_PROMPT, task_budget_tokens=8_000),
+        tools_for("coder"),
+        make_ctx(tmp_path, sb),
+        NullHooks(),
+    )
+
+    nudges = [
+        m
+        for r in provider.requests
+        for m in r["messages"]
+        if m.get("role") == "user" and "token budget" in str(m.get("content", ""))
+    ]
+    assert nudges, "the step was never told it had run out"
+    assert "git_commit" in str(nudges[0]["content"])
+
+
+async def test_a_step_that_ignores_the_nudge_is_stopped(tmp_path: Path) -> None:
+    """Without this the budget only *asks*: a loop that keeps calling tools runs to
+    `max_iterations` and spends the money anyway."""
+    sb = FakeSandbox(tmp_path, lambda cmd: ok("out"))
+    provider = ScriptedProvider([big_call(i) for i in range(40)] + [turn("done")])
+
+    out = await provider.run_tools(
+        Request(role="coder", system=LONG_PROMPT, task_budget_tokens=8_000, max_iterations=40),
+        tools_for("coder"),
+        make_ctx(tmp_path, sb),
+        NullHooks(),
+    )
+
+    assert out.stop_reason == "task_budget"
+    assert out.turns < 40, "it stopped rather than running to the iteration cap"
+
+
+async def test_a_step_with_no_budget_runs_to_its_own_end(tmp_path: Path) -> None:
+    """The control. Most roles have no ceiling, and must be unaffected."""
+    sb = FakeSandbox(tmp_path, lambda cmd: ok("out"))
+    provider = ScriptedProvider([big_call(0), turn("done")])
+
+    out = await provider.run_tools(
+        Request(role="planner", system=LONG_PROMPT),
+        tools_for("coder"),
+        make_ctx(tmp_path, sb),
+        NullHooks(),
+    )
+
+    assert out.stop_reason == "end_turn" and out.final_text == "done"

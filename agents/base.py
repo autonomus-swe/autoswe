@@ -45,7 +45,12 @@ class Agent:
     tool_names: ClassVar[list[str]] = []
     max_iterations: ClassVar[int] = 60
 
-    def __init__(self, run_block: str | None = None, tier: str | None = None) -> None:
+    def __init__(
+        self,
+        run_block: str | None = None,
+        tier: str | None = None,
+        task_budget_tokens: int | None = None,
+    ) -> None:
         """Per-run context and the model tier this step was routed to.
 
         Held on the agent rather than threaded through every ``run()`` signature: each
@@ -59,6 +64,7 @@ class Agent:
         """
         self.run_block = run_block
         self.tier = tier
+        self.task_budget_tokens = task_budget_tokens
 
     def system_prompt(self, **vars: Any) -> str:
         template = load_prompt(self.prompt_file)
@@ -87,6 +93,7 @@ class Agent:
             messages=[{"role": "user", "content": user_content}],
             max_iterations=self.max_iterations,
             must_call=must_call,
+            task_budget_tokens=self.task_budget_tokens,
         )
         # The step span goes here rather than at the eleven call sites in `nodes.py`: this
         # is what every one of them funnels through, and putting it here makes `llm_call`

@@ -30,6 +30,9 @@ class Request:
     # A tool the agent must call before its turn may end (e.g. "submit_result"). When the
     # model stops without it, the loop reminds it rather than discarding the whole run.
     must_call: str | None = None
+    # Tokens this step may spend before the loop stops and asks it to land what it has.
+    # `None` means only the run budget applies. See `Budget.task_budget`.
+    task_budget_tokens: int | None = None
 
 
 @dataclass
@@ -37,7 +40,7 @@ class RunOutcome:
     final_text: str
     turns: int
     usage: Usage
-    stop_reason: str  # end_turn | max_tokens | max_iterations | refusal
+    stop_reason: str  # end_turn | max_tokens | max_iterations | refusal | task_budget
 
 
 class Hooks(Protocol):
