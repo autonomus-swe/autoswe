@@ -42,6 +42,26 @@ Every scripted provider in the suite calls `git_commit`, so no test had ever exe
 agent simply forgetting. `pr_node` now refuses to open a pull request with no commits, and
 two unit tests cover it.
 
+**2026-09-19, the Phase 4 review criterion, `nvidia/nemotron-3-ultra-550b-a55b:free`.**
+Two findings, one about the test and one about the quota.
+
+*The test was measuring the wrong thing.* It drove a whole run with
+`base_branch=g-token-expiry`, and a run reviews the diff it *produced* — `base_sha..HEAD`.
+The seeded bug is in the branch relative to `main`, so the reviewer never saw it: the test
+was asking whether the reviewer objects to the agent's own work. `tests/e2e/test_m4.py` now
+drives the two-pass reviewer over `main..<branch>` directly, which is what the criterion
+asks and costs three or four calls instead of fifty.
+
+*The free tier is 50 requests a day.* Verbatim from the API, after the quota was spent:
+
+    Rate limit exceeded: free-models-per-day.
+    Add 10 credits to unlock 1000 free model requests per day
+
+So the wall is a daily cap, not the model. $10 of credit raises it to 1000 requests a day
+**of free models** — the credit is an unlock, not per-token spend — which covers the whole
+eval matrix at no marginal cost. Until then it is roughly one full run per day, and the
+run below used it.
+
 **What this says about the free tier.** The earlier note below concluded that free API
 tiers do not work. That was measured against `openrouter/free`, which is not a model id —
 20 of OpenRouter's 22 free models support tool calling, and two of them produced a valid
