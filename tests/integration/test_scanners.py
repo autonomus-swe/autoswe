@@ -26,7 +26,7 @@ from contracts import SecurityFinding
 from repo import diff as d
 from repo.gitcmd import git
 from sandbox.docker import DockerSandbox
-from tests.fakes import make_ctx, planted_secret
+from tests.fakes import FakeProviderBase, make_ctx, planted_secret
 from tools import scanners
 
 pytestmark = pytest.mark.integration
@@ -370,9 +370,7 @@ async def test_a_planted_secret_makes_the_whole_report_critical(host_tmp: Path) 
     assert leaks, "the real gitleaks did not find the planted key"
     assert all(f.in_diff for f in leaks), "tag_in_diff flipped it, which is what gates"
 
-    class Provider:
-        provider_name, model = "test", "test/model"
-
+    class Provider(FakeProviderBase):
         async def run_tools(self, req: object, tools: object, ctx: object, hooks: object) -> object:
             # Verifies everything it was handed and claims the run is clean. The harness
             # recomputes `critical` from the severities and disagrees.

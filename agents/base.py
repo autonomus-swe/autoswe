@@ -8,11 +8,26 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
+from contracts import Usage
 from gateway.provider import Hooks, LLMProvider, Request, RunOutcome
+from gateway.routing import ROUTES
+from observability.tracing import annotate, trace_span
 from tools.base import BaseTool, RunContext
 from tools.registry import REGISTRY
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+def _usage_attrs(usage: Usage) -> dict[str, Any]:
+    """What a step cost, for the span. The same numbers the ledger holds, where somebody
+    reading a trace can see them beside the time they took."""
+    return {
+        "step_input_tokens": usage.input_tokens,
+        "step_output_tokens": usage.output_tokens,
+        "step_cache_read_tokens": usage.cache_read_tokens,
+        "step_cache_hit_rate": round(usage.cache_hit_rate, 3),
+        "step_cost_usd": usage.cost_usd,
+    }
 
 
 def load_prompt(name: str) -> str:
@@ -73,7 +88,37 @@ class Agent:
             max_iterations=self.max_iterations,
             must_call=must_call,
         )
-        return await provider.run_tools(req, [*self.tools(), *(extra_tools or [])], ctx, hooks)
+        # The step span goes here rather than at the eleven call sites in `nodes.py`: this
+        # is what every one of them funnels through, and putting it here makes `llm_call`
+        # and `tool.*` nest inside it without anyone having to remember to.
+        with self._step_span(provider):
+            outcome = await provider.run_tools(
+                req, [*self.tools(), *(extra_tools or [])], ctx, hooks
+            )
+            # Inside the block, not after it: `annotate` writes to whatever span is
+            # current, and one line further down that is the *phase*, where a step's token
+            # count reads as the phase's.
+            annotate(
+                step_turns=outcome.turns,
+                step_stop_reason=outcome.stop_reason,
+                **_usage_attrs(outcome.usage),
+            )
+        return outcome
+
+    def _step_span(self, provider: LLMProvider) -> Any:
+        """`step.<role>`, named with what was actually routed.
+
+        Effort comes from `ROUTES` rather than from the caller: a downgrade changes the
+        tier and deliberately leaves the effort alone, so the table is always right about
+        it and there is nothing to thread through.
+        """
+        return trace_span(
+            f"step.{self.role}",
+            role=self.role,
+            model=provider.model_for(self.tier),
+            tier=self.tier,
+            effort=ROUTES[self.role].effort if self.role in ROUTES else None,
+        )
 
     async def run_structured[T: BaseModel](
         self,
@@ -102,7 +147,9 @@ class Agent:
         if max_tokens:
             req.max_tokens = max_tokens
         started = time.monotonic()
-        obj, usage = await provider.parse(req, output)
+        with self._step_span(provider):
+            obj, usage = await provider.parse(req, output)
+            annotate(step_structured=output.__name__, **_usage_attrs(usage))
         if hooks is not None:
             await hooks.on_message(obj, usage, int((time.monotonic() - started) * 1000))
         return obj

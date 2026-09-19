@@ -24,6 +24,7 @@ from docker.types import Mount
 from contracts import ExecResult
 from core.errors import SandboxError
 from observability.logging import get_logger
+from observability.tracing import annotate, trace_span
 from sandbox.base import cap_output
 
 log = get_logger(__name__)
@@ -216,6 +217,23 @@ class DockerSandbox:
         env: dict[str, str] | None = None,
         max_output_bytes: int = 40_000,
     ) -> ExecResult:
+        # The span wraps the whole call rather than just the subprocess wait, so the
+        # attributes below land on it. Annotating outside it would put the command and the
+        # exit code on the parent span, where they would read as the *tool's* exit code.
+        with trace_span("sandbox.exec", sandbox=self.id, command=cmd[:200], timeout_s=timeout_s):
+            return await self._exec_inner(
+                cmd, timeout_s=timeout_s, cwd=cwd, env=env, max_output_bytes=max_output_bytes
+            )
+
+    async def _exec_inner(
+        self,
+        cmd: str,
+        *,
+        timeout_s: int,
+        cwd: str,
+        env: dict[str, str] | None,
+        max_output_bytes: int,
+    ) -> ExecResult:
         if self.container is None:
             raise SandboxError(f"{self.id} is not running")
         container = self.container
@@ -246,6 +264,7 @@ class DockerSandbox:
         duration_ms = int((time.monotonic() - t0) * 1000)
         stdout, t1 = cap_output(out, max_output_bytes)
         stderr, t2 = cap_output(err, max_output_bytes)
+        annotate(exit_code=code, truncated=t1 or t2, timed_out=code == EXIT_TIMEOUT)
         return ExecResult(
             exit_code=code,
             stdout=stdout,

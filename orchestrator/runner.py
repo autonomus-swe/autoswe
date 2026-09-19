@@ -57,6 +57,25 @@ async def run(state: RunState, deps: Deps, res: RunResources | None = None) -> R
     res = res or RunResources()
     bind_run(state.run_id)
     watcher = asyncio.create_task(_watch_for_cancel(state, deps, res))
+    # The root span, so everything below it is one tree rather than a phase's worth of
+    # orphans. It wraps the loop rather than sitting inside it, so it still closes when a
+    # phase raises — the traces worth reading are mostly those.
+    with trace_span(
+        "run",
+        run_id=str(state.run_id),
+        repo=state.repo_url,
+        provider=deps.provider.provider_name,
+        model=deps.provider.model,
+        goal=state.goal[:200],
+    ):
+        return await _run_phases(state, deps, res, watcher)
+
+
+async def _run_phases(
+    state: RunState, deps: Deps, res: RunResources, watcher: asyncio.Task[None]
+) -> RunState:
+    """The phase loop. Split from `run` only so the root span wraps it without indenting
+    two hundred lines."""
     try:
         async with session(deps.engine) as s:
             await db.mark_run_started(s, state.run_id)
