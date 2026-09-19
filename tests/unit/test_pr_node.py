@@ -36,10 +36,11 @@ from contracts import (
     Usage,
 )
 from core.errors import RepoError
+from gateway.routing import ROUTES
 from orchestrator.nodes import RunResources, pr_node
 from orchestrator.state import Phase, RunState
 from repo.worktree import Worktree
-from tests.fakes import planted_secret
+from tests.fakes import FakeProviderBase, planted_secret
 
 pytestmark = pytest.mark.unit
 
@@ -110,10 +111,7 @@ def state(**kw: Any) -> RunState:
     return RunState(**{**base, **kw})
 
 
-class FakeProvider:
-    provider_name = "test"
-    model = "test/model"
-
+class FakeProvider(FakeProviderBase):
     def __init__(self, result: Any = DESCRIPTION) -> None:
         self.result = result
         self.calls = 0
@@ -175,9 +173,11 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> Recorder:
     async def gitcmd(*a: Any, **kw: Any) -> str:
         return " src/a.py | 2 +-"
 
-    async def begin(st: Any, deps: Any, res: Any, agent: str, phase: Any) -> tuple[Any, Any, Any]:
+    async def begin(
+        st: Any, deps: Any, res: Any, agent: str, phase: Any
+    ) -> tuple[Any, Any, Any, Any]:
         rec.order.append(f"begin:{agent}")
-        return uuid4(), None, None
+        return uuid4(), None, None, ROUTES[agent]
 
     async def end(*a: Any, **kw: Any) -> None:
         return None

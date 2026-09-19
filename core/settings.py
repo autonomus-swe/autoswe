@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     # OpenRouter's auto-router over currently-free models. Individual ":free" slugs
     # get withdrawn without notice, which then 404s mid-run; the router does not.
     llm_model: str = "openrouter/free"
+    # Per-tier models, for a deployment that has more than one to offer. Unset is the
+    # normal case and means every tier resolves to `llm_model` — budget-aware routing then
+    # still runs and correctly reports that it changed nothing, rather than claiming a
+    # saving it did not make. See gateway/routing.
+    llm_model_opus: str | None = None
+    llm_model_sonnet: str | None = None
+    llm_model_haiku: str | None = None
     llm_max_tokens: int = Field(default=16_000, gt=0)
     # Ten minutes is generous for a hosted endpoint and nowhere near enough for a local
     # one. A 7B model on CPU generates at well under a token a second, so a single

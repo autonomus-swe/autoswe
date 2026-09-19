@@ -280,6 +280,9 @@ async def test_a_structured_call_reaches_the_ledger_through_the_hooks() -> None:
         provider_name = "test"
         model = "test/model"
 
+        def model_for(self, tier: str | None) -> str:
+            return self.model
+
         async def parse(self, req: Any, output: Any) -> Any:
             return Triage(classifications=[]), Usage(input_tokens=40, cost_usd=0.002)
 
