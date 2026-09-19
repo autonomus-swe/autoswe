@@ -150,3 +150,98 @@ async def test_stop_is_idempotent(host_tmp: Path) -> None:
 
     with pytest.raises(NotFound):
         docker.from_env().containers.get(name)
+
+
+# ---- resource limits -----------------------------------------------------------------------
+#
+# The phase document says a container's limits "cannot be recreated", so the higher value
+# for a compiling install must be predicted at creation. Measured here, that is wrong: both
+# dials move on a running container. These tests exist to keep that true — if a future
+# change goes back to `nano_cpus`, creation still works and only `set_cpus` silently stops
+# doing anything, which no other test would notice.
+
+
+@requires_docker
+async def test_the_requested_limits_are_what_the_cgroup_reports(host_tmp: Path) -> None:
+    """`cpu_quota`/`cpu_period` rather than `nano_cpus`. Same cgroup value — that is the
+    point — but only these two are accepted by `container.update()`."""
+    ws = host_tmp / "limits"
+    ws.mkdir()
+    sb = DockerSandbox(
+        uuid.uuid4(),
+        ws,
+        image=IMAGE,
+        network="agent-install",
+        user=f"{os.getuid()}:{os.getgid()}",
+        mem_limit="6g",
+        cpus=2.0,
+    )
+    await sb.start()
+    try:
+        res = await sb.exec("cat /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max")
+    finally:
+        await sb.stop(remove=True)
+
+    cpu_max, cpu_period, memory_max = res.stdout.split()
+    assert (cpu_max, cpu_period) == ("200000", "100000"), "2 CPUs, as nano_cpus=2e9 also gave"
+    assert int(memory_max) == 6 * 1024**3
+
+
+@requires_docker
+async def test_cpus_can_be_raised_for_an_install_and_handed_back(box: DockerSandbox) -> None:
+    """The install is the only CPU-bound part of a run — a Go build, a node-gyp build — and
+    the only part with a network. Everything after is waiting on a model."""
+    before = (await box.exec("cat /sys/fs/cgroup/cpu.max")).stdout.strip()
+
+    await box.set_cpus(4.0)
+    raised = (await box.exec("cat /sys/fs/cgroup/cpu.max")).stdout.strip()
+    await box.set_cpus(2.0)
+    restored = (await box.exec("cat /sys/fs/cgroup/cpu.max")).stdout.strip()
+
+    assert before == "200000 100000"
+    assert raised == "400000 100000", "the running container was changed, not recreated"
+    assert restored == before
+
+
+@requires_docker
+async def test_asking_for_more_cpus_than_the_host_has_is_clamped(box: DockerSandbox) -> None:
+    """Docker validates a CPU limit against the host's core count and answers 400 —
+    "range of CPUs is from 0.01 to 12.00" on this machine. Unclamped, a limit chosen on a
+    big machine would kill the run in SETUP on every smaller one, which is most CI."""
+    host = box._host_cpus()
+    assert host > 0, "the daemon did not report a CPU count"
+
+    assert box._quota(host * 100) == host * 100_000
+    assert box._quota(1.0) == 100_000, "a request under the ceiling is left alone"
+
+
+@requires_docker
+async def test_a_nonsense_cpu_count_is_clamped_rather_than_sent(box: DockerSandbox) -> None:
+    """`set_cpus` cannot construct an invalid request: the floor in `_quota` means even a
+    negative or absurdly small number becomes a legal quota. Worth pinning, because the
+    obvious way to test the error path — passing a bad number — silently tests nothing."""
+    await box.set_cpus(-5.0)
+
+    cpu_max = (await box.exec("cat /sys/fs/cgroup/cpu.max")).stdout.strip()
+    assert cpu_max == "1000 100000", "the 0.01 floor, not an error and not unchanged"
+
+
+async def test_a_limit_change_on_a_container_that_is_gone_does_not_raise(
+    host_tmp: Path,
+) -> None:
+    """The real failure mode: the install dies because the container went away, and the
+    `finally` that hands the CPUs back runs against nothing. Losing the run there would
+    turn a slow install into a failed one."""
+    ws = host_tmp / "gone"
+    ws.mkdir()
+    sb = DockerSandbox(
+        uuid.uuid4(),
+        ws,
+        image=IMAGE,
+        network="agent-install",
+        user=f"{os.getuid()}:{os.getgid()}",
+    )
+    await sb.start()
+    await sb.stop(remove=True)
+
+    await sb.set_cpus(2.0)  # must not raise

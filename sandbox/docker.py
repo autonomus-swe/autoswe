@@ -35,6 +35,27 @@ EXIT_KILLED = 137  # 128 + SIGKILL, what a killed container reports
 START_TIMEOUT_S = 15.0
 START_POLL_S = 0.15
 START_SETTLE_SAMPLES = 4  # ~0.6s of continuous "running" before we trust it
+# The CFS period every CPU limit here is expressed against. `cpus` * this = the quota.
+CPU_PERIOD_US = 100_000
+
+
+def image_present(tag: str, client: Any | None = None) -> bool:
+    """Whether this image is already on the host.
+
+    Asked before a container is created, because `containers.run` on a missing tag does
+    not fail — it tries to *pull* it. These tags are built locally and exist in no
+    registry, so the pull fails with "pull access denied ... may require 'docker login'",
+    which is converted to a SandboxError and kills the run in SETUP. The real problem is a
+    missing local image and the message names authentication.
+
+    An unreachable daemon answers False, which routes the caller to its fallback; the
+    daemon being down is a failure that surfaces more clearly a moment later at `run`.
+    """
+    try:
+        (client or docker.from_env()).images.get(tag)
+        return True
+    except Exception:
+        return False
 
 
 class DockerSandbox:
@@ -48,11 +69,17 @@ class DockerSandbox:
         user: str,
         runtime: str | None = None,
         no_new_privileges: bool = True,
+        mem_limit: str = "4g",
+        tmpfs_size: str = "1g",
+        cpus: float = 2.0,
         client: Any | None = None,
     ) -> None:
         self.id = f"run-{run_id}"
         self.workspace = workspace
         self.image = image
+        self.mem_limit = mem_limit
+        self.tmpfs_size = tmpfs_size
+        self.cpus = cpus
         self.network = network
         self.user = user
         self.runtime = runtime
@@ -68,6 +95,53 @@ class DockerSandbox:
         if self._client is None:
             self._client = docker.from_env()
         return self._client
+
+    def _quota(self, cpus: float) -> int:
+        """CFS quota for a CPU count, clamped to what this host actually has.
+
+        Docker validates a CPU limit against the host's core count and refuses anything
+        larger — measured: asking for 24 CPUs on a 12-CPU host is a 400 with "range of CPUs
+        is from 0.01 to 12.00". The sandbox turns an APIError into a SandboxError, so an
+        unclamped request would kill the run in SETUP on any machine smaller than the one
+        the limit was chosen on, which includes most CI runners.
+
+        Memory gets no such treatment because Docker does not validate it: a 64g limit is
+        accepted without comment on a 38g host. A ceiling that is never reached is harmless;
+        one that is reached kills the container with 137, which is already handled.
+        """
+        available = self._host_cpus()
+        asked = max(0.01, cpus)
+        if available and asked > available:
+            log.info("sandbox_cpus_clamped", asked=asked, host_cpus=available)
+            asked = float(available)
+        return int(asked * CPU_PERIOD_US)
+
+    def _host_cpus(self) -> int:
+        try:
+            return int(self.client.info().get("NCPU") or 0)
+        except Exception:  # an unreachable daemon fails later, and more clearly, at run
+            return 0
+
+    async def set_cpus(self, cpus: float) -> None:
+        """Change this container's CPU allowance while it runs.
+
+        Used to give a compiling install more of the machine and take it back afterwards.
+        Never raises: a limit that could not be adjusted leaves the container running at
+        the one it already had, which is slower and entirely correct.
+        """
+        if self.container is None:
+            return
+        container = self.container
+        quota = self._quota(cpus)
+
+        def _update() -> None:
+            container.update(cpu_period=CPU_PERIOD_US, cpu_quota=quota)
+
+        try:
+            await asyncio.to_thread(_update)
+            log.info("sandbox_cpus_changed", sandbox=self.id, cpus=cpus)
+        except Exception as e:
+            log.warning("sandbox_cpus_unchanged", sandbox=self.id, error=f"{type(e).__name__}: {e}")
 
     async def start(self) -> None:
         await asyncio.to_thread(self._start_sync, self.no_new_privileges)
@@ -94,11 +168,18 @@ class DockerSandbox:
             detach=True,
             user=self.user,
             read_only=True,
-            tmpfs={"/tmp": "size=1g,exec"},  # noqa: S108 (container path)
+            # Charged against `mem_limit`, so the two scale together — see sandbox/select.
+            tmpfs={"/tmp": f"size={self.tmpfs_size},exec"},  # noqa: S108 (container path)
             mounts=[Mount(target="/workspace", source=str(self.workspace.resolve()), type="bind")],
             network=self.network,
-            mem_limit="4g",
-            nano_cpus=2_000_000_000,
+            mem_limit=self.mem_limit,
+            # `cpu_quota`/`cpu_period` rather than `nano_cpus`, which is the same cgroup
+            # value — measured: both produce `cpu.max` of "200000 100000" — but only these
+            # two are accepted by `container.update()`. A container created with
+            # `nano_cpus` can be changed afterwards only through an undocumented raw POST,
+            # which is not something to depend on for the install-time bump below.
+            cpu_period=CPU_PERIOD_US,
+            cpu_quota=self._quota(self.cpus),
             pids_limit=512,
             cap_drop=["ALL"],
             environment={

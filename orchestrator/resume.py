@@ -21,6 +21,7 @@ from orchestrator.nodes import LOCK_TTL_S, RunResources, install_command
 from orchestrator.state import DEFAULT_TEST_COMMAND, Phase, RunState
 from repo import worktree as wt
 from repo.clone import ensure_bare_clone, repo_key
+from sandbox import select
 from storage import repo as db
 from storage.db import session
 
@@ -118,13 +119,27 @@ async def reattach(state: RunState, deps: Deps, res: RunResources, worker_id: st
         )
         log.info("resume_worktree_recreated", path=str(path))
 
-    sandbox = deps.sandbox_factory(state.run_id, res.worktree.path)
+    # The image the first attempt chose, from the checkpoint. Only re-derived when the
+    # checkpoint predates this field — an older checkpoint loaded after an upgrade — and
+    # even then from the same facts, so the answer is the same unless the mapping moved.
+    sandbox = deps.sandbox_factory(
+        state.run_id, res.worktree.path, state.facts, state.sandbox_image
+    )
     res.sandbox = sandbox
+    # From what the container is actually running, not from the checkpoint: a checkpoint
+    # written before this field existed carries None, and the factory may have fallen back.
+    limits = select.limits_for(state.facts, sandbox.image)
     with contextlib.suppress(SandboxError):
         await sandbox.stop(remove=True)  # a container from the dead attempt cannot be trusted
     await sandbox.start()
     await sandbox.connect_install_network()
-    await sandbox.exec(install_command(res.worktree.path, state.facts), timeout_s=900)
+    if limits.raises_cpus_to_install:
+        await sandbox.set_cpus(limits.install_cpus)
+    try:
+        await sandbox.exec(install_command(res.worktree.path, state.facts), timeout_s=900)
+    finally:
+        if limits.raises_cpus_to_install:
+            await sandbox.set_cpus(limits.cpus)
     await sandbox.disconnect_network()
     if await sandbox.has_network():
         raise SandboxError("sandbox still has network access after resume")

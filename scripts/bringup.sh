@@ -261,7 +261,7 @@ migrate() {
 }
 
 sandbox_image() {
-  step "Sandbox image — where the agent's code actually runs"
+  step "Sandbox images — where the agent's code actually runs"
   local image
   image="$(env_get SANDBOX_IMAGE agent-sandbox:python-3.12)"
   if docker images "$image" --format '{{.Repository}}:{{.Tag}}' | grep -qx "$image"; then
@@ -273,7 +273,30 @@ sandbox_image() {
     else
       bad "the image did not build; runs will fail in SETUP until it does"
       note "the unit suite passes without it; the integration suite skips the sandbox tests"
+      return
     fi
+  fi
+
+  # The siblings are reported, not built. A missing one costs a Node or Go repository its
+  # toolchain and nothing else — the run falls back to the python image, where the agent
+  # can still read, search and edit. Building all three unasked is fifteen minutes and
+  # 3.5 GB for a capability most developers here never exercise.
+  # Read from sandbox/select.py rather than restated here, so an image added there is
+  # reported without anyone remembering to edit this shell.
+  local siblings missing=()
+  siblings="$(uv run --no-sync python -c \
+    'from sandbox.select import ALL_IMAGES, PYTHON_IMAGE
+print(" ".join(i for i in ALL_IMAGES if i != PYTHON_IMAGE))' 2>/dev/null || echo "")"
+  for sibling in $siblings; do
+    if docker images "$sibling" --format '{{.Repository}}:{{.Tag}}' | grep -qx "$sibling"; then
+      ok "$sibling present"
+    else
+      missing+=("$sibling")
+    fi
+  done
+  if [ ${#missing[@]} -gt 0 ]; then
+    note "not built: ${missing[*]} — \`make sandbox-images\` builds them"
+    note "without them such a repository falls back to $image and cannot build its deps"
   fi
 }
 
