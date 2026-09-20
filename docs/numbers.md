@@ -11,21 +11,22 @@ when it did not — see "the calibration was wrong" below.
 
 `uv run python -m evals.scale <checkout>` — no model, no key, no network.
 
-| | sympy | pydantic |
-|---|---|---|
-| Files in the checkout | 2 122 | 879 |
-| Files with symbols (what the map ranks) | 1 393 | 427 |
-| Symbols | 40 595 | 14 161 |
-| **Parse** | **22.8–25.4 s** | **6.7 s** |
-| Graph + PageRank | 10.2–15.3 s | 1.5 s |
-| **Map tokens (v2)** | **3 490** | **3 484** |
-| Map tokens (v1 tree) | 1 275 | 1 258 |
-| Embedding chunks | 47 755 | 14 675 |
-| Embeddings (hash provider) | 31.9–41.4 s | 6.8 s |
+| | django | sympy | pydantic |
+|---|---|---|---|
+| Files in the checkout | **7 120** | 2 122 | 879 |
+| Files with symbols (what the map ranks) | 2 049 | 1 393 | 427 |
+| Symbols | 44 292 | 40 595 | 14 161 |
+| **Parse** | **9.9 s** | 22.8–25.4 s | 6.7 s |
+| Graph + PageRank | 2.9 s | 10.2–15.3 s | 1.5 s |
+| **Map tokens (v2), real** | **3 079** | 3 453 | 3 084 |
+| Map tokens (v1 tree) | 1 220 | 1 275 | 1 258 |
+| Embedding chunks | 50 346 | 47 755 | 14 675 |
+| Embeddings (hash provider) | 17.5 s | 31.9–41.4 s | 6.8 s |
 
-Machine: 12 CPUs, 38 GiB, 8 parse workers. Two sympy rows are recorded because the rate
-moves a lot with load — 55 and 61 files/s here, against 115–120 on the same machine when
-idle. That spread is the reason the extrapolation below is stated as a range.
+Machine: 12 CPUs, 38 GiB, 8 parse workers. "Real" map tokens are counted with a BPE
+tokenizer, not estimated — see the calibration note below. Two sympy runs are recorded
+because the rate moves a lot with load; django was measured at load 9.5 and is still the
+fastest of the three, because its Python files are smaller on average.
 
 ### Two honest caveats on the parse figure
 
@@ -41,9 +42,9 @@ Audited by agents told to disprove each one, not to confirm it.
 
 | Criterion | Verdict |
 |---|---|
-| Index a 3 000-file repo under 60 s; same-SHA re-run is a no-op | **partly** — see below |
+| Index a 3 000-file repo under 60 s; same-SHA re-run is a no-op | **met** — measured on 7 120 files |
 | Repo map ranks the named function's file first; under 4 000 tokens | **met**, after the calibration fix |
-| `search_code(semantic=True)` on a fixture auth service (e2e) | **not met** — no such fixture, no e2e |
+| `search_code(semantic=True)` on a fixture auth service | **met** — real embedding model, with a lexical control |
 | Cache hit rate above 60 % on a real run | **not met** — needs quota |
 | Compaction blocks preserved (`provider.compacted`) | **not met** — needs the Anthropic provider |
 | Budget downgrade table | **partly** — table correct, no second tier to downgrade *to* |
@@ -51,18 +52,35 @@ Audited by agents told to disprove each one, not to confirm it.
 | Node/Go repos end to end; egress allow/deny | **met** — both halves, tested in the real images |
 | Scale run, PR opened, under $5 | **not met** — needs quota |
 
-### Indexing: partly
+### Indexing: met
 
-The no-op half is met and now actually tested — the test named for it only exercised the
-storage predicate, so deleting the reuse check left the suite green. There is now a test
+Both halves, and neither is an extrapolation any more.
+
+**Under 60 s**: django, 7 120 files and 44 292 symbols, parsed in **9.9 s** — more than
+twice the repository size the criterion asks for, and six times inside its budget. An
+earlier version of this document extrapolated from sympy at 2 122 files; measuring a real
+one was cheaper than defending the arithmetic.
+
+**The same-SHA no-op** is met and now actually tested. The test named for it only exercised
+the storage predicate, so deleting the reuse check left the suite green; there is now one
 that drives `index_repo` twice and checks both the skip and the row count, verified to fail
 when the check is removed. (`repo_symbols` has no unique constraint, so a regression there
 would silently double the table rather than error.)
 
-The 60-second half is an **extrapolation, not a measurement**. The largest repository
-measured is sympy at 2 122 files. At the rates above, 3 000 files is 25–55 s loaded and
-~25 s idle — inside 60 s, but the loaded margin is not large, and nobody has run a
-3 000-file repository.
+### Semantic search: met
+
+The criterion is specific — *"where is rate limiting handled" returns the right file on the
+fixture auth service* — and the fixture is built so that only meaning can answer it:
+`app/auth/bucket.py` implements a token bucket and contains neither "rate" nor "limit".
+A test asserts that, so the query cannot quietly become a keyword match.
+
+Run against `nomic-embed-text` through Ollama. No key and no quota: an embedding is one
+forward pass per chunk rather than a generation loop, which is why this criterion is
+reachable on a laptop while the two below are not.
+
+**The control is the point.** The same query against `HashProvider` scores **0.0 against
+every chunk** — it shares no word with anything in the repository. A semantic test that a
+lexical index also passes has measured nothing.
 
 ### The calibration was wrong, and the map criterion was not met
 

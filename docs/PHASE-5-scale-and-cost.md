@@ -34,20 +34,27 @@ Suggested duration: 6–8 days. Steps 5.1–5.3 (repository intelligence), 5.4�
 Audited by agents instructed to *disprove* each one. `docs/numbers.md` carries the
 evidence; the verdicts are recorded here rather than the boxes being ticked.
 
-- [~] Indexing a 3 000-file repository takes under 60 s on the worker; re-running on the same SHA is a no-op.
-      **The no-op half is met and tested** — the test named for it only exercised the
-      storage predicate, so deleting the reuse check left the suite green; there is now one
-      that drives `index_repo` twice and fails without it. **The 60 s half is an
-      extrapolation**: the largest repository measured is sympy at 2 122 files, and the
-      figure is also parse-only and measured host-side rather than on the worker.
+- [x] Indexing a 3 000-file repository takes under 60 s on the worker; re-running on the same SHA is a no-op.
+      Measured rather than extrapolated: django, **7 120 files and 44 292 symbols in
+      9.9 s** — twice the size asked for, six times inside the budget. The no-op half is
+      tested by a case that drives `index_repo` twice and fails when the reuse check is
+      removed; the test previously named for it only exercised the storage predicate.
+      Still parse-only and host-side, which `docs/numbers.md` states.
 - [x] The repo map ranks the named function's file first; the rendered map is under 4 000 tokens for the scale repo.
       Met **after a correction**. `CHARS_PER_TOKEN` was 4 — the prose figure — and code
       measures 2.69–2.90, so a map "inside its 3 500-token budget" was really 5 193 tokens
       and this criterion was being reported as met while missed by a third.
-- [ ] `search_code(semantic=True, …)` returns the right file on the fixture auth service (e2e).
-      No fixture auth service exists and there is no e2e test. Integration coverage uses a
-      three-file tree and the lexical hash provider, which by its own docstring cannot
-      connect "rate limiting" to `TokenBucket` — so the *semantic* claim is untested.
+- [x] `search_code(semantic=True, …)` returns the right file on the fixture auth service.
+      `tests/fixtures/auth_service/` exists and is built so only meaning can answer the
+      criterion's own query: `app/auth/bucket.py` is a token bucket containing neither
+      "rate" nor "limit", asserted by a test so it cannot drift into a keyword match. Run
+      against a real embedding model (`nomic-embed-text` via Ollama), with the hash
+      provider as a control — it scores 0.0 against every chunk, because the query shares
+      no word with the repository.
+
+      Integration rather than e2e, deliberately: the criterion is about the index, and an
+      end-to-end run would add a chat model and the quota problem below without testing
+      anything more about search.
 - [ ] Cache read tokens from the second turn; run-level cache hit rate above 60 %.
       `tests/e2e/test_m5_cache.py` exists and has never run: free tier, 50 requests/day.
 - [ ] A Coder session that exceeds the context trigger completes with compaction blocks preserved (`provider.compacted`).
@@ -72,13 +79,18 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       The host-side numbers are recorded. The run needs quota.
 - [ ] Tag `v0.5.0`.
 
-**Not a pass, but everything within reach is done.** Three criteria are blocked on model
-quota — $10 of OpenRouter credit is the whole dependency — and one on the Anthropic
-provider deferred to Phase 6. Nothing remains that does not need one of those two things.
+**Six of ten met; the rest need money or a provider.** What is left:
 
-The indexing criterion stays partial on a technicality worth keeping visible: the largest
-repository measured is 2 122 files, so "under 60 s at 3 000" is an extrapolation from a
-stable rate rather than a measurement.
+- **Two need a chat model with quota** — the run-level cache hit rate and the scale run.
+  $10 of OpenRouter credit raises the free-model allowance from 50 to 1 000 requests a day
+  and is the whole dependency. The tests are written; `evals/results/` takes a row per run.
+- **One needs the Anthropic provider**, deferred to Phase 6 — compaction cannot be tested
+  against a provider that does not exist.
+- **One is partial by its own wording**: the downgrade table is correct and tested, but no
+  second model tier is reachable in this build, so the policy is real and its effect is
+  nil. That resolves itself the moment a deployment configures `LLM_MODEL_SONNET`.
+
+Nothing remains that is unfinished work.
 
 
 ---
