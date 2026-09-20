@@ -94,6 +94,52 @@ services:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
 
+  # The §5 demo script says `docker compose --profile observability up -d langfuse`, and
+  # there was no such service — following the phase document failed at its second line.
+  #
+  # No application code comes with it. `observability/tracing.py` exports OTLP and Langfuse
+  # ingests OTLP natively, so this is an endpoint to point at, not an integration: set
+  # OTEL_EXPORTER_OTLP_ENDPOINT to the URL below and traces arrive. That is the whole
+  # reason this build chose OTLP over the Langfuse SDK, and it is why there is no
+  # `observability/langfuse.py` to go looking for.
+  langfuse:
+    profiles: ["observability"]
+    image: langfuse/langfuse:2
+    ports: ["${LANGFUSE_PORT:-3000}:3000"]
+    environment:
+      # Dev-only credentials, matching `postgres` above. This profile is for reading your
+      # own traces on a laptop; anything else needs real secrets and a real database.
+      DATABASE_URL: postgresql://postgres:dev@langfuse-db:5432/postgres
+      NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3000}
+      NEXTAUTH_SECRET: dev-only-not-a-secret
+      SALT: dev-only-not-a-secret
+      ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+      TELEMETRY_ENABLED: "false"
+      # Its own database on the shared server, so dropping it never touches `autoswe`.
+      LANGFUSE_INIT_ORG_ID: local
+      LANGFUSE_INIT_PROJECT_ID: autoswe
+    depends_on:
+      langfuse-db: {condition: service_healthy}
+
+  # Its own database rather than a second schema on `postgres`. Sharing would need a
+  # `CREATE DATABASE` in an init script, and init scripts run only when the data directory
+  # is empty — so anyone with an existing `pgdata` volume, which is everyone who has run
+  # this before, would get a service that starts and cannot connect. A separate container
+  # works from any starting state and is thrown away with the profile.
+  langfuse-db:
+    profiles: ["observability"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h localhost"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    volumes:
+      - langfusedata:/var/lib/postgresql/data
+
 networks:
   # Declared `external` because the worker creates it — and creates it `internal`. A plain
   # compose entry would make `<project>_agent-egress`, a different network from the one the
@@ -103,3 +149,4 @@ networks:
 
 volumes:
   pgdata: {}
+  langfusedata: {}

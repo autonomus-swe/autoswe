@@ -41,7 +41,21 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=https://cloud.langfuse.com/api/public/otel
 export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic $(printf '%s:%s' "$LANGFUSE_PUBLIC_KEY" "$LANGFUSE_SECRET_KEY" | base64 -w0)"
 ```
 
-Self-hosted: the same two variables with your own host.
+Self-hosted: the same two variables with your own host. For a laptop, the compose file
+carries an `observability` profile — the one `PHASE-5` §5's demo script asks for, and which
+until now did not exist:
+
+```bash
+docker compose --profile observability up -d langfuse   # http://localhost:3000
+# create a project in the UI, then:
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/api/public/otel
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic $(printf '%s:%s' "$LANGFUSE_PUBLIC_KEY" "$LANGFUSE_SECRET_KEY" | base64 -w0)"
+```
+
+It brings its own Postgres rather than borrowing the project's. Sharing would need a
+`CREATE DATABASE` in an init script, and init scripts run only when the data directory is
+empty — so anyone who has run this project before would get a Langfuse that starts and
+cannot connect. The extra container is thrown away with the profile.
 
 `llm_call` spans arrive as generations, with model, token counts and cost already on them.
 
