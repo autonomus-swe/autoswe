@@ -71,6 +71,12 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       So `tests/e2e/test_m5_cache.py` was run for real against Ollama, four times, and each
       failure was a real defect rather than a wall. Two structured-output bugs and one loop
       bug came out of it, all three now fixed (§5.11).
+      **Now measured inside a real run**, not only synthetically. The Analyzer step of a
+      live run against the fixture repository reads 1 412 tokens from cache on its second
+      call (0.853) and 1 814 on its third (0.921), against an opening write of 1 398 —
+      **0.642 aggregated**, above the 60 % the criterion asks for, and rising as that one
+      write amortises. Every role pays its own opening write, though, so the whole-run
+      figure is not this figure; it needs the run to finish.
       **What is left is throughput, not capability.** I twice called this criterion blocked
       on something it was not — first on quota, then on the model declining `must_call`,
       which turned out to be the loop asking politely instead of forcing the call. With

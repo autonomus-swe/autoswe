@@ -104,6 +104,30 @@ character at the start invalidates everything behind it. That is the whole reaso
 back. A caching test with no invalidation control passes just as well on a build with no
 caching at all.
 
+### The same mechanism, inside a real run
+
+The table above is three turns of one synthetic prompt. This is the Analyzer step of an
+actual run against the fixture repository, read from the `llm_calls` ledger:
+
+| Call | Input | Cache read | Rate |
+|---|---|---|---|
+| 1 | 1 398 | 0 | 0.000 |
+| 2 | 243 | 1 412 | **0.853** |
+| 3 | 155 | 1 814 | **0.921** |
+
+Aggregated: 3 226 read against 1 796 input — **0.642**, above the criterion's 60 %, and
+still climbing as the single opening write amortises.
+
+**What this is not.** All three calls are the Analyzer. A *run*-level figure covers every
+role, and each role carries a different system prompt, so each one pays its own opening
+cache write. A run made of many short steps will sit lower than one dominated by a long
+Coder loop, which is precisely why the criterion is written run-level rather than
+per-step — and why this number, encouraging as it is, is not yet that number.
+
+What it does settle is the half that used to rest only on a synthetic test: in the real
+agent loop, with a real repo map and real tool definitions in the prefix, reads start at
+turn 2 and the prefix holds still across turns.
+
 ### Budget downgrade: measured against a server that says which model answered
 
 A unit test can show `model_for("sonnet") != model_for("opus")` and still be consistent with
@@ -171,7 +195,8 @@ the work deserves more scrutiny than one that does not.
 | Analyzer turn under real context | **measured** | **439 s** on qwen2.5:7b — see below |
 | Tasks, attempts, review rounds | pending a run | `tests/e2e/test_m3.py`, `m4.py` |
 | Per-role cost, cost per solved task | pending a run | `runs` + `llm_calls`, PR footer |
-| **Run-level** cache hit rate | pending a run | `tests/e2e/test_m5_cache.py` |
+| Cache reads inside a real agent loop | **measured** | 0.853 / 0.921 on turns 2-3, Analyzer step |
+| **Run-level** cache hit rate (all roles) | pending a run | `tests/e2e/test_m5_cache.py` |
 | Wall clock and total cost for a scale run | needs quota | a 3 000-file repo |
 
 **"Pending a run" rather than "blocked", and the distinction was earned the hard way.**
