@@ -45,7 +45,7 @@ Audited by agents told to disprove each one, not to confirm it.
 | Index a 3 000-file repo under 60 s; same-SHA re-run is a no-op | **met** — measured on 7 120 files |
 | Repo map ranks the named function's file first; under 4 000 tokens | **met**, after the calibration fix |
 | `search_code(semantic=True)` on a fixture auth service | **met** — real embedding model, with a lexical control |
-| Cache hit rate above 60 % on a real run | **partly** — reads from turn 2 measured; run-level needs quota |
+| Cache hit rate above 60 % on a real run | **met** — 0.832 run-level over 34 calls, 5 roles |
 | Compaction blocks preserved (`provider.compacted`) | **not met** — needs the Anthropic provider |
 | Budget downgrade table | **met** — a downgrade reaches a different model that really answers |
 | OTel spans and `/metrics` | **met** |
@@ -104,7 +104,34 @@ character at the start invalidates everything behind it. That is the whole reaso
 back. A caching test with no invalidation control passes just as well on a build with no
 caching at all.
 
-### The same mechanism, inside a real run
+### The caching criterion, met on a real run
+
+34 calls, five roles, through SETUP, ANALYZE, PLAN, DECOMPOSE and the whole CODE / TEST /
+DEBUG loop, against the fixture repository on a local model:
+
+| Role | Calls | Input | Cache read | Rate |
+|---|---|---|---|---|
+| analyzer | 6 | 5 066 | 8 015 | 0.613 |
+| planner | 4 | 1 514 | 4 581 | 0.752 |
+| decomposer | 1 | 219 | 601 | 0.733 |
+| **coder** | **16** | 3 193 | 33 845 | **0.914** |
+| debugger | 7 | 3 159 | 18 175 | 0.852 |
+| **run level** | **34** | **13 151** | **65 217** | **0.832** |
+
+**0.832 against a criterion of 0.60.**
+
+The shape is the one predicted two entries above, and it is worth pointing at because the
+prediction was made while the number was *failing*: at seven calls the run-level figure was
+0.559, below the threshold, because each role pays its own opening cache write and nothing
+had yet amortised them. The Coder loop is what does it — 16 calls sharing one prefix, at
+0.914 — and it drags the whole run from 0.559 to 0.832.
+
+That is the argument for putting the repo map, facts and profile in the cached prefix
+rather than in the messages, stated as a measurement instead of a design intention. The
+roles that make one or two calls never do better than ~0.7; the role that loops does 0.914,
+and it is the role that spends the most.
+
+### The same mechanism, one step at a time
 
 The table above is three turns of one synthetic prompt. This is the Analyzer step of an
 actual run against the fixture repository, read from the `llm_calls` ledger:
@@ -218,7 +245,7 @@ the work deserves more scrutiny than one that does not.
 | Tasks, attempts, review rounds | pending a run | `tests/e2e/test_m3.py`, `m4.py` |
 | Per-role cost, cost per solved task | pending a run | `runs` + `llm_calls`, PR footer |
 | Cache reads inside a real agent loop | **measured** | 0.853 / 0.921 on turns 2-3, Analyzer step |
-| **Run-level** cache hit rate (all roles) | pending a run | `tests/e2e/test_m5_cache.py` |
+| **Run-level** cache hit rate (all roles) | **0.832** | 34 calls, 5 roles, CODE/TEST/DEBUG included |
 | Wall clock and total cost for a scale run | needs quota | a 3 000-file repo |
 
 **"Pending a run" rather than "blocked", and the distinction was earned the hard way.**
@@ -256,9 +283,12 @@ two consecutive calls carrying an *identical* 3 322-token prefix with an explici
 platform lists `input_cache_read` pricing at all, and a model that does not price cache
 reads does not perform them.
 
-So a free-tier run would complete quickly and report a cache hit rate of exactly zero. The
-criterion is not blocked on speed, and not really on "quota" either — it needs a model that
-*implements prompt caching*, which on this platform means a paid one.
+So a free-tier run would complete quickly and report a cache hit rate of exactly zero.
+
+**This analysis was right about the free tier and wrong about the conclusion.** It ended
+"the criterion needs a paid model". It did not: the contended local model, the slow one,
+produced 0.832 once the run was simply allowed to continue. What a paid model buys is the
+*scale* run — volume and wall-clock — not the caching measurement.
 
 **What that costs is the surprise.** 265 tool-capable models publish cache-read pricing,
 and the cheap end is very cheap:
