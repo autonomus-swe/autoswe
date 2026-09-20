@@ -455,6 +455,16 @@ async def _ensure_run_block(state: RunState, deps: Deps, res: RunResources) -> s
     for nothing.
     """
     if res.run_block is None:
+        # Redis first. A resumed run reaching this point has already built a block once,
+        # in a process that is gone; re-rendering would produce a *different* prefix,
+        # because the map is goal-ranked and its own docstring does not promise stable
+        # bytes. Different bytes discard the cached prefix for every agent in the run.
+        # A miss costs one re-render and is never wrong.
+        cached = await deps.bus.get_run_block(state.run_id)
+        if cached is not None:
+            res.run_block = cached
+            log.info("run_block_reused", chars=len(cached))
+            return res.run_block
         rendered = caching.render_run_block(
             state.facts, state.repo, await _repo_map(state, deps, res)
         )
@@ -464,6 +474,10 @@ async def _ensure_run_block(state: RunState, deps: Deps, res: RunResources) -> s
         # operator's own instructions, which is a worse place for it than the messages it
         # used to travel in.
         res.run_block = fence("repository context", rendered) if rendered else ""
+        # Stored even when empty: an empty block is a real answer for a repository nothing
+        # could be ranked in, and re-deriving it on every resume would cost the same walk
+        # each time to learn the same nothing.
+        await deps.bus.set_run_block(state.run_id, res.run_block)
         log.info("run_block_built", chars=len(res.run_block))
     return res.run_block
 
