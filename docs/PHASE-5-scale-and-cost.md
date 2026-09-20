@@ -55,41 +55,19 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       Integration rather than e2e, deliberately: the criterion is about the index, and an
       end-to-end run would add a chat model and the quota problem below without testing
       anything more about search.
-- [~] Cache read tokens from the second turn; run-level cache hit rate above 60 %.
-      **First half met, measured.** `tests/live/test_cache_hits.py` drives a real
-      server that reports `cached_tokens` and watches the prefix across three turns:
-      turn 1 reads 5 of 2 678 tokens, turn 2 reads 2 682 of 2 683 — a hit rate of 1.000 —
-      and turn 3 the same. The control is what makes that worth anything: putting a run id
-      and a timestamp at the *front* of the same system prompt collapses the rate, which is
-      the bug the breakpoint placement exists to avoid, and the test fails if that
-      protection is removed.
-      **Second half not met**, and the reason I first gave for it was wrong. I claimed
-      qwen2.5 "timed out at 240 s on a single tool-calling turn"; the probe had crashed in
-      its own reporting line and I read the traceback as a timeout. Measured properly, a
-      tool-calling turn is **20.1 s on qwen2.5:7b** and **158.4 s on qwen2.5:3b**, both
-      returning correct `tool_calls`.
-      So `tests/e2e/test_m5_cache.py` was run for real against Ollama, four times, and each
-      failure was a real defect rather than a wall. Two structured-output bugs and one loop
-      bug came out of it, all three now fixed (§5.11).
-      **Now measured inside a real run**, across two roles. The Analyzer reaches 0.853,
-      0.921 and 0.983 on successive turns — the mechanism plainly works on a real prefix.
-      But the Analyzer step aggregates to **0.613**, and once the Planner starts the
-      run-level figure falls to **0.559, below the 60 % the criterion asks for**.
-      That is the predicted shape, not a surprise: each role carries a different system
-      prompt and so pays its own opening cache write. Whether a run clears 60 % depends on
-      the Coder loop being long enough to amortise them, which this run has not reached.
-      Recorded while inconvenient rather than waited out — see `docs/numbers.md`, including
-      one turn that lost its cache entirely to what is most likely server-side eviction on
-      a contended host.
-      **What is left is throughput, not capability.** I twice called this criterion blocked
-      on something it was not — first on quota, then on the model declining `must_call`,
-      which turned out to be the loop asking politely instead of forcing the call. With
-      that fixed a run proceeds through its phases normally. It is simply slow: a single
-      Analyzer turn under real context (repo map, facts, tool definitions) measured
-      **439 s**, against 20.1 s for a toy prompt on a warm model — so the isolated probe
-      over-promised by ~20x, and a full run on this hardware is hours.
-      The criterion is therefore pending a completed run: either wall-clock here, or a
-      hosted model, which needs quota. Nothing further is known to be missing in the code.
+- [x] Cache read tokens from the second turn; run-level cache hit rate above 60 %.
+      **Met, on a real run: 0.832 against a threshold of 0.60.** 34 calls across five roles
+      — analyzer 0.613, planner 0.752, decomposer 0.733, **coder 0.914**, debugger 0.852 —
+      through SETUP, ANALYZE, PLAN, DECOMPOSE and the whole CODE / TEST / DEBUG loop.
+      The synthetic half was settled earlier and still holds: three turns of a held-still
+      prompt reach 1.000, and a control that moves a run id to the *front* of the same
+      prompt collapses the rate, so the test cannot pass on a build with no caching.
+      Worth recording how this looked on the way: at seven calls the run-level figure was
+      **0.559 — below the criterion** — and was written into these docs that way, with the
+      reason. Each role pays its own opening cache write, and nothing had yet amortised
+      them. The Coder loop is what does: 16 calls sharing one prefix at 0.914 pull the run
+      from 0.559 to 0.832. That is the case for putting the repo map and facts in the
+      cached prefix rather than the messages, as a measurement rather than an intention.
 - [ ] A Coder session that exceeds the context trigger completes with compaction blocks preserved (`provider.compacted`).
       Not achievable as written: no Anthropic provider, no compaction code, and
       `provider.compacted` is logged nowhere. `gateway/context.py` serves the same intent
@@ -120,15 +98,8 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       several hundred calls against a 50-per-day free tier.
 - [ ] Tag `v0.5.0`.
 
-**Seven of ten met, one half-met. No code is known to be missing.** What is left:
+**Eight of ten met. No code is known to be missing.** What is left:
 
-- **The run-level cache hit rate** needs a completed run. Not a capability gap — after the
-  three bugs in §5.11 a run proceeds through its phases. Both available options were then
-  probed directly, and they fail in opposite directions: local Ollama **caches** (0.853,
-  0.921 measured) but takes 439–823 s a call, while the OpenRouter free tier answers in
-  **3.4 s** and reports `cached_tokens: 0` on an identical 3 322-token prefix — no free
-  model on the platform prices cache reads at all. So the criterion needs a model that
-  *implements prompt caching*, which here means a paid one; see `docs/numbers.md`.
 - **The scale run** needs the same paid model, for the same reason plus volume. Its **$5
   ceiling turns out to have three orders of magnitude of headroom**: at
   `inclusionai/ling-3.0-flash` rates (\$0.02/Mtok in, \$0.004 cached) the fixture run costs
@@ -137,8 +108,8 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
 - **Compaction** needs the Anthropic provider, deferred to Phase 6 — it cannot be tested
   against a provider that does not exist.
 
-This section has been wrong three times, every time in the same direction: assuming
-something was impossible rather than measuring it.
+This section has been wrong **four** times about the caching criterion, every time in the
+same direction: assuming something was impossible rather than measuring it.
 
 1. It bundled caching and the downgrade in with the scale run as "needs quota". Both were
    then closed against a local server — one needed a single repeated call, the other two.
@@ -146,10 +117,16 @@ something was impossible rather than measuring it.
    was a bug in my own probe script. Running it properly found two structured-output bugs.
 3. It claimed the remaining stall was a model that would not honour `must_call`. That was
    our loop asking politely where `parse()` had been forcing the call all along.
+4. It claimed the criterion needed a paid, cache-capable model, because a 7B model on a
+   laptop CPU was too slow to finish a run. The run finished the parts that mattered and
+   returned **0.832**. The latency was real — 439 s, 823 s, 1 124 s a call — and the
+   conclusion drawn from it was not.
 
-Each wrong reason was a real defect wearing a limitation's clothes, and each was only found
-by trying the thing I had already written off. The current reason — wall-clock on a 7B model
-running on a laptop CPU — is the first one that survived being tested.
+Each wrong reason was a real defect or a real number wearing a limitation's clothes, and
+each was found only by trying the thing already written off. The fourth is the one worth
+remembering, because by then the reason had survived three revisions and a costed
+alternative: a blocker can be measured, specific, honestly arrived at, and still wrong.
+What settled it was not better reasoning. It was letting the run keep going.
 
 Nothing remains that is unfinished work.
 
@@ -384,7 +361,7 @@ uv run autoswe status <id> --json | jq '{cost_usd, tasks_done, cache_hit_rate, w
 ## 7. Checklist before Phase 6
 
 - [~] Exit criteria in §1 all ticked; `docs/numbers.md` filled with the scale and ablation numbers.
-      Seven met, one half-met, one deferred to Phase 6, one pending a completed run. The ablation and the host-side numbers are in `docs/numbers.md`; the
+      Eight met, one deferred to Phase 6, one pending quota. The ablation and the host-side numbers are in `docs/numbers.md`; the
       run numbers are the ones still missing, and the file says so per row rather than
       leaving a blank that reads as zero.
 - [x] The provider interface has not grown Anthropic-specific parameters; Phase 6's provider must implement `parse()` and `run_tools()` only.
