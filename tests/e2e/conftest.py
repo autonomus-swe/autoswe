@@ -139,11 +139,35 @@ def origin_repo(e2e_settings: Settings) -> Iterator[Path]:
         shutil.rmtree(root, ignore_errors=True)
 
 
+class RecordingPR:
+    """The pull request PyGithub hands back, with the one method `open_pr` calls on it.
+
+    `add_to_labels` is applied after creation, because `create_pull` takes no labels, and
+    `open_pr` treats a failure there as best-effort — it logs and carries on rather than
+    losing a pull request over a label that does not exist in the repository.
+
+    That is the right trade and it is why this method has to exist here. Without it the
+    stub raises `AttributeError`, `open_pr` swallows it, and every end-to-end run emits a
+    `pr_labels_failed` warning that looks like a product defect and is not. Worse, the
+    suite cannot then tell "labels were applied" from "labelling failed and was
+    swallowed" — the two outcomes are identical from outside, which is exactly the
+    distinction the integration stub records labels in order to preserve.
+    """
+
+    def __init__(self, url: str) -> None:
+        self.html_url = url
+        self.labels: list[str] = []
+
+    def add_to_labels(self, *labels: str) -> None:
+        self.labels.extend(labels)
+
+
 class RecordingGitHub:
     """Stands in for PyGithub so the local end-to-end needs no GitHub account."""
 
     def __init__(self) -> None:
         self.created: list[dict[str, object]] = []
+        self.pulls: list[RecordingPR] = []
 
     def get_repo(self, full_name: str) -> RecordingGitHub:
         return self
@@ -151,9 +175,16 @@ class RecordingGitHub:
     def get_pulls(self, **kw: object) -> list[object]:
         return []
 
-    def create_pull(self, **kw: object) -> object:
+    def create_pull(self, **kw: object) -> RecordingPR:
         self.created.append(kw)
-        return type("PR", (), {"html_url": f"local://pull/{len(self.created)}"})()
+        pr = RecordingPR(f"local://pull/{len(self.created) + 1}")
+        self.pulls.append(pr)
+        return pr
+
+    @property
+    def labelled(self) -> list[str]:
+        """Every label applied across every pull request this stub opened."""
+        return [label for pr in self.pulls for label in pr.labels]
 
 
 @pytest.fixture

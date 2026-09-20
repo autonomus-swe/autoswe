@@ -131,6 +131,39 @@ rather than in the messages, stated as a measurement instead of a design intenti
 roles that make one or two calls never do better than ~0.7; the role that loops does 0.914,
 and it is the role that spends the most.
 
+### A run that finished
+
+A second run, same fixture repository and goal, against `poolside/laguna-s-2.1:free` on
+OpenRouter. It completed the whole pipeline:
+
+    setup -> analyze -> plan -> decompose -> code -> test -> code -> test
+          -> review -> security -> pr
+
+**42 calls, about 16 minutes, $0.00, and it reached the PR phase and opened one.** There is
+no DEBUG phase in that sequence: the Coder got the fixture's tests green on its second
+attempt without the Debugger being called at all. The local 7B model made 40 Debugger calls
+on the same goal and never landed it.
+
+That settles what the local run could not: the pipeline works end to end, and the
+milestone's demo line — repository URL plus an English goal to an opened pull request — is
+real rather than aspirational.
+
+| | local qwen2.5:7b | hosted laguna-s-2.1 |
+|---|---|---|
+| Calls | 69+ (never finished) | **42** |
+| Wall clock | 183 min, unfinished | **~16 min, complete** |
+| Debugger calls | 40 | **0** |
+| Reached | DEBUG loop on task 1 | **PR** |
+| Cache hit rate | **0.832** | 0.065 |
+
+**The two cache figures are the same finding twice.** The free hosted model does not
+implement prompt caching — measured directly, `cached_tokens: 0` on an identical 3 322-token
+prefix — so its 0.065 says nothing about the breakpoint design and everything about the
+model. The caching criterion rests on the local run, which caches properly, and the
+completion criterion rests on the hosted one, which writes working code. Neither model does
+both, and no single run here can show both at once. Worth saying plainly rather than
+quoting whichever number suits.
+
 ### What a real run actually spent
 
 The same run, measured whole. 67 calls over 183 minutes against a three-file fixture
