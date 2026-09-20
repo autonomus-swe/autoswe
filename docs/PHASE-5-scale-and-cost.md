@@ -68,14 +68,18 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       its own reporting line and I read the traceback as a timeout. Measured properly, a
       tool-calling turn is **20.1 s on qwen2.5:7b** and **158.4 s on qwen2.5:3b**, both
       returning correct `tool_calls`.
-      So `tests/e2e/test_m5_cache.py` was run for real against Ollama, three times. It gets
-      through SETUP, ANALYZE and PLAN and into DECOMPOSE. Two structured-output bugs it
-      exposed are now fixed (see §5.11). The third run stopped earlier, at ANALYZE, with
-      the Analyzer declining to call `submit_profile` after both reminders — which is the
-      limit recorded in Phase 2: qwen2.5:7b drives the Analyzer, Planner and Decomposer but
-      will not reliably honour `must_call`, and will not get the Coder to submit at all.
-      That is a model capability, not a missing feature, and no local model on this machine
-      clears it. The criterion needs a stronger model, which needs quota.
+      So `tests/e2e/test_m5_cache.py` was run for real against Ollama, four times, and each
+      failure was a real defect rather than a wall. Two structured-output bugs and one loop
+      bug came out of it, all three now fixed (§5.11).
+      **What is left is throughput, not capability.** I twice called this criterion blocked
+      on something it was not — first on quota, then on the model declining `must_call`,
+      which turned out to be the loop asking politely instead of forcing the call. With
+      that fixed a run proceeds through its phases normally. It is simply slow: a single
+      Analyzer turn under real context (repo map, facts, tool definitions) measured
+      **439 s**, against 20.1 s for a toy prompt on a warm model — so the isolated probe
+      over-promised by ~20x, and a full run on this hardware is hours.
+      The criterion is therefore pending a completed run: either wall-clock here, or a
+      hosted model, which needs quota. Nothing further is known to be missing in the code.
 - [ ] A Coder session that exceeds the context trigger completes with compaction blocks preserved (`provider.compacted`).
       Not achievable as written: no Anthropic provider, no compaction code, and
       `provider.compacted` is logged nowhere. `gateway/context.py` serves the same intent
@@ -102,27 +106,34 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       a real image — install, test, parse — and then breaks the *source* of each and
       asserts the failure comes back with a file and a line the Debugger can act on.
 - [ ] Scale run: PR opened on the 3 000-file repo, total cost under $5, numbers recorded.
-      The host-side numbers are recorded. The run needs quota.
+      The host-side numbers are recorded in `docs/numbers.md`. The run itself needs quota:
+      several hundred calls against a 50-per-day free tier.
 - [ ] Tag `v0.5.0`.
 
-**Seven of ten met, one half-met; the rest need money or a provider.** What is left:
+**Seven of ten met, one half-met. No code is known to be missing.** What is left:
 
-- **Both remaining gaps need a stronger model** — the *run-level* cache hit rate and the
-  scale run. Both mean "across a whole agent run". The blocker is not speed, which is what
-  I wrongly reported first: it is that qwen2.5:7b does not reliably call the tool it is
-  required to call, so a run stalls at whichever agent asks it to submit. $10 of OpenRouter
-  credit raises the free-model allowance from 50 to 1 000 requests a day and is the whole
-  dependency. The tests are written; `evals/results/` takes a row per run.
-- **One needs the Anthropic provider**, deferred to Phase 6 — compaction cannot be tested
+- **The run-level cache hit rate** needs a completed run. Not a capability gap — after the
+  three bugs in §5.11 a run proceeds through its phases; it is that one Analyzer turn under
+  real context measures 439 s on this hardware, so a full run is hours. A hosted model
+  settles it in minutes.
+- **The scale run** needs quota: a 3 000-file repository is several hundred calls against a
+  50-per-day free tier. $10 of OpenRouter credit raises that to 1 000/day.
+- **Compaction** needs the Anthropic provider, deferred to Phase 6 — it cannot be tested
   against a provider that does not exist.
 
-This section has now been wrong twice, both times by assuming a local model could not do
-something rather than measuring it. First it bundled caching and the downgrade in with the
-scale run as "needs quota"; both were then closed against a local server, one needing a
-single repeated call and the other two. Then it claimed a local model could not drive a run
-at all, on the strength of a timeout that turned out to be a bug in my own probe. Running
-it properly found two real structured-output bugs. The remaining limit is real, but it took
-three wrong reasons to find the right one.
+This section has been wrong three times, every time in the same direction: assuming
+something was impossible rather than measuring it.
+
+1. It bundled caching and the downgrade in with the scale run as "needs quota". Both were
+   then closed against a local server — one needed a single repeated call, the other two.
+2. It claimed a local model could not drive a run at all, on the strength of a timeout that
+   was a bug in my own probe script. Running it properly found two structured-output bugs.
+3. It claimed the remaining stall was a model that would not honour `must_call`. That was
+   our loop asking politely where `parse()` had been forcing the call all along.
+
+Each wrong reason was a real defect wearing a limitation's clothes, and each was only found
+by trying the thing I had already written off. The current reason — wall-clock on a 7B model
+running on a laptop CPU — is the first one that survived being tested.
 
 Nothing remains that is unfinished work.
 
@@ -310,7 +321,9 @@ Not in the original breakdown. It exists because the scale run above was assumed
 
 Both matter beyond this phase. Phase 6 adds an open-source model provider, and these are exactly the failures a weaker model produces: the content is right and the container is wrong.
 
-**The limit that remains** is not one of these. After both fixes a run reaches ANALYZE, PLAN and DECOMPOSE but stalls where an agent must call a specific tool — qwen2.5:7b declines `submit_profile` even after both reminders, and per the Phase 2 measurement will not get the Coder to submit at all. That is a model capability, and no model available on this machine clears it.
+**A third bug, found the same way.** The run then stalled wherever an agent had to call a specific tool: the Analyzer declined `submit_profile` through both reminders and threw away four turns of correct work. That looked like a model limit and was not one — `parse()` already forced a single function call, but `run_tools` sent `tool_choice="auto"` on every turn including the reminders, so the loop *asked* a weak model twice and gave up. The last reminder now names the tool. That is this system's own rule applied to its own loop: the model judges, the code decides.
+
+**What actually remains is throughput.** A single Analyzer turn under real context measured 439 s, against 20.1 s for a toy prompt — a full run on this hardware is hours, not a capability gap.
 
 ---
 
@@ -355,8 +368,7 @@ uv run autoswe status <id> --json | jq '{cost_usd, tasks_done, cache_hit_rate, w
 ## 7. Checklist before Phase 6
 
 - [~] Exit criteria in §1 all ticked; `docs/numbers.md` filled with the scale and ablation numbers.
-      Seven met, one half-met, one deferred to Phase 6, one blocked on a model that honours
-      `must_call`. The ablation and the host-side numbers are in `docs/numbers.md`; the
+      Seven met, one half-met, one deferred to Phase 6, one pending a completed run. The ablation and the host-side numbers are in `docs/numbers.md`; the
       run numbers are the ones still missing, and the file says so per row rather than
       leaving a blank that reads as zero.
 - [x] The provider interface has not grown Anthropic-specific parameters; Phase 6's provider must implement `parse()` and `run_tools()` only.
