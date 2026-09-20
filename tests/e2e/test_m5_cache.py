@@ -65,8 +65,15 @@ async def test_a_run_reads_its_prefix_from_cache_after_the_first_call(
         unattended=True,
     )
 
-    final = await run(state, deps)
-    per_step, total = await _cache_report(deps, run_id)
+    try:
+        final = await run(state, deps)
+    finally:
+        # Always, even when the run raised. The numbers *are* this test — its own docstring
+        # says the rate lives in `m5_cache.jsonl` rather than in an assertion — and a run
+        # that stalled or failed still produced every one of them. Reporting only on
+        # success throws away exactly the data you need to find out why a run went wrong,
+        # which is the case you are most likely to be looking at.
+        per_step, total = await _cache_report(deps, run_id)
 
     assert final.phase in (Phase.DONE, Phase.REVIEW, Phase.PR), f"run stalled: {final.error}"
     coder_steps = [(agent, usage) for agent, _phase, usage in per_step if agent == "coder"]
