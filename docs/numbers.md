@@ -168,25 +168,35 @@ the work deserves more scrutiny than one that does not.
 | Cache reads from turn 2 | **measured** | `tests/live/test_cache_hits.py` |
 | Downgrade reaches a different model | **measured** | `tests/live/test_routing.py` |
 | Semantic search on the fixture | **measured** | real embedding model, lexical control |
-| Tasks, attempts, review rounds | blocked | `tests/e2e/test_m3.py`, `m4.py` |
-| Per-role cost, cost per solved task | blocked | `runs` + `llm_calls`, PR footer |
-| **Run-level** cache hit rate | blocked | `tests/e2e/test_m5_cache.py` |
-| Wall clock and total cost for a scale run | blocked | a real run |
+| Analyzer turn under real context | **measured** | **439 s** on qwen2.5:7b — see below |
+| Tasks, attempts, review rounds | pending a run | `tests/e2e/test_m3.py`, `m4.py` |
+| Per-role cost, cost per solved task | pending a run | `runs` + `llm_calls`, PR footer |
+| **Run-level** cache hit rate | pending a run | `tests/e2e/test_m5_cache.py` |
+| Wall clock and total cost for a scale run | needs quota | a 3 000-file repo |
 
-**What "blocked" now means, precisely.** `tests/e2e/test_m5_cache.py` was run against the
-local server three times. It gets through SETUP, ANALYZE and PLAN and into DECOMPOSE, and
-the first two attempts found real bugs — a `list[str]` answered with a bare string, and an
-honest `null` for a field whose schema had no default. Both are fixed. The third attempt
-stopped at ANALYZE because qwen2.5:7b declined to call `submit_profile` after both
-reminders, which is the limit Phase 2 recorded: it drives the Analyzer, Planner and
-Decomposer but does not reliably honour `must_call`, and will not get the Coder to submit
-at all. No model on this machine clears that bar.
+**"Pending a run" rather than "blocked", and the distinction was earned the hard way.**
+`tests/e2e/test_m5_cache.py` has now been run against the local server four times. Every
+failure was a defect in this repository, not a wall:
 
-So the dependency is a model that reliably calls a required tool, not a faster one. The
-OpenRouter key here is free tier — **50 requests a day** — and one end-to-end run spends
-several hundred calls. `evals/results/` takes a row per run, so the bottom four populate
-themselves the moment there is quota; **$10 of OpenRouter credit** raises the allowance to
-1 000 requests a day.
+1. `acceptance_criteria: list[str]` answered with a bare string — repaired by wrapping.
+2. An honest `null` for `test_selector`, whose schema had no default — the field now
+   carries the default the rest of the system already assumed.
+3. The Analyzer declining `submit_profile` through both reminders. This one I reported as
+   a model capability. It was not: `run_tools` sent `tool_choice="auto"` on every turn,
+   including the reminders, so the loop asked twice and gave up while `parse()` had been
+   forcing its call all along. The last reminder now names the tool.
+
+**What is actually left is throughput.** One Analyzer turn under real context — repo map,
+facts, tool definitions — measured **439 s**, against **20.1 s** for a toy prompt on a warm
+model. The isolated probe over-promised by roughly 20x, which is worth recording: a
+micro-benchmark of a model says very little about that model inside an agent loop. A full
+run on this hardware is hours.
+
+So the run-level numbers need either wall-clock here or a hosted model. The OpenRouter key
+is free tier — **50 requests a day** — and one end-to-end run spends several hundred calls;
+**$10 of credit** raises that to 1 000/day. `evals/results/` takes a row per run, and
+`test_m5_cache` now writes its report in a `finally`, so a run that stalls still leaves its
+numbers behind.
 
 ## Cost per solved task
 
