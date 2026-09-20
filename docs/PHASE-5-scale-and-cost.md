@@ -39,7 +39,9 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       9.9 s** — twice the size asked for, six times inside the budget. The no-op half is
       tested by a case that drives `index_repo` twice and fails when the reuse check is
       removed; the test previously named for it only exercised the storage predicate.
-      Still parse-only and host-side, which `docs/numbers.md` states.
+      **Now measured on the worker**, which it had not been: a scale run indexed 3 043
+      files and 44 292 symbols in 12.06 s inside the orchestrator, in SETUP, with the
+      sandbox up. Still parse-only, which `docs/numbers.md` states.
 - [x] The repo map ranks the named function's file first; the rendered map is under 4 000 tokens for the scale repo.
       Met **after a correction**. `CHARS_PER_TOKEN` was 4 — the prose figure — and code
       measures 2.69–2.90, so a map "inside its 3 500-token budget" was really 5 193 tokens
@@ -109,7 +111,14 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       calls and about 16 minutes, reaching the PR phase and opening one, with no DEBUG
       phase at all. The local 7B model made 40 Debugger calls on the identical goal and
       never landed it, which was always a model-quality limit rather than an orchestration
-      one. What remains for this criterion is the scale repository itself.
+      one. What remains is the scale repository itself, and
+      `tests/e2e/test_m5_scale.py` now codifies Step 5.10's procedure for it. Run against a
+      7 091-file Django clone it indexed **3 043 files and 44 292 symbols in 12.06 s inside
+      the orchestrator** — closing the "measured host-side, not on the worker" caveat the
+      indexing criterion had carried since it was first ticked — then stopped on
+      `free-models-per-day: limit 50, remaining 0`. A fixture run needs 42 of those 50.
+      That is the whole of what is left: a documented daily allowance, remedy printed in
+      the error.
 - [ ] Tag `v0.5.0`.
 
 **Eight of ten met. No code is known to be missing.** What is left:
