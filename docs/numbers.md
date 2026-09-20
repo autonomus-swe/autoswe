@@ -217,11 +217,43 @@ model. The isolated probe over-promised by roughly 20x, which is worth recording
 micro-benchmark of a model says very little about that model inside an agent loop. A full
 run on this hardware is hours.
 
-So the run-level numbers need either wall-clock here or a hosted model. The OpenRouter key
-is free tier — **50 requests a day** — and one end-to-end run spends several hundred calls;
-**$10 of credit** raises that to 1 000/day. `evals/results/` takes a row per run, and
-`test_m5_cache` now writes its report in a `finally`, so a run that stalls still leaves its
-numbers behind.
+### What the criterion actually needs, measured against both options
+
+"Needs quota" was too vague to act on, so both alternatives were probed directly. Neither
+can produce the number, and they fail for opposite reasons:
+
+| | Speed per call | Caching |
+|---|---|---|
+| Local Ollama, qwen2.5:7b | 439–823 s | **works** — 0.853, 0.921 measured |
+| OpenRouter free tier | **3.4 s** | **none** — see below |
+
+`poolside/laguna-s-2.1:free` answers a tool-calling turn in 3.4 s, roughly 130× faster than
+this laptop, and emits correct parallel tool calls. It also reports `cached_tokens: 0` on
+two consecutive calls carrying an *identical* 3 322-token prefix with an explicit
+`cache_control` breakpoint. That is not a measurement artefact: no free model on the
+platform lists `input_cache_read` pricing at all, and a model that does not price cache
+reads does not perform them.
+
+So a free-tier run would complete quickly and report a cache hit rate of exactly zero. The
+criterion is not blocked on speed, and not really on "quota" either — it needs a model that
+*implements prompt caching*, which on this platform means a paid one.
+
+**What that costs is the surprise.** 265 tool-capable models publish cache-read pricing,
+and the cheap end is very cheap:
+
+| Model | $/Mtok input | $/Mtok cached | Est. fixture run |
+|---|---|---|---|
+| `inclusionai/ling-3.0-flash` | 0.02 | 0.004 | **~$0.001** |
+| `openai/gpt-5-nano` | 0.05 | 0.005 | ~$0.002 |
+| `google/gemini-2.5-flash-lite` | 0.05 | 0.010 | ~$0.003 |
+
+Estimated over ~40 calls at a ~3 000-token prefix, 70 % cached. The M5 fixture run costs a
+fraction of a cent, and the scale run's **$5 ceiling has three orders of magnitude of
+headroom** at these rates. The dependency is therefore a *minimum* credit purchase, not $10
+of consumption — the runs themselves are nearly free.
+
+`evals/results/` takes a row per run, and `test_m5_cache` writes its report in a `finally`,
+so even a run that stalls leaves its numbers behind.
 
 ## Cost per solved task
 

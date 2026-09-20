@@ -119,11 +119,17 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
 **Seven of ten met, one half-met. No code is known to be missing.** What is left:
 
 - **The run-level cache hit rate** needs a completed run. Not a capability gap — after the
-  three bugs in §5.11 a run proceeds through its phases; it is that one Analyzer turn under
-  real context measures 439 s on this hardware, so a full run is hours. A hosted model
-  settles it in minutes.
-- **The scale run** needs quota: a 3 000-file repository is several hundred calls against a
-  50-per-day free tier. $10 of OpenRouter credit raises that to 1 000/day.
+  three bugs in §5.11 a run proceeds through its phases. Both available options were then
+  probed directly, and they fail in opposite directions: local Ollama **caches** (0.853,
+  0.921 measured) but takes 439–823 s a call, while the OpenRouter free tier answers in
+  **3.4 s** and reports `cached_tokens: 0` on an identical 3 322-token prefix — no free
+  model on the platform prices cache reads at all. So the criterion needs a model that
+  *implements prompt caching*, which here means a paid one; see `docs/numbers.md`.
+- **The scale run** needs the same paid model, for the same reason plus volume. Its **$5
+  ceiling turns out to have three orders of magnitude of headroom**: at
+  `inclusionai/ling-3.0-flash` rates (\$0.02/Mtok in, \$0.004 cached) the fixture run costs
+  about a tenth of a cent. The dependency is a minimum credit purchase, not $10 of
+  consumption.
 - **Compaction** needs the Anthropic provider, deferred to Phase 6 — it cannot be tested
   against a provider that does not exist.
 
