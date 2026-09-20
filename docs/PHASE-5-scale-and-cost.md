@@ -56,7 +56,11 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       end-to-end run would add a chat model and the quota problem below without testing
       anything more about search.
 - [x] Cache read tokens from the second turn; run-level cache hit rate above 60 %.
-      **Met, on a real run: 0.832 against a threshold of 0.60.** 34 calls across five roles
+      **Met, on a real run: 0.7745 against a threshold of 0.60**, read from the
+      `llm_calls` ledger and recorded in `evals/results/m5_cache.jsonl` — 45 831 input
+      against 157 413 cache read over 11 steps. (An earlier note said 0.832; that was a
+      snapshot taken mid-run at the Coder loop, where the rate is highest.)
+      At the 34-call mark, across five roles
       — analyzer 0.613, planner 0.752, decomposer 0.733, **coder 0.914**, debugger 0.852 —
       through SETUP, ANALYZE, PLAN, DECOMPOSE and the whole CODE / TEST / DEBUG loop.
       The synthetic half was settled earlier and still holds: three turns of a held-still
