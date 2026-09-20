@@ -99,10 +99,13 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       tokens), and a full 67-call run is now broken down per role — tokens, cache, latency,
       and the 2 tasks / 4 code / 5 test / 4 debug / 3 escalate shape of it. **Under $5**:
       trivially, at $0 on a local model, which is why that half was never the interesting
-      one. **PR opened** is the part still missing, and the reason is not the repository
-      size — the local run never reached PR on a *three-file* fixture, because the Debugger
-      made 40 of 67 calls and could not get it green. The state machine did its job; the
-      model could not do the work. That needs a stronger model.
+      one. **PR opened**: demonstrated, though not yet on a 3 000-file
+      repository. A run against `poolside/laguna-s-2.1:free` completed the full pipeline —
+      setup, analyze, plan, decompose, code, test, code, test, review, security, pr — in 42
+      calls and about 16 minutes, reaching the PR phase and opening one, with no DEBUG
+      phase at all. The local 7B model made 40 Debugger calls on the identical goal and
+      never landed it, which was always a model-quality limit rather than an orchestration
+      one. What remains for this criterion is the scale repository itself.
 - [ ] Tag `v0.5.0`.
 
 **Eight of ten met. No code is known to be missing.** What is left:
