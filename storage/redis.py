@@ -12,6 +12,8 @@ import orjson
 import redis.asyncio as aioredis
 
 BASELINE_TTL_S = 7 * 24 * 3600
+# A run's own lifetime, generously. The block is worthless once its run ends.
+RUN_BLOCK_TTL_S = 24 * 3600
 
 _RENEW_LOCK = """
 if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -72,6 +74,15 @@ def pending_key(run_id: uuid.UUID | str) -> str:
 
 def cancel_key(run_id: uuid.UUID | str) -> str:
     return f"run:{run_id}:cancel"
+
+
+def run_block_key(run_id: uuid.UUID | str) -> str:
+    """The repository context frozen for one run.
+
+    Keyed on the run, not the commit, because the block carries a goal-ranked repo map:
+    two runs on the same SHA with different goals get legitimately different blocks.
+    """
+    return f"run:{run_id}:run_block"
 
 
 def baseline_key(repo: str, sha: str) -> str:
@@ -205,3 +216,25 @@ class RedisBus:
             return None
         signatures = data.get("signatures") if isinstance(data, dict) else None
         return [str(s) for s in signatures] if isinstance(signatures, list) else None
+
+    # ---- run block cache -----------------------------------------------------
+    # Same contract as the baseline above: purely a cache, so a cold or evicted Redis
+    # costs a re-render and is never wrong. What it buys is cache *hits* — a resumed run
+    # starts in a fresh process and rebuilds this block, and the goal-ranked map does not
+    # guarantee the same bytes twice. Different bytes mean a different prefix, so every
+    # agent in the resumed run pays a full cache write it had already paid for once.
+
+    async def set_run_block(
+        self, run_id: uuid.UUID | str, block: str, ttl_s: int = RUN_BLOCK_TTL_S
+    ) -> None:
+        await self.r.set(run_block_key(run_id), block, ex=ttl_s)
+
+    async def get_run_block(self, run_id: uuid.UUID | str) -> str | None:
+        """The frozen block, or None on a miss.
+
+        An empty string is a hit, not a miss: a repository that yielded no map at all has
+        a run block, and it is empty. Returning None there would re-render every resume
+        for a repository that is never going to produce anything.
+        """
+        raw = await _aw(self.r.get(run_block_key(run_id)))
+        return None if raw is None else str(raw)

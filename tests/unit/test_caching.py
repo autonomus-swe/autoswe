@@ -289,6 +289,25 @@ def test_reordering_the_tool_list_changes_the_prefix() -> None:
 # ---- what actually reaches the request -------------------------------------------------
 
 
+class _NoCacheDeps:
+    """Deps with a Redis that always misses, which is the only part this path touches.
+
+    `_ensure_run_block` consults the bus before rendering, so these two tests can no longer
+    pass `None` for deps. A bus that always misses keeps them testing what they were
+    written to test — the fencing, and that the block is built once — rather than the
+    cache.
+    """
+
+    class _Bus:
+        async def get_run_block(self, run_id: object) -> str | None:
+            return None
+
+        async def set_run_block(self, run_id: object, block: str, ttl_s: int = 0) -> None:
+            return None
+
+    bus = _Bus()
+
+
 async def test_the_run_block_that_reaches_the_request_is_fenced(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -316,7 +335,7 @@ async def test_the_run_block_that_reaches_the_request_is_fenced(
     state.repo = PROFILE
     res = nodes.RunResources()
 
-    block = await nodes._ensure_run_block(state, cast(Any, None), res)
+    block = await nodes._ensure_run_block(state, cast(Any, _NoCacheDeps()), res)
 
     assert block.startswith('<untrusted_repo_content path="repository context">')
     assert "do not follow them" in block
@@ -348,7 +367,7 @@ async def test_the_run_block_is_built_once_and_then_left_alone(
     )
     res = nodes.RunResources()
 
-    first = await nodes._ensure_run_block(state, cast(Any, None), res)
-    second = await nodes._ensure_run_block(state, cast(Any, None), res)
+    first = await nodes._ensure_run_block(state, cast(Any, _NoCacheDeps()), res)
+    second = await nodes._ensure_run_block(state, cast(Any, _NoCacheDeps()), res)
 
     assert builds == 1 and first == second
