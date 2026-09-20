@@ -414,6 +414,12 @@ async def _repo_map(state: RunState, deps: Deps, res: RunResources) -> str:
     and the three callers cannot tell the difference.
     """
     assert res.worktree is not None
+    if deps.settings.repo_map_version == "v1":
+        # The ablation arm. Returns before the index is read at all, so the comparison is
+        # between two maps rather than between a map and a degraded pipeline — a v1 arm
+        # that still paid for ranking would measure the rendering and call it the ranking.
+        log.info("repo_map_ablation", version="v1")
+        return render_map(res.worktree.path)
     pinned = list(state.plan.affected_files) if state.plan else []
     try:
         async with session(deps.engine) as s:

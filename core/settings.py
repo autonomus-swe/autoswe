@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     ca_bundle: Path | None = None
     worktrees_dir: Path = Path("/var/agent/worktrees")
     repos_dir: Path = Path("/var/agent/repos")
+    # Which repo map the reading agents get. Phase 5 step 5.10 prescribes an ablation —
+    # "run once more with repomap=off (Coder and Planner get the v1 tree only)" — and
+    # there was no way to do it: v1 was reachable only by the index failing, which is a
+    # fault path and changes more than the map. Without a switch the question the ablation
+    # exists to answer, whether ranking by centrality and goal beats an indented tree,
+    # cannot be asked at all.
+    #
+    # Named for what it selects rather than the document's "off", because "off" is not what
+    # happens: v1 is still a map, and an agent given nothing at all would be a third
+    # condition nobody asked for.
+    repo_map_version: Literal["v1", "v2"] = "v2"
     sandbox_image: str = "agent-sandbox:python-3.12"
     sandbox_network: str = "agent-install"
     # Egress control for the install window, off unless a proxy is named. See
