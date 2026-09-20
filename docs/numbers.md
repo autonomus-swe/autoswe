@@ -45,9 +45,9 @@ Audited by agents told to disprove each one, not to confirm it.
 | Index a 3 000-file repo under 60 s; same-SHA re-run is a no-op | **met** — measured on 7 120 files |
 | Repo map ranks the named function's file first; under 4 000 tokens | **met**, after the calibration fix |
 | `search_code(semantic=True)` on a fixture auth service | **met** — real embedding model, with a lexical control |
-| Cache hit rate above 60 % on a real run | **not met** — needs quota |
+| Cache hit rate above 60 % on a real run | **partly** — reads from turn 2 measured; run-level needs quota |
 | Compaction blocks preserved (`provider.compacted`) | **not met** — needs the Anthropic provider |
-| Budget downgrade table | **partly** — table correct, no second tier to downgrade *to* |
+| Budget downgrade table | **met** — a downgrade reaches a different model that really answers |
 | OTel spans and `/metrics` | **met** |
 | Node/Go repos end to end; egress allow/deny | **met** — both halves, tested in the real images |
 | Scale run, PR opened, under $5 | **not met** — needs quota |
@@ -82,6 +82,41 @@ reachable on a laptop while the two below are not.
 every chunk** — it shares no word with anything in the repository. A semantic test that a
 lexical index also passes has measured nothing.
 
+### Prompt caching: the reads are measured
+
+Three turns against a local server that reports `prompt_tokens_details.cached_tokens`,
+through our own provider rather than beside it:
+
+| Turn | Input tokens billed | Cache read | Hit rate |
+|---|---|---|---|
+| 1 | 2 678 | 5 | 0.002 |
+| 2 | **1** | **2 682** | **1.000** |
+| 3 | 1 | 2 682 | 1.000 |
+
+The first turn writes the prefix and the rest read it, which is the shape the criterion
+describes. The 60 % threshold is a *run-level* figure and this is three turns, so it is
+evidence for the mechanism and not a claim about a run — see below.
+
+**The control is again the point.** Moving `Run 7f3a started at 12:04. ` to the front of the
+same system prompt collapses the hit rate, because a cache prefix is a prefix: one varying
+character at the start invalidates everything behind it. That is the whole reason
+`build_system` puts the run block *after* the stable text, and the test fails if it is moved
+back. A caching test with no invalidation control passes just as well on a build with no
+caching at all.
+
+### Budget downgrade: measured against a server that says which model answered
+
+A unit test can show `model_for("sonnet") != model_for("opus")` and still be consistent with
+a deployment where both resolve to the same model and the saving is imaginary. So the
+downgrade is driven against two real local models and checked against the `model` field the
+server echoes: a downgraded Planner is served by the smaller one, Coder and Debugger are
+served by the larger one under the same pressure, and a single-model deployment reports an
+empty `downgraded` list.
+
+These are a 7B and a 3B, not an expensive and a cheap hosted model — the wrong kind of
+difference, and the numbers here are about resolution rather than dollars. What it rules out
+is the failure that matters: reporting a downgrade that never reached a different model.
+
 ### The calibration was wrong, and the map criterion was not met
 
 `CHARS_PER_TOKEN` was **4**, the rule of thumb for English prose. Code is much denser.
@@ -107,22 +142,33 @@ v1 renders 1 275 tokens against v2's 3 490 — but they are not substitutes. v1 
 list; v2 carries every signature with line ranges. Which is better is a question about
 whether ranking puts the right file first, and answering that on a real goal needs a model.
 
-## The model half: not measured
+## The model half: what a local model could settle, and what it could not
 
-Blocked on quota, not on code. The OpenRouter key here is free tier — **50 requests a
-day** — and one end-to-end run against a repository this size spends several hundred model
-calls.
+The line here was drawn in the wrong place at first. An earlier version of this document
+put everything involving a model behind "needs quota", which was true of the scale run and
+false of two criteria that need only a handful of short calls. Caching and the downgrade
+were both closed against a local Ollama server once that was questioned.
 
-| Number | Where it will come from |
-|---|---|
-| Tasks, attempts, review rounds | `tests/e2e/test_m3.py`, `m4.py` |
-| Per-role cost, cost per solved task | `runs` + `llm_calls`, PR footer |
-| Cache hit rate | `tests/e2e/test_m5_cache.py` |
-| Wall clock and total cost for a scale run | a real run |
+What a local model genuinely cannot do is *drive a run*. qwen2.5 timed out at 240 s on a
+single tool-calling turn, at 7B and at 3B — and a run is hundreds of those turns with a
+sandbox between them. So the division is not "model" versus "no model" but **one short call
+versus a whole agent loop**:
 
-`evals/results/` takes a row per run, so these populate themselves the moment there is
-quota. **$10 of OpenRouter credit** raises the allowance from 50 to 1 000 requests a day
-and is the whole dependency.
+| Number | Status | Where it comes from |
+|---|---|---|
+| Cache reads from turn 2 | **measured** | `tests/live/test_cache_hits.py` |
+| Downgrade reaches a different model | **measured** | `tests/live/test_routing.py` |
+| Semantic search on the fixture | **measured** | real embedding model, lexical control |
+| Tasks, attempts, review rounds | needs quota | `tests/e2e/test_m3.py`, `m4.py` |
+| Per-role cost, cost per solved task | needs quota | `runs` + `llm_calls`, PR footer |
+| **Run-level** cache hit rate | needs quota | `tests/e2e/test_m5_cache.py` |
+| Wall clock and total cost for a scale run | needs quota | a real run |
+
+The OpenRouter key here is free tier — **50 requests a day** — and one end-to-end run
+against a repository this size spends several hundred model calls. `evals/results/` takes a
+row per run, so the bottom four populate themselves the moment there is quota. **$10 of
+OpenRouter credit** raises the allowance from 50 to 1 000 requests a day and is the whole
+dependency.
 
 ## Cost per solved task
 

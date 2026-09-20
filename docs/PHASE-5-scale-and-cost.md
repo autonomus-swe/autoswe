@@ -55,17 +55,33 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       Integration rather than e2e, deliberately: the criterion is about the index, and an
       end-to-end run would add a chat model and the quota problem below without testing
       anything more about search.
-- [ ] Cache read tokens from the second turn; run-level cache hit rate above 60 %.
-      `tests/e2e/test_m5_cache.py` exists and has never run: free tier, 50 requests/day.
+- [~] Cache read tokens from the second turn; run-level cache hit rate above 60 %.
+      **First half met, measured.** `tests/live/test_cache_hits.py` drives a real
+      server that reports `cached_tokens` and watches the prefix across three turns:
+      turn 1 reads 5 of 2 678 tokens, turn 2 reads 2 682 of 2 683 — a hit rate of 1.000 —
+      and turn 3 the same. The control is what makes that worth anything: putting a run id
+      and a timestamp at the *front* of the same system prompt collapses the rate, which is
+      the bug the breakpoint placement exists to avoid, and the test fails if that
+      protection is removed.
+      **Second half not met.** "Run-level" means across a whole agent run, and a local model
+      cannot drive one: qwen2.5 at both 7B and 3B timed out at 240 s on a single
+      tool-calling turn. `tests/e2e/test_m5_cache.py` still needs quota.
 - [ ] A Coder session that exceeds the context trigger completes with compaction blocks preserved (`provider.compacted`).
       Not achievable as written: no Anthropic provider, no compaction code, and
       `provider.compacted` is logged nowhere. `gateway/context.py` serves the same intent
       host-side and logs `cleared_tool_results`. Moved to Phase 6 with the provider.
-- [~] At 90 % of the dollar budget, three roles route to Sonnet 5 and `budget_warning` carries `{"downgraded": […]}`.
+- [x] At 90 % of the dollar budget, three roles route to Sonnet 5 and `budget_warning` carries `{"downgraded": […]}`.
       The table is correct and tested, including the `decompose`/`decomposer` name trap the
-      document's own example contains. But **no Sonnet 5 is reachable in this build**, so
-      on any single-model deployment the downgrade is real policy with no effect — which
-      `_downgraded_roles` reports honestly as an empty list.
+      document's own example contains. The last hop is now tested too: with two tiers
+      configured, `tests/live/test_routing.py` downgrades a role and asserts
+      that the server *says it served the other model* — the one thing a unit test cannot
+      show, because both tiers resolving to the same name would report a saving nobody made.
+      Coder and Debugger are checked to keep the larger model under the same pressure.
+      **The substitution, stated plainly:** the two tiers are a 7B and a 3B local model, not
+      Sonnet 5 — the wrong *kind* of difference, since nothing here is priced. What is
+      proved is the resolution, not the saving. On a single-model deployment the downgrade
+      remains real policy with no effect, which `_downgraded_roles` reports honestly as an
+      empty list, and that is also tested against the live server.
 - [x] One OpenTelemetry trace per run with phase, step, llm_call, tool_call and sandbox_exec spans; `/metrics` exposes the §4.10 metrics.
       All five spans exist and nest; all seven metrics named in ARCHITECTURE §4.10 are
       present and served.
@@ -79,16 +95,21 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       The host-side numbers are recorded. The run needs quota.
 - [ ] Tag `v0.5.0`.
 
-**Six of ten met; the rest need money or a provider.** What is left:
+**Seven of ten met, one half-met; the rest need money or a provider.** What is left:
 
-- **Two need a chat model with quota** — the run-level cache hit rate and the scale run.
-  $10 of OpenRouter credit raises the free-model allowance from 50 to 1 000 requests a day
-  and is the whole dependency. The tests are written; `evals/results/` takes a row per run.
+- **Both remaining gaps need a chat model with quota** — the *run-level* cache hit rate and
+  the scale run. Both mean "across a whole agent run", and that is the specific thing a
+  local model cannot do: qwen2.5 timed out at 240 s on one tool-calling turn, at 7B and at
+  3B. $10 of OpenRouter credit raises the free-model allowance from 50 to 1 000 requests a
+  day and is the whole dependency. The tests are written; `evals/results/` takes a row per
+  run.
 - **One needs the Anthropic provider**, deferred to Phase 6 — compaction cannot be tested
   against a provider that does not exist.
-- **One is partial by its own wording**: the downgrade table is correct and tested, but no
-  second model tier is reachable in this build, so the policy is real and its effect is
-  nil. That resolves itself the moment a deployment configures `LLM_MODEL_SONNET`.
+
+An earlier version of this section bundled the caching and downgrade criteria in with the
+scale run as "needs quota". That was wrong for both, and both were closed against a local
+server once the bundling was questioned: caching needed one short repeated call, and the
+downgrade needed two. Only the parts that genuinely require a full run are still open.
 
 Nothing remains that is unfinished work.
 
