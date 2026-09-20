@@ -92,9 +92,14 @@ def _invalid_tool_call_detail(err: Any) -> tuple[str, str | None] | None:
 # Weaker models mirror the JSON Schema instead of conforming to it: a `list[str]` field
 # comes back as `{"items": [{"title": "..."}]}` — the schema's own wrapper, one dict per
 # level of schema. The content is right and only the container is wrong, and saying so in
-# a retry does not help because the model repeats the same shape. Both repairs below are
-# narrow enough to be unambiguous: a dict holding nothing but the list, and a dict holding
-# nothing but the string. Anything else is left alone and still fails.
+# a retry does not help because the model repeats the same shape. The repairs below are
+# narrow enough to be unambiguous: a dict holding nothing but the list, a dict holding
+# nothing but the string, and a scalar where a list of one would do. Anything else is left
+# alone and still fails.
+#
+# This matters more than it looks. Every one of these was found by a real run dying, and
+# each is the difference between a model that can drive this system and one that cannot —
+# which is the whole question Phase 6's open-model provider has to answer.
 REPAIR_PASSES = 3
 
 
@@ -128,6 +133,40 @@ def _repair_once(data: Any, errors: Sequence[Any]) -> bool:
             inner = value.get("items")
             if isinstance(inner, list):
                 fixed = inner
+        elif err.get("type") == "list_type" and isinstance(value, str | int | float | bool):
+            # The one-item answer written as the item. A model asked for
+            # `acceptance_criteria: list[str]` answers with the criterion, because that is
+            # what the question sounds like. Measured on qwen2.5:7b, which failed a real
+            # DECOMPOSE step this way twice in a row — retrying does not help, since the
+            # phrasing that produced it is the phrasing that will produce it again.
+            #
+            # Wrapping is the only unambiguous reading. Splitting on a separator is the
+            # tempting alternative and is wrong: the value that prompted this fix was
+            # `"fixture/ops.py contains ...(a, b): return a - b`.;"` — a semicolon inside a
+            # code snippet, which would have split into two criteria, one of them nonsense.
+            #
+            # `None` is deliberately not repaired: a null means the model had nothing to
+            # say, and `[None]` would turn that into a list with one empty criterion.
+            fixed = [value]
+        elif (
+            value is None
+            and str(err.get("type", "")).endswith("_type")
+            and isinstance(container, dict)
+        ):
+            # An explicit `null` for a field that declares a type. Pydantic applies a
+            # default to a *missing* key, never to one that is present and null, so a model
+            # answering "I have nothing for this" fails even where the schema has a
+            # perfectly good default — which is how a Decomposer that honestly had no test
+            # selector killed a whole run.
+            #
+            # Deleting the key is safe in both directions and invents nothing: where the
+            # field has a default, validation now uses the schema author's own value; where
+            # it is required, the error simply becomes `missing` and the payload still
+            # fails. Only dict containers, because deleting from a list would shift every
+            # index after it and silently corrupt the siblings.
+            del container[key]
+            changed = True
+            continue
         elif err.get("type") == "string_type" and isinstance(value, dict) and len(value) == 1:
             only = next(iter(value.values()))
             if isinstance(only, str):
