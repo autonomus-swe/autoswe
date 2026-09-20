@@ -358,6 +358,109 @@ async def test_reminders_are_bounded(tmp_path: Path) -> None:
     assert out.stop_reason == "end_turn" and out.turns == attempts
 
 
+async def test_the_first_reminder_asks_and_the_last_one_compels(tmp_path: Path) -> None:
+    """Asking twice and giving up threw away a real ANALYZE step.
+
+    qwen2.5:7b declined `submit_profile` through both reminders and lost four turns of
+    correct work. A model that has stopped without submitting as many times as we are
+    willing to ask has demonstrated that asking does not work — so the last reminder names
+    the tool in `tool_choice` rather than in prose.
+
+    The asymmetry is deliberate. The first reminder stays a request, because a model that
+    genuinely has one more thing to look at should be allowed to; by the last one, the run
+    is about to be discarded over a tool call rather than over the work.
+    """
+    provider = ScriptedProvider(
+        [
+            turn("I have analyzed it."),  # stops without submitting
+            turn("Yes, it is analyzed."),  # ignores the polite reminder
+            turn(calls=[("c1", "submit_result", {"ok": True})]),
+            turn("done"),
+        ]
+    )
+    tools = [*tools_for("coder"), submit_tool("submit_result", TaskResult, "task_result")]
+
+    await provider.run_tools(
+        Request(role="coder", system="s", must_call="submit_result"),
+        tools,
+        make_ctx(tmp_path),
+        NullHooks(),
+    )
+
+    choices = [r["tool_choice"] for r in provider.requests]
+    assert choices[0] == "auto", "the model gets to decide until it has shown it will not"
+    assert choices[1] == "auto", "the first reminder is still a request"
+    assert choices[2] == {"type": "function", "function": {"name": "submit_result"}}
+
+
+async def test_the_forced_choice_names_the_tool_rather_than_asking_for_any_tool() -> None:
+    """`"required"` would be satisfied by the agent's next `read_file`, which is exactly the
+    behaviour being corrected — a model looping happily on tools while never submitting."""
+    from gateway.openai_compat_provider import _forced_choice
+
+    assert _forced_choice("submit_profile") == {
+        "type": "function",
+        "function": {"name": "submit_profile"},
+    }
+
+
+async def test_an_endpoint_that_refuses_a_forced_choice_still_gets_its_turn(
+    tmp_path: Path,
+) -> None:
+    """Every gateway measured here takes a named `tool_choice`, but that is a fact about the
+    ones measured. Losing a whole run to an unsupported parameter would be worse than the
+    reminder this replaces, so the turn is retried the old way."""
+
+    class Picky(ScriptedProvider):
+        def __init__(self, script: list[ChatTurn]) -> None:
+            super().__init__(script)
+            self.refusals = 0
+
+        async def _complete(self, **kwargs: Any) -> ChatTurn:
+            if kwargs.get("tool_choice") not in ("auto", None):
+                self.refusals += 1
+                raise ProviderError("BadRequestError: tool_choice is not supported")
+            return await super()._complete(**kwargs)
+
+    provider = Picky(
+        [
+            turn("done thinking"),
+            turn("still not submitting"),
+            turn(calls=[("c1", "submit_result", {"ok": True})]),
+            turn("ok"),
+        ]
+    )
+    tools = [*tools_for("coder"), submit_tool("submit_result", TaskResult, "task_result")]
+
+    out = await provider.run_tools(
+        Request(role="coder", system="s", must_call="submit_result"),
+        tools,
+        make_ctx(tmp_path),
+        NullHooks(),
+    )
+
+    assert provider.refusals == 1, "it should try once and not keep trying"
+    assert out.stop_reason == "end_turn"
+    assert all(r["tool_choice"] == "auto" for r in provider.requests)
+
+
+async def test_a_provider_error_on_an_unforced_turn_is_still_fatal(tmp_path: Path) -> None:
+    """The control for the fallback above. Swallowing every `ProviderError` would turn a
+    dead endpoint into an infinite loop that looks like a slow run."""
+
+    class Broken(ScriptedProvider):
+        async def _complete(self, **kwargs: Any) -> ChatTurn:
+            raise ProviderError("APIConnectionError: the endpoint is gone")
+
+    with pytest.raises(ProviderError, match="endpoint is gone"):
+        await Broken([]).run_tools(
+            Request(role="coder", system="s", must_call="submit_result"),
+            tools_for("coder"),
+            make_ctx(tmp_path),
+            NullHooks(),
+        )
+
+
 async def test_a_reminder_buys_a_turn_rather_than_spending_the_last_one(tmp_path: Path) -> None:
     """A model that explores right up to the cap must still get a turn to submit in.
 

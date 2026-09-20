@@ -103,6 +103,16 @@ def _invalid_tool_call_detail(err: Any) -> tuple[str, str | None] | None:
 REPAIR_PASSES = 3
 
 
+def _forced_choice(name: str) -> dict[str, Any]:
+    """A `tool_choice` naming one tool, which the endpoint must answer with.
+
+    The named form rather than `"required"`: `"required"` only says *some* tool, and an
+    agent that is looping happily on `read_file` would satisfy it without ever submitting —
+    which is the exact behaviour being corrected.
+    """
+    return {"type": "function", "function": {"name": name}}
+
+
 def _at(data: Any, loc: tuple[Any, ...]) -> tuple[Any, Any] | None:
     """``(container, key)`` for a pydantic error location, or None if it does not resolve."""
     if not loc:
@@ -493,6 +503,9 @@ class OpenAICompatProvider:
         called: set[str] = set()
         reminders = 0
         rejected = 0
+        # The tool the next turn will be *made* to call, rather than asked to. Set on the
+        # last reminder; see `_forced_choice`.
+        force: str | None = None
         # The turn on which the task budget ran out, so it is said once rather than every
         # turn afterwards.
         over_budget: int | None = None
@@ -502,15 +515,27 @@ class OpenAICompatProvider:
         # max_iterations + MISSING_SUBMIT_REMINDERS.
         while turns < req.max_iterations + reminders:
             t0 = time.monotonic()
+            forcing, force = force, None
             try:
-                with trace_span("llm_call", role=req.role, tier=req.tier):
+                with trace_span("llm_call", role=req.role, tier=req.tier, forced=forcing):
                     turn = await self._complete(
                         messages=messages,
                         tools=tool_defs,
-                        tool_choice="auto",
+                        tool_choice=_forced_choice(forcing) if forcing else "auto",
                         max_tokens=req.max_tokens,
                         model=self.model_for(req.tier),
                     )
+            except ProviderError:
+                if forcing is None:
+                    raise
+                # The endpoint would not take a named `tool_choice`. Every OpenAI-compatible
+                # gateway measured here accepts one, but that is a fact about the ones
+                # measured, and losing a whole run to an unsupported parameter would be a
+                # worse outcome than the reminder we are replacing. Retry the same turn the
+                # old way; the reminder text is already in the transcript, so the model
+                # still gets asked, just not compelled.
+                log.warning("forced_tool_choice_rejected", tool=forcing, model=self.model)
+                continue
             except _InvalidToolCall as e:
                 rejected += 1
                 if rejected > INVALID_TOOL_CALL_RETRIES:
@@ -551,11 +576,26 @@ class OpenAICompatProvider:
                     # Weaker models often do the work and then just stop talking. One
                     # reminder recovers the run instead of throwing the work away.
                     reminders += 1
+                    # On the last reminder, stop asking. A model that has now stopped
+                    # without submitting as many times as we are willing to ask has already
+                    # shown that asking does not work, and the run is about to be thrown
+                    # away over a tool call rather than over the work — which was all done.
+                    #
+                    # This is the governing rule of the system applied to its own loop: the
+                    # model judges, the code decides. It judged the analysis complete; what
+                    # it does not get to decide is whether the result is recorded.
+                    #
+                    # Measured against a real ANALYZE step that died exactly here:
+                    # qwen2.5:7b declined `submit_profile` through both reminders and threw
+                    # away four turns of correct work.
+                    if reminders == MISSING_SUBMIT_REMINDERS:
+                        force = req.must_call
                     log.info(
                         "reminding_agent_to_submit",
                         tool=req.must_call,
                         reminder=reminders,
                         turns=turns,
+                        forced=force is not None,
                     )
                     messages.append(
                         {
