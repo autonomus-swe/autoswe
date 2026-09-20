@@ -115,14 +115,36 @@ actual run against the fixture repository, read from the `llm_calls` ledger:
 | 2 | 243 | 1 412 | **0.853** |
 | 3 | 155 | 1 814 | **0.921** |
 
-Aggregated: 3 226 read against 1 796 input — **0.642**, above the criterion's 60 %, and
-still climbing as the single opening write amortises.
+The run has since reached PLAN, and the fuller picture is less flattering than those first
+three calls suggested — which is the point of measuring:
 
-**What this is not.** All three calls are the Analyzer. A *run*-level figure covers every
-role, and each role carries a different system prompt, so each one pays its own opening
-cache write. A run made of many short steps will sit lower than one dominated by a long
-Coder loop, which is precisely why the criterion is written run-level rather than
-per-step — and why this number, encouraging as it is, is not yet that number.
+| # | Role | Input | Cache read | Rate | Cumulative |
+|---|---|---|---|---|---|
+| 1 | analyzer | 1 398 | 0 | 0.000 | 0.000 |
+| 2 | analyzer | 243 | 1 412 | 0.853 | 0.462 |
+| 3 | analyzer | 155 | 1 814 | 0.921 | 0.642 |
+| 4 | analyzer | 358 | 2 082 | 0.853 | 0.711 |
+| 5 | analyzer | 48 | 2 707 | 0.983 | 0.784 |
+| 6 | analyzer | 2 864 | 0 | 0.000 | 0.613 |
+| 7 | planner | 1 271 | 6 | 0.005 | **0.559** |
+
+Per role: analyzer **0.613** over 6 calls, planner 0.005 over 1.
+
+**The run-level figure is currently 0.559 — below the 60 % the criterion asks for.** It is
+recorded here rather than waited out, because the shape is exactly what was predicted one
+section above and is worth stating while it is inconvenient: every role carries a different
+system prompt, so every role pays its own opening cache write, and a run of many short
+steps sits lower than one dominated by a long Coder loop. Whether this run clears 60 %
+depends on the Coder loop amortising those writes, which has not happened yet.
+
+**Call 6 lost its cache entirely**, mid-step, after five turns above 0.85. That is not a
+moving prefix on our side: `cleared_tool_results` is never logged in this run, so context
+trimming did not fire, and the system prompt and run block are fixed for a run by
+construction. The likeliest explanation is server-side eviction — another model was
+repeatedly loading on this host, and Ollama discards a model's KV cache when it unloads it.
+Stated as likely rather than proven: nothing here measures the server's eviction directly.
+It does mean the figures above are depressed by the environment rather than by the design,
+and that a contended host is a poor place to certify a caching criterion.
 
 What it does settle is the half that used to rest only on a synthetic test: in the real
 agent loop, with a real repo map and real tool definitions in the prefix, reads start at
