@@ -116,6 +116,12 @@ testpaths = ["tests"]
 markers = [
   "unit: no I/O",
   "integration: needs Postgres/Redis/Docker via testcontainers",
+  # Separate from `integration` because the dependency is genuinely different, and the
+  # difference is the point: these check caching and model routing against a real server
+  # and need no database, no Docker and no key. Under `tests/integration/` they would
+  # inherit that package's autouse fixture and start two containers they never touch,
+  # which is both slow and a lie about what they require.
+  "live: needs a local model server (Ollama); no database, no key",
   "e2e: needs real API keys; never in CI by default",
 ]
 addopts = "-q -m 'not e2e' --ignore=tests/fixtures"
