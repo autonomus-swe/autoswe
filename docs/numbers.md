@@ -106,8 +106,19 @@ caching at all.
 
 ### The caching criterion, met on a real run
 
-34 calls, five roles, through SETUP, ANALYZE, PLAN, DECOMPOSE and the whole CODE / TEST /
-DEBUG loop, against the fixture repository on a local model:
+The authoritative figure, read from the `llm_calls` ledger at the end of the run rather
+than scraped from its log mid-flight, and recorded in `evals/results/m5_cache.jsonl`:
+
+**45 831 input, 157 413 cache read — a run-level hit rate of 0.7745 over 11 steps.**
+
+An earlier version of this section said **0.832**. That was a snapshot taken at 34 calls,
+while the run was still in the Coder loop where the rate is highest; the run went on to
+spend 40 more calls in the Debugger at ~0.71–0.86 and settled lower. Both clear the 0.60
+criterion, and the ledger figure is the one that counts — a number taken while a run is at
+its best is a number chosen rather than measured.
+
+The per-call breakdown below is from the same run at the 34-call mark and is kept because
+the *shape* is the point:
 
 | Role | Calls | Input | Cache read | Rate |
 |---|---|---|---|---|
@@ -130,6 +141,26 @@ That is the argument for putting the repo map, facts and profile in the cached p
 rather than in the messages, stated as a measurement instead of a design intention. The
 roles that make one or two calls never do better than ~0.7; the role that loops does 0.914,
 and it is the role that spends the most.
+
+### The evidence file, and a guard that proved itself
+
+`evals/results/m5_cache.jsonl` now holds both runs, which is where the phase document said
+this number would live and where it had never yet appeared:
+
+| Row | Model | Input | Cache read | Rate | Steps | Outcome |
+|---|---|---|---|---|---|---|
+| 1 | qwen2.5:7b (local) | 45 831 | 157 413 | **0.7745** | 11 | never reached PR |
+| 2 | laguna-s-2.1 (hosted) | 211 774 | 14 720 | 0.065 | 8 | **completed to PR** |
+
+Row 1 exists because of a guard added the same night. The local run **failed** — it never
+got past the Debugger loop, so `test_m5_cache`'s phase assertion raised — and its report is
+there anyway, because that report is computed in a `finally`. Had it been computed after a
+successful `run()`, three hours of measurement would have vanished on the assertion, along
+with the testcontainer Postgres holding the ledger.
+
+The guard was written speculatively, for a run that might be terminated. It was collected
+by an ordinary assertion failure instead, which is the more common case and the one nobody
+plans for.
 
 ### A run that finished
 
