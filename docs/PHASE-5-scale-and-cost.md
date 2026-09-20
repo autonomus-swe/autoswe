@@ -94,8 +94,15 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       a real image — install, test, parse — and then breaks the *source* of each and
       asserts the failure comes back with a file and a line the Debugger can act on.
 - [ ] Scale run: PR opened on the 3 000-file repo, total cost under $5, numbers recorded.
-      The host-side numbers are recorded in `docs/numbers.md`. The run itself needs quota:
-      several hundred calls against a 50-per-day free tier.
+      Two of three parts are in hand. **Numbers recorded**: the host-side figures are in
+      `docs/numbers.md` (django, 7 120 files, 44 292 symbols, 9.9 s parse, 3 079 map
+      tokens), and a full 67-call run is now broken down per role — tokens, cache, latency,
+      and the 2 tasks / 4 code / 5 test / 4 debug / 3 escalate shape of it. **Under $5**:
+      trivially, at $0 on a local model, which is why that half was never the interesting
+      one. **PR opened** is the part still missing, and the reason is not the repository
+      size — the local run never reached PR on a *three-file* fixture, because the Debugger
+      made 40 of 67 calls and could not get it green. The state machine did its job; the
+      model could not do the work. That needs a stronger model.
 - [ ] Tag `v0.5.0`.
 
 **Eight of ten met. No code is known to be missing.** What is left:

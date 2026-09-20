@@ -131,6 +131,41 @@ rather than in the messages, stated as a measurement instead of a design intenti
 roles that make one or two calls never do better than ~0.7; the role that loops does 0.914,
 and it is the role that spends the most.
 
+### What a real run actually spent
+
+The same run, measured whole. 67 calls over 183 minutes against a three-file fixture
+repository, on qwen2.5:7b locally:
+
+| Role | Calls | Input | Cache read | Output | Rate | Median latency |
+|---|---|---|---|---|---|---|
+| analyzer | 6 | 5 066 | 8 015 | 919 | 0.613 | 728 s |
+| planner | 4 | 1 514 | 4 581 | 577 | 0.752 | 319 s |
+| decomposer | 1 | 219 | 601 | 136 | 0.733 | 43 s |
+| coder | 16 | 3 193 | 33 845 | 982 | 0.914 | 30 s |
+| debugger | **40** | 35 717 | 99 394 | 6 557 | 0.736 | 52 s |
+
+Totals: **45 709 input, 146 436 cache read, 9 171 output**. Cost **$0.00** — the model is
+local, so the scale run's `$5` ceiling is met trivially and means nothing here.
+
+**Two things in that table are worth more than the totals.**
+
+*The latency spread was environmental.* Median 48 s, minimum 9 s, maximum 1 124 s. Earlier
+entries in this document quoted 439 s and 823 s as though they were the machine's speed;
+they were the machine's speed while a second model was resident and competing. The
+Analyzer's 728 s median is the same artefact — it ran during the contended window. Once
+that cleared, the Coder's median was 30 s. A number measured on a contended host describes
+the host, not the system.
+
+*The Debugger made 40 of 67 calls.* Four CODE phases, five TEST phases, four DEBUG phases
+and three escalations, across two tasks (`t1`, then a replanned `t1.1`) — the run never
+reached PR. That is not a caching or orchestration failure; every one of those transitions
+is the state machine doing what it is for, bounding a model that cannot get the fixture
+green. It is what a 7B local model costs: the loop works, the code does not land.
+
+This is the honest read on "can a local model drive this system". It can drive it, produce
+a valid plan, a task graph, edits, test runs and a debug cycle — and measure prompt caching
+properly while doing so. What it cannot do is finish.
+
 ### The same mechanism, one step at a time
 
 The table above is three turns of one synthetic prompt. This is the Analyzer step of an
@@ -242,8 +277,8 @@ the work deserves more scrutiny than one that does not.
 | Downgrade reaches a different model | **measured** | `tests/live/test_routing.py` |
 | Semantic search on the fixture | **measured** | real embedding model, lexical control |
 | Analyzer turn under real context | **measured** | **439 s** on qwen2.5:7b — see below |
-| Tasks, attempts, review rounds | pending a run | `tests/e2e/test_m3.py`, `m4.py` |
-| Per-role cost, cost per solved task | pending a run | `runs` + `llm_calls`, PR footer |
+| Tasks, attempts, review rounds | **measured** | 2 tasks, 4 code / 5 test / 4 debug phases, 3 escalations |
+| Per-role token spend | **measured** | see the table above; cost $0 on a local model |
 | Cache reads inside a real agent loop | **measured** | 0.853 / 0.921 on turns 2-3, Analyzer step |
 | **Run-level** cache hit rate (all roles) | **0.832** | 34 calls, 5 roles, CODE/TEST/DEBUG included |
 | Wall clock and total cost for a scale run | needs quota | a 3 000-file repo |
