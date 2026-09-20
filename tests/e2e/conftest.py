@@ -139,6 +139,43 @@ def origin_repo(e2e_settings: Settings) -> Iterator[Path]:
         shutil.rmtree(root, ignore_errors=True)
 
 
+@pytest.fixture
+def scale_repo(e2e_settings: Settings) -> Iterator[Path]:
+    """A throwaway clone of a large repository named by `AUTOSWE_SCALE_REPO`.
+
+    Cloned, never used in place. The path points at a working checkout somebody keeps for
+    other purposes, and a run creates branches, writes files and resets — doing that to
+    the original would be destroying someone's work to measure a cache hit rate. A local
+    `git clone` hardlinks its objects, so even a 7 000-file repository costs little.
+
+    Skipped rather than failed when the variable is unset: this is the one end-to-end test
+    that needs a large repository on disk, and the rest of the suite should not depend on
+    anyone having cloned Django.
+    """
+    source = os.environ.get("AUTOSWE_SCALE_REPO")
+    if not source:
+        pytest.skip("AUTOSWE_SCALE_REPO is not set; the scale run is opt-in")
+    origin = Path(source).expanduser().resolve()
+    if not (origin / ".git").is_dir():
+        pytest.skip(f"{origin} is not a git checkout")
+
+    base = Path(os.environ.get("AUTOSWE_TEST_TMP", Path.home() / ".autoswe" / "tmp"))
+    root = base / f"scale-{uuid.uuid4().hex[:8]}"
+    root.mkdir(parents=True)
+    try:
+        import asyncio
+
+        async def clone() -> None:
+            # `--no-hardlinks` is deliberately *not* passed: hardlinked objects are what
+            # make this cheap, and nothing here writes to the object store of the source.
+            await git("clone", "-q", "--local", str(origin), str(root / "origin"))
+
+        asyncio.run(clone())
+        yield root / "origin"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 class RecordingPR:
     """The pull request PyGithub hands back, with the one method `open_pr` calls on it.
 

@@ -28,13 +28,15 @@ tokenizer, not estimated — see the calibration note below. Two sympy runs are 
 because the rate moves a lot with load; django was measured at load 9.5 and is still the
 fastest of the three, because its Python files are smaller on average.
 
-### Two honest caveats on the parse figure
+### One caveat closed, one still open
 
 - **It is parse only.** `index_repo` also writes the rows, and `evals/scale.py` does not
   time that. On sympy's 40 595 symbols the insert is several seconds more.
-- **It is measured host-side**, with `python -m evals.scale`. The criterion says "on the
-  worker". The work is the same code either way, but nothing here has measured it inside a
-  worker process.
+- ~~It is measured host-side.~~ **Closed.** The criterion says "on the worker", and this
+  was measured with `python -m evals.scale` until a real run did it: a scale run against a
+  7 091-file Django clone indexed **3 043 files and 44 292 symbols in 12.06 s** inside the
+  orchestrator, in SETUP, with the sandbox up and the worker doing the work. Same numbers
+  as the host-side figure, now from the place the criterion names.
 
 ## Against the phase's exit criteria
 
@@ -141,6 +143,36 @@ That is the argument for putting the repo map, facts and profile in the cached p
 rather than in the messages, stated as a measurement instead of a design intention. The
 roles that make one or two calls never do better than ~0.7; the role that loops does 0.914,
 and it is the role that spends the most.
+
+### The scale run, and the wall it hit
+
+`tests/e2e/test_m5_scale.py` codifies Step 5.10's procedure: clone a large repository, run
+a small realistic goal against it, record everything. It ran against Django and stopped
+partway with a limit that states its own remedy:
+
+    Rate limit exceeded: free-models-per-day
+    X-RateLimit-Limit: 50   X-RateLimit-Remaining: 0
+    limit_source: openrouter_free_tier_daily
+    "Add 10 credits to unlock 1000 free model requests per day"
+
+What it got before that, recorded to `evals/results/m5.jsonl`:
+
+| | |
+|---|---|
+| Repository | Django clone, **7 091 files** |
+| Index, in-run | **3 043 files, 44 292 symbols, 12.06 s** |
+| Analyzer's first call | **43 990 input tokens** |
+| Wall clock | 12.3 min (mostly rate-limit backoff) |
+| Cost | $0.00 |
+
+Two things worth keeping from a run that failed. The index figure closes the "host-side
+only" caveat above. And the Analyzer's opening prefix on a 7 000-file repository is ~44 000
+tokens — which is the clearest argument yet for the cached prefix, because that is the
+block every subsequent call in the step would otherwise re-send.
+
+The remaining gap is the daily free allowance, quantified rather than guessed: 50 requests,
+and a fixture run needs 42. The blocker is no longer "quota" as a hand-wave but a specific
+number with a $10 remedy printed in the error, against runs that cost fractions of a cent.
 
 ### The evidence file, and a guard that proved itself
 
