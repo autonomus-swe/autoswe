@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,56 @@ import pytest
 from core.settings import Settings, load_settings
 from orchestrator.deps import Deps
 from repo.gitcmd import git
+
+
+def _raise_on_terminate(signum: int, frame: object) -> None:
+    """Turn a termination signal into an exception so `finally` blocks still run.
+
+    An e2e run here is hours, so it is far more likely to be stopped than to end on its
+    own — a CI step timeout, `timeout(1)`, Ctrl-C's neighbour, an operator with a deadline.
+    Python's default SIGTERM handling tears the process down without unwinding the stack,
+    which means every `finally` is skipped.
+
+    That is expensive in exactly this suite. `test_m5_cache` computes its report in a
+    `finally` precisely so a failed run still records its numbers, but the report reads the
+    `llm_calls` ledger out of a testcontainer Postgres that dies with the process. So a
+    terminated run does not lose the *last* measurement — it loses all of them, and the
+    evidence a Phase 5 criterion rests on has to be gathered again from scratch.
+
+    Raising `KeyboardInterrupt` rather than `SystemExit`: pytest treats it as a session
+    interrupt and still runs teardown, and it is the exception the stdlib already uses for
+    "someone asked this to stop".
+    """
+    raise KeyboardInterrupt(f"terminated by signal {signum}")
+
+
+@contextmanager
+def unwinding_on_termination() -> Iterator[None]:
+    """Install that handler, then put back whatever was there.
+
+    Restoring matters: leaving it installed would change how the whole pytest session
+    dies, including for tests that never asked for this.
+
+    A plain context manager rather than only a fixture, so the behaviour can be tested
+    directly — pytest refuses to let a fixture be called outside a test, and a guard this
+    small is worth pinning exactly.
+    """
+    try:
+        previous = signal.signal(signal.SIGTERM, _raise_on_terminate)
+    except ValueError:  # not the main thread; nothing to install
+        yield
+        return
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+@pytest.fixture(autouse=True)
+def _unwind_on_termination() -> Iterator[None]:
+    with unwinding_on_termination():
+        yield
+
 
 FIXTURE_SRC = Path(__file__).resolve().parents[1] / "fixtures" / "fixture_repo"
 GOAL = (
