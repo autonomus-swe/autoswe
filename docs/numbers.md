@@ -346,6 +346,13 @@ v1 renders 1 275 tokens against v2's 3 490 — but they are not substitutes. v1 
 list; v2 carries every signature with line ranges. Which is better is a question about
 whether ranking puts the right file first, and answering that on a real goal needs a model.
 
+**It also needed a switch, which did not exist.** Step 5.10 prescribes running once with
+the map ablated, and until now the only route to v1 was the symbol index failing — a fault
+path that changes the pipeline as well as the map, so the comparison would have been
+between a ranked map and a broken run. `REPO_MAP_VERSION=v1` now selects the arm directly,
+returning before the index is read at all. The ablation is a pair of runs away rather than
+unaskable.
+
 ## The model half: what a local model could settle, and what it could not
 
 The line here was drawn in the wrong place twice, and both times in the same direction —

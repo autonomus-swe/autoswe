@@ -318,7 +318,7 @@ When a yielded assistant message contains several `tool_use` blocks and every on
 Procedure on the forked large repo:
 1. Goal that touches two or three files and adds a test (for example, "add a `__repr__` to `X` and a test for it"; keep it realistic and small).
 2. Run with default budget (`$10`). Record: index time, embedding time, repo map tokens, tasks, attempts, review rounds, per-role cost, cache hit rate, wall-clock, total cost.
-3. Ablation: run once more with `repomap=off` (Coder and Planner get the v1 tree only). Record the same numbers.
+3. Ablation: run once more with `REPO_MAP_VERSION=v1` (Coder and Planner get the v1 tree only). Record the same numbers. The setting is named for what it selects rather than `repomap=off`, because "off" is not what happens — v1 is still a map, and an agent given no map at all would be a third condition nobody asked for. Until this switch existed the ablation could not be run: v1 was reachable only by the symbol index failing, which changes the pipeline as well as the map.
 4. Write `docs/numbers.md` with the table; this feeds README §14 and §15.
 
 Target: PR opened, total under $5, cache hit rate above 60 %. If cost is above target, the usual culprits in order: a cold cache (check `cache_write` vs `cache_read`), too many fenced files in the Coder context, a review pre-pass on an oversized diff, or the Debugger looping on an environment failure.
