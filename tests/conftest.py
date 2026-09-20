@@ -60,3 +60,32 @@ def _reset_structlog() -> Iterator[None]:
     """
     yield
     structlog.reset_defaults()
+
+
+# The two variables `orchestrator.worker.apply_ca_bundle` writes, and the reason it needs a
+# guard here rather than in the test that sets them.
+CA_VARS = ("REQUESTS_CA_BUNDLE", "SSL_CERT_FILE")
+
+
+@pytest.fixture(autouse=True)
+def _restore_ca_bundle() -> Iterator[None]:
+    """Undo any CA bundle a test installed into the process environment.
+
+    `apply_ca_bundle` writes straight to `os.environ` with `setdefault`, and
+    `monkeypatch.delenv(name, raising=False)` on a variable that was never set records
+    nothing to restore — so the test that exercises it leaked a `tmp_path` PEM into every
+    test that ran afterwards.
+
+    Nothing noticed for a long time, because nothing downstream built an SSL context.
+    `httpx` builds one eagerly when a client is constructed, whatever the URL's scheme, so
+    the first test to talk to a local `http://` service died on
+    `ssl.SSLError: [X509] PEM lib` — an error naming neither the variable nor the test that
+    set it.
+    """
+    before = {var: os.environ.get(var) for var in CA_VARS}
+    yield
+    for var, value in before.items():
+        if value is None:
+            os.environ.pop(var, None)
+        else:
+            os.environ[var] = value
