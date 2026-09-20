@@ -27,7 +27,14 @@ class TaskSpec(LLMModel):
     depends_on: list[str]
     files: list[str]
     acceptance_criteria: list[str]
-    test_selector: str
+    # Empty means "run the whole suite", which is what the rest of the system already
+    # assumes: `Stack.test_command` falls back to the stack's default selector on an empty
+    # string, the Coder prompt renders it as "(full suite)", and four call sites construct
+    # a TaskSpec with `test_selector=""`. It was nevertheless a required field, so the
+    # Decomposer had to invent a selector for work that does not narrow to one — and a
+    # model that answered honestly with `null` failed the whole graph. The default makes
+    # the schema say what the code already meant.
+    test_selector: str = ""
 
 
 class TaskGraphSpec(LLMModel):

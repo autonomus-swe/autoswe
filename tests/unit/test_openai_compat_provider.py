@@ -13,7 +13,7 @@ from pydantic import Field
 
 from agents.submit import submit_tool
 from contracts import LLMModel, TaskResult, ToolResult, Usage
-from contracts.plan import TaskGraphSpec
+from contracts.plan import TaskGraphSpec, TaskSpec
 from core.errors import ProviderError
 from gateway import caching, pricing
 from gateway import context as gateway_context
@@ -633,6 +633,72 @@ def test_repair_unwraps_the_schema_shaped_container_a_local_model_sends() -> Non
     assert task.files == ["fixture/ops.py"]
     assert task.depends_on == []
     assert task.id == "t1" and task.test_selector == "tests/test_ops.py"
+
+
+def test_repair_wraps_the_one_item_answer_a_model_wrote_as_the_item() -> None:
+    """The payload below killed a real DECOMPOSE step, twice in a row.
+
+    Asked for `acceptance_criteria: list[str]`, qwen2.5:7b answered with the criterion —
+    because that is what the question sounds like. Retrying does not help: the phrasing
+    that produced it is the phrasing that will produce it again.
+    """
+    raw = json.dumps(
+        {
+            "tasks": [
+                {
+                    **VALID_TASK,
+                    "acceptance_criteria": "fixture/ops.py contains `def subtract(a, b): "
+                    "return a - b`.;",
+                }
+            ]
+        }
+    )
+
+    graph = repair_structured(raw, TaskGraphSpec)
+
+    assert graph is not None
+    assert graph.tasks[0].acceptance_criteria == [
+        "fixture/ops.py contains `def subtract(a, b): return a - b`.;"
+    ], "the semicolon is inside a code snippet; splitting on it invents a second criterion"
+
+
+def test_repair_will_not_turn_a_null_into_a_list_holding_nothing() -> None:
+    """`None` means the model had nothing to say. `[None]` is a list with one empty
+    criterion in it, which reads downstream as a requirement nobody can satisfy.
+
+    The null is dropped rather than wrapped, so the field falls back to its default — and
+    `acceptance_criteria` has none, so this still fails, which is the right answer. A task
+    with no acceptance criteria is not a task.
+    """
+    raw = json.dumps({"tasks": [{**VALID_TASK, "acceptance_criteria": None}]})
+
+    assert repair_structured(raw, TaskGraphSpec) is None
+
+
+def test_a_null_falls_back_to_the_default_the_schema_already_declares() -> None:
+    """The other half, and the one that killed a real run.
+
+    An honest "I have no test selector for this task" came back as `null`, and pydantic
+    does not apply a default to a key that is present and null — only to a missing one. So
+    the Decomposer's most truthful answer was the one that failed.
+
+    Nothing is invented here: the value used is the one the schema author wrote.
+    """
+    raw = json.dumps({"tasks": [{**VALID_TASK, "test_selector": None}]})
+
+    graph = repair_structured(raw, TaskGraphSpec)
+
+    assert graph is not None
+    assert graph.tasks[0].test_selector == "", "empty means the full suite, everywhere else"
+
+
+def test_an_empty_selector_means_the_full_suite_rather_than_a_missing_value() -> None:
+    """The semantics the default rests on, asserted so the default cannot quietly become a
+    different kind of empty. Four call sites construct a TaskSpec this way."""
+    task = TaskGraphSpec.model_validate({"tasks": [VALID_TASK]}).tasks[0]
+
+    assert TaskSpec(**{**VALID_TASK, "test_selector": ""}).test_selector == ""
+    assert task.test_selector == VALID_TASK["test_selector"]
 
 
 def test_repair_leaves_a_valid_payload_untouched() -> None:

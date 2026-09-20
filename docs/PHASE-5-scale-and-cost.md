@@ -63,9 +63,19 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       and a timestamp at the *front* of the same system prompt collapses the rate, which is
       the bug the breakpoint placement exists to avoid, and the test fails if that
       protection is removed.
-      **Second half not met.** "Run-level" means across a whole agent run, and a local model
-      cannot drive one: qwen2.5 at both 7B and 3B timed out at 240 s on a single
-      tool-calling turn. `tests/e2e/test_m5_cache.py` still needs quota.
+      **Second half not met**, and the reason I first gave for it was wrong. I claimed
+      qwen2.5 "timed out at 240 s on a single tool-calling turn"; the probe had crashed in
+      its own reporting line and I read the traceback as a timeout. Measured properly, a
+      tool-calling turn is **20.1 s on qwen2.5:7b** and **158.4 s on qwen2.5:3b**, both
+      returning correct `tool_calls`.
+      So `tests/e2e/test_m5_cache.py` was run for real against Ollama, three times. It gets
+      through SETUP, ANALYZE and PLAN and into DECOMPOSE. Two structured-output bugs it
+      exposed are now fixed (see §5.11). The third run stopped earlier, at ANALYZE, with
+      the Analyzer declining to call `submit_profile` after both reminders — which is the
+      limit recorded in Phase 2: qwen2.5:7b drives the Analyzer, Planner and Decomposer but
+      will not reliably honour `must_call`, and will not get the Coder to submit at all.
+      That is a model capability, not a missing feature, and no local model on this machine
+      clears it. The criterion needs a stronger model, which needs quota.
 - [ ] A Coder session that exceeds the context trigger completes with compaction blocks preserved (`provider.compacted`).
       Not achievable as written: no Anthropic provider, no compaction code, and
       `provider.compacted` is logged nowhere. `gateway/context.py` serves the same intent
@@ -97,19 +107,22 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
 
 **Seven of ten met, one half-met; the rest need money or a provider.** What is left:
 
-- **Both remaining gaps need a chat model with quota** — the *run-level* cache hit rate and
-  the scale run. Both mean "across a whole agent run", and that is the specific thing a
-  local model cannot do: qwen2.5 timed out at 240 s on one tool-calling turn, at 7B and at
-  3B. $10 of OpenRouter credit raises the free-model allowance from 50 to 1 000 requests a
-  day and is the whole dependency. The tests are written; `evals/results/` takes a row per
-  run.
+- **Both remaining gaps need a stronger model** — the *run-level* cache hit rate and the
+  scale run. Both mean "across a whole agent run". The blocker is not speed, which is what
+  I wrongly reported first: it is that qwen2.5:7b does not reliably call the tool it is
+  required to call, so a run stalls at whichever agent asks it to submit. $10 of OpenRouter
+  credit raises the free-model allowance from 50 to 1 000 requests a day and is the whole
+  dependency. The tests are written; `evals/results/` takes a row per run.
 - **One needs the Anthropic provider**, deferred to Phase 6 — compaction cannot be tested
   against a provider that does not exist.
 
-An earlier version of this section bundled the caching and downgrade criteria in with the
-scale run as "needs quota". That was wrong for both, and both were closed against a local
-server once the bundling was questioned: caching needed one short repeated call, and the
-downgrade needed two. Only the parts that genuinely require a full run are still open.
+This section has now been wrong twice, both times by assuming a local model could not do
+something rather than measuring it. First it bundled caching and the downgrade in with the
+scale run as "needs quota"; both were then closed against a local server, one needing a
+single repeated call and the other two. Then it claimed a local model could not drive a run
+at all, on the strength of a timeout that turned out to be a bug in my own probe. Running
+it properly found two real structured-output bugs. The remaining limit is real, but it took
+three wrong reasons to find the right one.
 
 Nothing remains that is unfinished work.
 
@@ -285,6 +298,22 @@ Target: PR opened, total under $5, cache hit rate above 60 %. If cost is above t
 
 ---
 
+### Step 5.11 — What running it locally found (added, not planned)
+
+**Files:** `gateway/openai_compat_provider.py`, `contracts/plan.py`, `tests/unit/test_openai_compat_provider.py`.
+
+Not in the original breakdown. It exists because the scale run above was assumed to need paid quota, and running the M5 test against a local Ollama server instead turned up two real bugs in structured-output handling — both in the class the phase warns about, both fatal to a whole run, and neither reachable from a unit test written against a model that gets the schema right.
+
+1. **A one-item answer written as the item.** Asked for `acceptance_criteria: list[str]`, qwen2.5:7b answered with the criterion — a bare string. `repair_structured` already unwrapped the schema-shaped `{"items": [...]}` container but had no case for a scalar, so the run died in DECOMPOSE after two identical retries. Retrying cannot help here: the phrasing that produces it is the phrasing that will produce it again. Wrapping is now the repair, and splitting on a separator is deliberately *not* — the value that prompted the fix contained a semicolon inside a code snippet.
+
+2. **An honest `null` failing where the schema had a default.** `TaskSpec.test_selector` was a required `str`, even though empty means "run the whole suite" everywhere else in the system: `Stack.test_command` falls back to the stack default on an empty string, the Coder prompt renders `(full suite)`, and four call sites construct a `TaskSpec` with `test_selector=""`. So the schema was stricter than the semantics, and a Decomposer that truthfully had no selector killed the graph. The field now carries its real default — and because pydantic applies a default to a *missing* key but never to one that is present and null, an explicit null is now dropped so the default can apply. That repair invents nothing: it can only ever use the value the schema author wrote, and a field with no default still fails, as `acceptance_criteria: null` does.
+
+Both matter beyond this phase. Phase 6 adds an open-source model provider, and these are exactly the failures a weaker model produces: the content is right and the container is wrong.
+
+**The limit that remains** is not one of these. After both fixes a run reaches ANALYZE, PLAN and DECOMPOSE but stalls where an agent must call a specific tool — qwen2.5:7b declines `submit_profile` even after both reminders, and per the Phase 2 measurement will not get the Coder to submit at all. That is a model capability, and no model available on this machine clears it.
+
+---
+
 ## 4. Testing plan
 
 | Tier | Coverage | Command |
@@ -325,7 +354,30 @@ uv run autoswe status <id> --json | jq '{cost_usd, tasks_done, cache_hit_rate, w
 
 ## 7. Checklist before Phase 6
 
-- [ ] Exit criteria in §1 all ticked; `docs/numbers.md` filled with the scale and ablation numbers.
-- [ ] The provider interface has not grown Anthropic-specific parameters; Phase 6's provider must implement `parse()` and `run_tools()` only.
-- [ ] You can explain the breakpoint placement, why coder/debugger never downgrade, and how the repo map score is computed.
+- [~] Exit criteria in §1 all ticked; `docs/numbers.md` filled with the scale and ablation numbers.
+      Seven met, one half-met, one deferred to Phase 6, one blocked on a model that honours
+      `must_call`. The ablation and the host-side numbers are in `docs/numbers.md`; the
+      run numbers are the ones still missing, and the file says so per row rather than
+      leaving a blank that reads as zero.
+- [x] The provider interface has not grown Anthropic-specific parameters; Phase 6's provider must implement `parse()` and `run_tools()` only.
+      Now enforced rather than reviewed: `tests/unit/test_provider_interface.py` pins
+      `Request` and `RunOutcome` to an allowlist of fields, pins the `LLMProvider` protocol
+      surface, and walks the AST of `agents/`, `orchestrator/`, `tools/`, `repo/` and
+      `contracts/` asserting none of them imports a model SDK — including lazily, inside a
+      function, which is how that boundary would actually be crossed. A control test asserts
+      `gateway/openai_compat_provider.py` *does* import one, so the scan cannot pass by
+      finding nothing.
+
+      One correction to the wording: the protocol has **three** members, not two.
+      `model_for` was added with budget-aware routing and belongs there, because only the
+      provider knows which model ids its endpoint accepts. The test asserts three, so the
+      count cannot drift again without someone deciding it should.
+- [x] You can explain the breakpoint placement, why coder/debugger never downgrade, and how the repo map score is computed.
+      Written down in `docs/design-notes.md` rather than left as something recitable, and
+      every number in it is asserted against the code by `tests/unit/test_design_notes.py`
+      — including a control that fails if the document is missing or truncated, since an
+      empty file contains no wrong numbers either. This repository has already shipped two
+      documentation bugs of exactly that kind (`"decompose"` for `"decomposer"`, `["usd"]`
+      for `["budget_usd"]`), and prose has no way of failing when the constant beneath it
+      moves.
 - [ ] Tag `v0.5.0`.

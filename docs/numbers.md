@@ -144,31 +144,49 @@ whether ranking puts the right file first, and answering that on a real goal nee
 
 ## The model half: what a local model could settle, and what it could not
 
-The line here was drawn in the wrong place at first. An earlier version of this document
-put everything involving a model behind "needs quota", which was true of the scale run and
-false of two criteria that need only a handful of short calls. Caching and the downgrade
-were both closed against a local Ollama server once that was questioned.
+The line here was drawn in the wrong place twice, and both times in the same direction —
+assuming a local model could not do something, rather than measuring it.
 
-What a local model genuinely cannot do is *drive a run*. qwen2.5 timed out at 240 s on a
-single tool-calling turn, at 7B and at 3B — and a run is hundreds of those turns with a
-sandbox between them. So the division is not "model" versus "no model" but **one short call
-versus a whole agent loop**:
+**First**, everything involving a model went behind "needs quota". True of the scale run,
+false of caching and the downgrade, which need a handful of short calls; both were closed
+against a local Ollama server once that was questioned.
+
+**Then** I claimed a local model could not drive a run at all, because "qwen2.5 timed out at
+240 s on a single tool-calling turn, at 7B and at 3B". That was wrong, and it was not the
+model's fault: the probe crashed in its own reporting line — `ChatTurn` has no `.text` — and
+I read the resulting stack trace as a timeout. Re-measured properly, a tool-calling turn is
+**20.1 s on qwen2.5:7b** and **158.4 s on qwen2.5:3b**, and both emit a correct
+`tool_calls` payload with `finish_reason=tool_calls`. `LLM_TIMEOUT_S` defaults to 600 s, so
+nothing was ever close to timing out; my probe was hardcoded to 240 s.
+
+The lesson is the one this document keeps relearning: a number that excuses you from doing
+the work deserves more scrutiny than one that does not.
 
 | Number | Status | Where it comes from |
 |---|---|---|
+| Tool-calling turn latency | **measured** | 20.1 s on qwen2.5:7b, 158.4 s on qwen2.5:3b |
 | Cache reads from turn 2 | **measured** | `tests/live/test_cache_hits.py` |
 | Downgrade reaches a different model | **measured** | `tests/live/test_routing.py` |
 | Semantic search on the fixture | **measured** | real embedding model, lexical control |
-| Tasks, attempts, review rounds | needs quota | `tests/e2e/test_m3.py`, `m4.py` |
-| Per-role cost, cost per solved task | needs quota | `runs` + `llm_calls`, PR footer |
-| **Run-level** cache hit rate | needs quota | `tests/e2e/test_m5_cache.py` |
-| Wall clock and total cost for a scale run | needs quota | a real run |
+| Tasks, attempts, review rounds | blocked | `tests/e2e/test_m3.py`, `m4.py` |
+| Per-role cost, cost per solved task | blocked | `runs` + `llm_calls`, PR footer |
+| **Run-level** cache hit rate | blocked | `tests/e2e/test_m5_cache.py` |
+| Wall clock and total cost for a scale run | blocked | a real run |
 
-The OpenRouter key here is free tier — **50 requests a day** — and one end-to-end run
-against a repository this size spends several hundred model calls. `evals/results/` takes a
-row per run, so the bottom four populate themselves the moment there is quota. **$10 of
-OpenRouter credit** raises the allowance from 50 to 1 000 requests a day and is the whole
-dependency.
+**What "blocked" now means, precisely.** `tests/e2e/test_m5_cache.py` was run against the
+local server three times. It gets through SETUP, ANALYZE and PLAN and into DECOMPOSE, and
+the first two attempts found real bugs — a `list[str]` answered with a bare string, and an
+honest `null` for a field whose schema had no default. Both are fixed. The third attempt
+stopped at ANALYZE because qwen2.5:7b declined to call `submit_profile` after both
+reminders, which is the limit Phase 2 recorded: it drives the Analyzer, Planner and
+Decomposer but does not reliably honour `must_call`, and will not get the Coder to submit
+at all. No model on this machine clears that bar.
+
+So the dependency is a model that reliably calls a required tool, not a faster one. The
+OpenRouter key here is free tier — **50 requests a day** — and one end-to-end run spends
+several hundred calls. `evals/results/` takes a row per run, so the bottom four populate
+themselves the moment there is quota; **$10 of OpenRouter credit** raises the allowance to
+1 000 requests a day.
 
 ## Cost per solved task
 
