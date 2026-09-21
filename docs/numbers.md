@@ -200,14 +200,21 @@ What it got before that, recorded to `evals/results/m5.jsonl`:
 |---|---|
 | Repository | Django clone, **7 091 files** |
 | Index, in-run | **3 043 files, 44 292 symbols, 12.06 s** |
-| Analyzer's first call | **43 990 input tokens** |
+| Analyzer **step** (all turns) | **43 990 input tokens** |
 | Wall clock | 12.3 min (mostly rate-limit backoff) |
 | Cost | $0.00 |
 
 Two things worth keeping from a run that failed. The index figure closes the "host-side
-only" caveat above. And the Analyzer's opening prefix on a 7 000-file repository is ~44 000
-tokens — which is the clearest argument yet for the cached prefix, because that is the
-block every subsequent call in the step would otherwise re-send.
+only" caveat above. And the Analyzer's step spends 43 990 input tokens on a 7 000-file
+repository, which is the argument for the cached prefix: the prefix is re-sent on every
+turn, and it is the repetition that costs.
+
+**That row said "first call" until it was checked.** `db.step_costs` returns one row per
+*step* with usage summed over every call in it, and the field recording it was named
+`calls` — so a twelve-turn step read as one enormous request, and this document said the
+opening prefix was ~44 000 tokens. Measured directly, the Analyzer's first call on Django
+is ~3 400 tokens of message and tool schemas plus a map capped at 3 500: roughly **6 500**.
+The argument survives; it was seven times overstated. The field is now named `steps`.
 
 The remaining gap is the daily free allowance, quantified rather than guessed: 50 requests,
 and a fixture run needs 42. The blocker is no longer "quota" as a hand-wave but a specific

@@ -107,10 +107,15 @@ async def _record(
         steps = await db.step_costs(s, run_id)
         total = await db.run_cost(s, run_id)
 
+    # `steps`, not calls. `db.step_costs` returns one row per *step* with usage summed
+    # over every LLM call inside it, so counting rows counts steps. Naming the field
+    # `calls` made a 12-turn Analyzer step read as a single 43 990-token call, and that
+    # misreading reached a pull request, `docs/numbers.md`, and an argument for the cached
+    # prefix that was seven times stronger than the truth supports.
     per_role: dict[str, dict[str, int]] = {}
     for agent, _phase, usage in steps:
-        row = per_role.setdefault(agent, {"calls": 0, "input": 0, "cache_read": 0})
-        row["calls"] += 1
+        row = per_role.setdefault(agent, {"steps": 0, "input": 0, "cache_read": 0})
+        row["steps"] += 1
         row["input"] += usage.input_tokens
         row["cache_read"] += usage.cache_read_tokens
 
@@ -142,5 +147,5 @@ async def _record(
         f"cache {total.cache_hit_rate:.1%} → {path}"
     )
     for agent, counts in per_role.items():
-        print(f"  {agent:11} calls={counts['calls']:3} input={counts['input']:8}")
+        print(f"  {agent:11} steps={counts['steps']:3} input={counts['input']:8}")
     return total, steps
