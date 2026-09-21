@@ -675,10 +675,23 @@ class OpenAICompatProvider:
                         max_tokens=req.max_tokens,
                         model=self.model_for(req.tier),
                     )
-            except ProviderError:
-                # Same trade as the reminder path: an endpoint that will not take a named
-                # `tool_choice` should cost the forcing, not the run.
-                log.warning("forced_tool_choice_rejected", tool=req.must_call, model=self.model)
+            except (ProviderError, _InvalidToolCall) as e:
+                # Same trade as the reminder path: an endpoint that will not take this
+                # turn should cost the forcing, not the run — the step ends exactly as it
+                # would have without the attempt.
+                #
+                # `_InvalidToolCall` is caught here too, and it is not hypothetical. It is
+                # a plain `Exception`, not a `ProviderError`, so catching only the latter
+                # let it escape `run_tools` uncaught and kill the step with an internal
+                # type. Forcing makes it *more* likely, not less: gateways that judge a
+                # generation server-side (Groq) reject exactly the case where a model is
+                # compelled to emit one specific call.
+                log.warning(
+                    "forced_tool_choice_rejected",
+                    tool=req.must_call,
+                    model=self.model,
+                    error=type(e).__name__,
+                )
                 return RunOutcome("", turns, total, "max_iterations")
             turns += 1
             total = total.add(turn.usage)
@@ -694,6 +707,12 @@ class OpenAICompatProvider:
             # matters most.
             await hooks.on_message(turn, turn.usage, int((time.monotonic() - t0) * 1000))
             messages.append(turn.raw_message)
+            if turn.refusal or turn.finish_reason == "content_filter":
+                # The loop above reports a refusal as a refusal, and so must this. Reading
+                # it as "no tool calls" would file a model that declined under the same
+                # heading as one that ran out of turns, and those want different answers
+                # from whoever reads the run.
+                return RunOutcome(turn.refusal or turn.content or "", turns, total, "refusal")
             if turn.tool_calls:
                 for call, text in zip(
                     turn.tool_calls,
