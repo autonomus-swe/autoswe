@@ -665,14 +665,16 @@ class OpenAICompatProvider:
         if req.must_call is not None and req.must_call not in called:
             log.info("forcing_submit_at_max_iterations", tool=req.must_call, turns=turns)
             messages.append({"role": "user", "content": _land_it(req)})
+            t0 = time.monotonic()
             try:
-                turn = await self._complete(
-                    messages=messages,
-                    tools=tool_defs,
-                    tool_choice=_forced_choice(req.must_call),
-                    max_tokens=req.max_tokens,
-                    model=self.model_for(req.tier),
-                )
+                with trace_span("llm_call", role=req.role, tier=req.tier, forced=req.must_call):
+                    turn = await self._complete(
+                        messages=messages,
+                        tools=tool_defs,
+                        tool_choice=_forced_choice(req.must_call),
+                        max_tokens=req.max_tokens,
+                        model=self.model_for(req.tier),
+                    )
             except ProviderError:
                 # Same trade as the reminder path: an endpoint that will not take a named
                 # `tool_choice` should cost the forcing, not the run.
@@ -680,6 +682,17 @@ class OpenAICompatProvider:
                 return RunOutcome("", turns, total, "max_iterations")
             turns += 1
             total = total.add(turn.usage)
+            # `on_message` is what writes the `llm_calls` row, moves live spend and records
+            # the Prometheus sample. Adding to `total` only updates this function's own
+            # tally — and `db.run_cost`, which every recorded number in `docs/numbers.md`
+            # is computed from, reads the table rather than the tally.
+            #
+            # Omitting it here was not a small leak. On a large repository the Analyzer
+            # hits `max_iterations` every time, so this is the *normal* exit at scale, and
+            # the turn missing from the ledger is the one carrying the largest prefix of
+            # the step. The undercount would have been worst exactly where the measurement
+            # matters most.
+            await hooks.on_message(turn, turn.usage, int((time.monotonic() - t0) * 1000))
             messages.append(turn.raw_message)
             if turn.tool_calls:
                 for call, text in zip(
