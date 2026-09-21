@@ -109,6 +109,7 @@ if [ -f $(SCALE_ENV_FILE) ]; then \
   model=$$(sed -n 's/^LLM_MODEL=//p' $(SCALE_ENV_FILE) | head -1); \
 fi; \
 key=$${SCALE_API_KEY:-$$key}; base=$${SCALE_BASE_URL:-$$base}; model=$${SCALE_MODEL:-$$model}; \
+base=$${base%/}; \
 test -n "$$key" -a "$$key" != PASTE_KEY_HERE || { \
   echo "No API key. Put it in $(SCALE_ENV_FILE) on the LLM_API_KEY line, or pass SCALE_API_KEY=..."; \
   exit 1; }; \

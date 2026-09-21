@@ -1209,3 +1209,59 @@ async def test_a_refusal_on_the_forced_turn_is_reported_as_a_refusal(tmp_path: P
 
     assert out.stop_reason == "refusal"
     assert out.final_text == "I will not"
+
+
+def test_a_tool_call_goes_back_with_whatever_it_arrived_with() -> None:
+    """Gemini 3.x attaches an opaque `extra_content.google.thought_signature` to a function
+    call and rejects the *next* turn without it: "Function call is missing a
+    thought_signature in functionCall parts". Turn one always worked, turn two always 400'd.
+
+    Rebuilding a tool call from `id`/`type`/`function` and dropping the rest is what caused
+    that. The rule is to carry unknown fields rather than enumerate known ones, because the
+    next provider will invent a different name for the same idea — `reasoning_details` is
+    the same problem one field up.
+    """
+    from gateway.openai_compat_provider import _tool_call_back
+
+    signature = {"google": {"thought_signature": "EnEKbwFpFH0TYa7kKs73"}}
+    call = SimpleNamespace(
+        id="c1",
+        type="function",
+        function=SimpleNamespace(name="read_file", arguments='{"path": "a.py"}'),
+        model_extra={"extra_content": signature},
+    )
+
+    back = _tool_call_back(call)
+
+    assert back["extra_content"] == signature, "the provider's own token was dropped"
+    assert back["id"] == "c1" and back["function"]["name"] == "read_file"
+
+
+def test_a_provider_that_sends_no_extras_produces_a_clean_call() -> None:
+    """The control. Carrying unknown fields must not invent one — a stray key here would
+    be sent to every other provider, which has no idea what it is."""
+    from gateway.openai_compat_provider import _tool_call_back
+
+    call = SimpleNamespace(
+        id="c1",
+        type="function",
+        function=SimpleNamespace(name="read_file", arguments='{"path": "a.py"}'),
+        model_extra={},
+    )
+
+    assert set(_tool_call_back(call)) == {"id", "type", "function"}
+
+
+def test_invalid_arguments_are_still_normalised_through_the_new_path() -> None:
+    """`arguments` is not opaque: a model emitting non-JSON there is a case the loop
+    repairs, so it must keep being normalised even while everything else is passed on."""
+    from gateway.openai_compat_provider import _tool_call_back
+
+    call = SimpleNamespace(
+        id="c1",
+        type="function",
+        function=SimpleNamespace(name="read_file", arguments="{not json"),
+        model_extra={},
+    )
+
+    assert _tool_call_back(call)["function"]["arguments"] == "{}"
