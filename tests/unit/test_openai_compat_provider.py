@@ -1161,3 +1161,51 @@ async def test_a_forced_turn_the_endpoint_refused_is_not_billed(tmp_path: Path) 
 
     assert out.stop_reason == "max_iterations"
     assert hooks.events.count("message:100") == 2, "only the two turns that happened"
+
+
+async def test_a_gateway_that_rejects_the_forced_call_does_not_kill_the_step(
+    tmp_path: Path,
+) -> None:
+    """`_InvalidToolCall` is a plain `Exception`, not a `ProviderError`.
+
+    Catching only the latter let it escape `run_tools` uncaught and end the step with an
+    internal type instead of an outcome. Forcing makes it *more* likely, not less: gateways
+    that judge a generation server-side reject exactly the case where a model is compelled
+    to emit one specific call.
+    """
+    from gateway.openai_compat_provider import _InvalidToolCall
+
+    class Judging(ScriptedProvider):
+        async def _complete(self, **kwargs: Any) -> ChatTurn:
+            if kwargs.get("tool_choice") not in ("auto", None):
+                raise _InvalidToolCall("tool_use_failed: the model emitted prose")
+            return await super()._complete(**kwargs)
+
+    provider = Judging([turn(calls=[("c", "git_status", {})]) for _ in range(2)])
+
+    out = await provider.run_tools(
+        Request(role="coder", system="s", must_call="submit_result", max_iterations=2),
+        [*tools_for("coder"), submit_tool("submit_result", TaskResult, "task_result")],
+        make_ctx(tmp_path),
+        NullHooks(),
+    )
+
+    assert out.stop_reason == "max_iterations", "the step ended as it would have anyway"
+
+
+async def test_a_refusal_on_the_forced_turn_is_reported_as_a_refusal(tmp_path: Path) -> None:
+    """Reading it as "no tool calls" would file a model that declined under the same
+    heading as one that ran out of turns, and those want different answers from whoever
+    reads the run."""
+    explore = [turn(calls=[("c", "git_status", {})]) for _ in range(2)]
+    provider = ScriptedProvider([*explore, turn("I will not", finish="content_filter")])
+
+    out = await provider.run_tools(
+        Request(role="coder", system="s", must_call="submit_result", max_iterations=2),
+        [*tools_for("coder"), submit_tool("submit_result", TaskResult, "task_result")],
+        make_ctx(tmp_path),
+        NullHooks(),
+    )
+
+    assert out.stop_reason == "refusal"
+    assert out.final_text == "I will not"
