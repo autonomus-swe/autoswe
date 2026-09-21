@@ -91,38 +91,47 @@ test-e2e:
 SCALE_REPO ?= $(HOME)/.autoswe-scale/django
 SCALE_MODEL ?= nvidia/nemotron-3-ultra-550b-a55b:free
 SCALE_BASE_URL ?= https://openrouter.ai/api/v1
-# Never a default and never in this file. Pass it, or export it:
-#   make scale-run SCALE_API_KEY=sk-or-...
-SCALE_API_KEY ?= $(OPENROUTER_API_KEY)
+# The key is never a default, never written here, and never echoed. It is looked for in
+# the environment first and then in a dotenv file, so the usual case is `make scale-run`
+# with nothing after it — a secret pasted on a command line ends up in shell history, and
+# telling someone to paste one is a worse default than reading the file they already have.
+SCALE_ENV_FILE ?= .env.openrouter.bak
 
-define scale_env
-AUTOSWE_SCALE_REPO=$(SCALE_REPO) LLM_BASE_URL=$(SCALE_BASE_URL) \
-LLM_API_KEY=$(SCALE_API_KEY) LLM_MODEL=$(SCALE_MODEL)
-endef
+# Resolved inside the recipe rather than as a make variable, so no target that does not
+# need the key ever reads it, and `make -n` cannot print it. Every recipe using this is
+# `@`-prefixed for the same reason: make echoes commands by default, which puts the key on
+# stdout and into any CI log that captures it. The first version of this target did.
+scale_key = $${SCALE_API_KEY:-$$(test -f $(SCALE_ENV_FILE) && sed -n 's/^LLM_API_KEY=//p' $(SCALE_ENV_FILE) | head -1)}
 
 # Fails in a second on a key or model that will not work, rather than after SETUP has
 # built a sandbox and parsed the repository. The run is the expensive part; finding out
 # the configuration was wrong should not be.
 scale-preflight:
-> @test -n "$(SCALE_API_KEY)" || { \
->   echo "SCALE_API_KEY is empty. Pass it: make $(MAKECMDGOALS) SCALE_API_KEY=sk-or-..."; \
->   exit 1; }
-> @curl -sf -o /dev/null -w '' -X POST $(SCALE_BASE_URL)/chat/completions \
->   -H "Authorization: Bearer $(SCALE_API_KEY)" -H 'Content-Type: application/json' \
+> @key="$(scale_key)"; \
+> test -n "$$key" || { \
+>   echo "No API key. Put it in $(SCALE_ENV_FILE) as LLM_API_KEY=..., export SCALE_API_KEY,"; \
+>   echo "or pass it: make $(MAKECMDGOALS) SCALE_API_KEY=sk-or-..."; \
+>   exit 1; }; \
+> curl -sf -o /dev/null -X POST $(SCALE_BASE_URL)/chat/completions \
+>   -H "Authorization: Bearer $$key" -H 'Content-Type: application/json' \
 >   -d '{"model":"$(SCALE_MODEL)","messages":[{"role":"user","content":"ok"}],"max_tokens":1}' \
 >   || { echo "$(SCALE_MODEL) is not reachable at $(SCALE_BASE_URL) with this key."; \
 >        echo "A 404 means the model id is wrong for that endpoint; 429 means the daily free allowance is spent."; \
->        exit 1; }
-> @echo "preflight ok: $(SCALE_MODEL) at $(SCALE_BASE_URL)"
+>        exit 1; }; \
+> echo "preflight ok: $(SCALE_MODEL) at $(SCALE_BASE_URL)"
 
 scale-run: scale-preflight
-> $(scale_env) uv run pytest -m e2e tests/e2e/test_m5_scale.py -q -s
+> @key="$(scale_key)"; AUTOSWE_SCALE_REPO=$(SCALE_REPO) LLM_BASE_URL=$(SCALE_BASE_URL) \
+> LLM_API_KEY="$$key" LLM_MODEL=$(SCALE_MODEL) \
+> uv run pytest -m e2e tests/e2e/test_m5_scale.py -q -s
 
 # The ablation the same step prescribes: the identical run with the ranked map replaced by
 # the v1 tree. Two runs, one variable, which is the only way the v1-vs-v2 question in
 # `docs/numbers.md` can be answered rather than argued.
 scale-ablation: scale-preflight
-> $(scale_env) REPO_MAP_VERSION=v1 uv run pytest -m e2e tests/e2e/test_m5_scale.py -q -s
+> @key="$(scale_key)"; AUTOSWE_SCALE_REPO=$(SCALE_REPO) LLM_BASE_URL=$(SCALE_BASE_URL) \
+> LLM_API_KEY="$$key" LLM_MODEL=$(SCALE_MODEL) REPO_MAP_VERSION=v1 \
+> uv run pytest -m e2e tests/e2e/test_m5_scale.py -q -s
 
 # both end-to-end tests; costs two runs of quota and can trip a per-minute rate limit
 test-e2e-all:

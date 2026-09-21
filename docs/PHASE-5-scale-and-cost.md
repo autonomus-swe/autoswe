@@ -438,7 +438,7 @@ which matters more than the count:
 
 **The one open engineering item is arithmetic, not unknown.** A completed run needs more
 calls than a free tier allows in a day: the Django attempt reached PLAN at 47 of 50.
-`make scale-run SCALE_API_KEY=sk-or-...` is the command; $10 of credit raises the allowance to 1 000/day and the run
+`make scale-run` is the command; $10 of credit raises the allowance to 1 000/day and the run
 itself costs a fraction of a cent.
 
 ### What the runs cost to learn

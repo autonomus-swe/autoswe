@@ -489,16 +489,22 @@ so even a run that stalls leaves its numbers behind.
 Two numbers are still missing and both are one command away once there is model quota:
 
 ```bash
-make scale-run      SCALE_API_KEY=sk-or-...   # the 3 000-file run
-make scale-ablation SCALE_API_KEY=sk-or-...   # the same run on the v1 tree
+make scale-run        # the 3 000-file run
+make scale-ablation   # the same run on the v1 tree
 ```
 
 Both default to the Django clone and a cache-capable model; override with `SCALE_REPO=`,
 `SCALE_MODEL=` and `SCALE_BASE_URL=`. The fixture clones the repository rather than using
 it in place, so neither touches the checkout.
 
-**The key is never defaulted and never in the Makefile.** The model id and its endpoint
-are, and they move together — overriding `LLM_MODEL` alone leaves `LLM_BASE_URL` at
+**The key is never written in the Makefile, never echoed, and does not need to be typed.**
+It is read from the environment, then from `SCALE_ENV_FILE` (default `.env.openrouter.bak`,
+which `.gitignore` covers) — so the usual case is `make scale-run` with nothing after it. A
+secret pasted on a command line ends up in shell history, and the first version of these
+targets also *echoed* it, because make prints recipes by default; both are fixed and the
+key now resolves inside the recipe where `make -n` cannot reach it.
+
+The model id and its endpoint are in the Makefile, and they move together — overriding `LLM_MODEL` alone leaves `LLM_BASE_URL` at
 whatever `.env` says, which is how the first version of this target sent an OpenRouter
 model name to a local Ollama and got a 404 after starting a sandbox and indexing 3 043
 files.
