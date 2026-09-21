@@ -650,6 +650,45 @@ class OpenAICompatProvider:
                     tokens=total.total_tokens,
                 )
                 messages.append({"role": "user", "content": _land_it(req)})
+        # The other way out, and the one a large repository takes. Everything above
+        # enforces `must_call` on the path where the model *stops talking*; a model that
+        # keeps calling tools until its iterations run out never reaches it and the loop
+        # simply ends, throwing away every turn of work over a call nobody asked it to
+        # make yet.
+        #
+        # Measured on Django: the Analyzer explored 3 043 files for twelve turns and died
+        # on `max_iterations` with a profile it had clearly assembled. The bigger the
+        # repository, the more certain this exit becomes — which is exactly backwards.
+        #
+        # One turn, forced, outside the iteration budget. It cannot loop: the tool is named
+        # in `tool_choice`, so the model's only move is to call it.
+        if req.must_call is not None and req.must_call not in called:
+            log.info("forcing_submit_at_max_iterations", tool=req.must_call, turns=turns)
+            messages.append({"role": "user", "content": _land_it(req)})
+            try:
+                turn = await self._complete(
+                    messages=messages,
+                    tools=tool_defs,
+                    tool_choice=_forced_choice(req.must_call),
+                    max_tokens=req.max_tokens,
+                    model=self.model_for(req.tier),
+                )
+            except ProviderError:
+                # Same trade as the reminder path: an endpoint that will not take a named
+                # `tool_choice` should cost the forcing, not the run.
+                log.warning("forced_tool_choice_rejected", tool=req.must_call, model=self.model)
+                return RunOutcome("", turns, total, "max_iterations")
+            turns += 1
+            total = total.add(turn.usage)
+            messages.append(turn.raw_message)
+            if turn.tool_calls:
+                for call, text in zip(
+                    turn.tool_calls,
+                    await self._run_calls(turn.tool_calls, by_name, ctx, hooks),
+                    strict=True,
+                ):
+                    messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
+                return RunOutcome(turn.content or "", turns, total, "end_turn")
         return RunOutcome("", turns, total, "max_iterations")
 
     @staticmethod

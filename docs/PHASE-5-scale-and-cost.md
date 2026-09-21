@@ -119,6 +119,14 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       `free-models-per-day: limit 50, remaining 0`. A fixture run needs 42 of those 50.
       That is the whole of what is left: a documented daily allowance, remedy printed in
       the error.
+
+      **Re-run with a stronger model, it reached PLAN and found a bug on the way.** Against
+      `nemotron-3-ultra-550b` the same run indexed 44 292 symbols in 5.4 s in-process, got
+      through SETUP, ANALYZE and PLAN at a **0.482 run-level cache hit rate** on 7 091
+      files for **$0.00**, and stopped at 47 calls on the 50-per-day cap. Its first attempt
+      had died on `max_iterations` — every `must_call` guard fired only where a model
+      *stops talking*, never where one explores until its budget runs out, which is the
+      exit a large repository takes. See §5.11.
 - [ ] Tag `v0.5.0`.
 
 **Eight of ten met. No code is known to be missing.** What is left:
@@ -324,6 +332,28 @@ Procedure on the forked large repo:
 Target: PR opened, total under $5, cache hit rate above 60 %. If cost is above target, the usual culprits in order: a cold cache (check `cache_write` vs `cache_read`), too many fenced files in the Coder context, a review pre-pass on an oversized diff, or the Debugger looping on an environment failure.
 
 ---
+
+### Step 5.12 — The exit a large repository takes (added, not planned)
+
+Found by the scale run, and only findable there. The first Django attempt died with:
+
+    AgentError: analyzer did not submit a profile (stop_reason=max_iterations, turns=12)
+
+Note the stop reason. Every `must_call` guard in the provider — two reminders, then a
+forced `tool_choice` — hangs off the branch where the model produces no tool calls, which
+is the shape a *weak* model fails in: it stops talking. A capable model on a large
+repository fails in the opposite shape. It keeps exploring, usefully, until its iteration
+budget runs out, never takes that branch, and the loop simply returns `max_iterations`
+having thrown away every turn of work over a call nobody had yet asked it to make.
+
+The bigger the tree, the more certain this exit becomes: 3 043 files is exactly what
+exhausts an explorer's budget. So the guard was missing precisely where it mattered most,
+and the three-file fixture could never have shown it — on three files the Analyzer finishes
+long before its cap.
+
+The fix is one forced turn outside the iteration budget, and it cannot loop: the tool is
+named in `tool_choice`, so the model's only legal move is to call it. The same run then
+reached PLAN.
 
 ### Step 5.11 — What running it locally found (added, not planned)
 
