@@ -83,19 +83,46 @@ test-e2e:
 #
 # Cloned, never used in place — a run creates branches and resets, and the fixture does
 # the clone so this cannot touch the original.
+# A model id and the endpoint that serves it are one setting, not two. Overriding
+# LLM_MODEL alone leaves LLM_BASE_URL at whatever `.env` says — which is how the first
+# version of this target sent an OpenRouter model name to a local Ollama and got a 404
+# after starting a sandbox and indexing 3 043 files. They move together here so that
+# cannot happen.
 SCALE_REPO ?= $(HOME)/.autoswe-scale/django
 SCALE_MODEL ?= nvidia/nemotron-3-ultra-550b-a55b:free
+SCALE_BASE_URL ?= https://openrouter.ai/api/v1
+# Never a default and never in this file. Pass it, or export it:
+#   make scale-run SCALE_API_KEY=sk-or-...
+SCALE_API_KEY ?= $(OPENROUTER_API_KEY)
 
-scale-run:
-> AUTOSWE_SCALE_REPO=$(SCALE_REPO) LLM_MODEL=$(SCALE_MODEL) \
-> uv run pytest -m e2e tests/e2e/test_m5_scale.py -q -s
+define scale_env
+AUTOSWE_SCALE_REPO=$(SCALE_REPO) LLM_BASE_URL=$(SCALE_BASE_URL) \
+LLM_API_KEY=$(SCALE_API_KEY) LLM_MODEL=$(SCALE_MODEL)
+endef
+
+# Fails in a second on a key or model that will not work, rather than after SETUP has
+# built a sandbox and parsed the repository. The run is the expensive part; finding out
+# the configuration was wrong should not be.
+scale-preflight:
+> @test -n "$(SCALE_API_KEY)" || { \
+>   echo "SCALE_API_KEY is empty. Pass it: make $(MAKECMDGOALS) SCALE_API_KEY=sk-or-..."; \
+>   exit 1; }
+> @curl -sf -o /dev/null -w '' -X POST $(SCALE_BASE_URL)/chat/completions \
+>   -H "Authorization: Bearer $(SCALE_API_KEY)" -H 'Content-Type: application/json' \
+>   -d '{"model":"$(SCALE_MODEL)","messages":[{"role":"user","content":"ok"}],"max_tokens":1}' \
+>   || { echo "$(SCALE_MODEL) is not reachable at $(SCALE_BASE_URL) with this key."; \
+>        echo "A 404 means the model id is wrong for that endpoint; 429 means the daily free allowance is spent."; \
+>        exit 1; }
+> @echo "preflight ok: $(SCALE_MODEL) at $(SCALE_BASE_URL)"
+
+scale-run: scale-preflight
+> $(scale_env) uv run pytest -m e2e tests/e2e/test_m5_scale.py -q -s
 
 # The ablation the same step prescribes: the identical run with the ranked map replaced by
 # the v1 tree. Two runs, one variable, which is the only way the v1-vs-v2 question in
 # `docs/numbers.md` can be answered rather than argued.
-scale-ablation:
-> AUTOSWE_SCALE_REPO=$(SCALE_REPO) LLM_MODEL=$(SCALE_MODEL) REPO_MAP_VERSION=v1 \
-> uv run pytest -m e2e tests/e2e/test_m5_scale.py -q -s
+scale-ablation: scale-preflight
+> $(scale_env) REPO_MAP_VERSION=v1 uv run pytest -m e2e tests/e2e/test_m5_scale.py -q -s
 
 # both end-to-end tests; costs two runs of quota and can trip a per-minute rate limit
 test-e2e-all:
