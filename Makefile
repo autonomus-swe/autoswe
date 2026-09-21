@@ -83,54 +83,67 @@ test-e2e:
 #
 # Cloned, never used in place — a run creates branches and resets, and the fixture does
 # the clone so this cannot touch the original.
-# A model id and the endpoint that serves it are one setting, not two. Overriding
-# LLM_MODEL alone leaves LLM_BASE_URL at whatever `.env` says — which is how the first
-# version of this target sent an OpenRouter model name to a local Ollama and got a 404
-# after starting a sandbox and indexing 3 043 files. They move together here so that
-# cannot happen.
+# A model id, the endpoint that serves it and the key for it are one setting, not three.
+# Overriding LLM_MODEL alone leaves LLM_BASE_URL at whatever `.env` says — which is how an
+# earlier version of this target sent an OpenRouter model name to a local Ollama and got a
+# 404 after starting a sandbox and indexing 3 043 files. So all three come from one file,
+# and switching provider is one variable:
+#
+#   make scale-run SCALE_ENV_FILE=.env.openrouter.bak
+#
+# The file is a dotenv: LLM_BASE_URL, LLM_MODEL, LLM_API_KEY. `.gitignore` covers `.env.*`.
 SCALE_REPO ?= $(HOME)/.autoswe-scale/django
-SCALE_MODEL ?= nvidia/nemotron-3-ultra-550b-a55b:free
-SCALE_BASE_URL ?= https://openrouter.ai/api/v1
-# The key is never a default, never written here, and never echoed. It is looked for in
-# the environment first and then in a dotenv file, so the usual case is `make scale-run`
-# with nothing after it — a secret pasted on a command line ends up in shell history, and
-# telling someone to paste one is a worse default than reading the file they already have.
-SCALE_ENV_FILE ?= .env.openrouter.bak
+SCALE_ENV_FILE ?= .env.cerebras
 
-# Resolved inside the recipe rather than as a make variable, so no target that does not
-# need the key ever reads it, and `make -n` cannot print it. Every recipe using this is
-# `@`-prefixed for the same reason: make echoes commands by default, which puts the key on
-# stdout and into any CI log that captures it. The first version of this target did.
-scale_key = $${SCALE_API_KEY:-$$(test -f $(SCALE_ENV_FILE) && sed -n 's/^LLM_API_KEY=//p' $(SCALE_ENV_FILE) | head -1)}
+# Read inside the recipe rather than into make variables, so no target that does not need
+# the key ever reads it and `make -n` cannot print it. Every recipe below is `@`-prefixed
+# for the same reason: make echoes commands by default, which would put the key on stdout
+# and into any CI log. An earlier version of this target did exactly that.
+#
+# SCALE_API_KEY / SCALE_BASE_URL / SCALE_MODEL still win, for trying something without
+# editing a file.
+define scale_load
+if [ -f $(SCALE_ENV_FILE) ]; then \
+  key=$$(sed -n 's/^LLM_API_KEY=//p' $(SCALE_ENV_FILE) | head -1); \
+  base=$$(sed -n 's/^LLM_BASE_URL=//p' $(SCALE_ENV_FILE) | head -1); \
+  model=$$(sed -n 's/^LLM_MODEL=//p' $(SCALE_ENV_FILE) | head -1); \
+fi; \
+key=$${SCALE_API_KEY:-$$key}; base=$${SCALE_BASE_URL:-$$base}; model=$${SCALE_MODEL:-$$model}; \
+test -n "$$key" -a "$$key" != PASTE_KEY_HERE || { \
+  echo "No API key. Put it in $(SCALE_ENV_FILE) on the LLM_API_KEY line, or pass SCALE_API_KEY=..."; \
+  exit 1; }; \
+test -n "$$base" -a -n "$$model" || { \
+  echo "$(SCALE_ENV_FILE) needs LLM_BASE_URL and LLM_MODEL as well as the key."; \
+  exit 1; }
+endef
 
-# Fails in a second on a key or model that will not work, rather than after SETUP has
-# built a sandbox and parsed the repository. The run is the expensive part; finding out
-# the configuration was wrong should not be.
+# One call, one second, before anything is built. The run is the expensive part; finding
+# out the configuration was wrong should not cost a sandbox and a parse.
 scale-preflight:
-> @key="$(scale_key)"; \
-> test -n "$$key" || { \
->   echo "No API key. Put it in $(SCALE_ENV_FILE) as LLM_API_KEY=..., export SCALE_API_KEY,"; \
->   echo "or pass it: make $(MAKECMDGOALS) SCALE_API_KEY=sk-or-..."; \
->   exit 1; }; \
-> curl -sf -o /dev/null -X POST $(SCALE_BASE_URL)/chat/completions \
+> @$(scale_load); \
+> curl -sf -o /dev/null -X POST $$base/chat/completions \
 >   -H "Authorization: Bearer $$key" -H 'Content-Type: application/json' \
->   -d '{"model":"$(SCALE_MODEL)","messages":[{"role":"user","content":"ok"}],"max_tokens":1}' \
->   || { echo "$(SCALE_MODEL) is not reachable at $(SCALE_BASE_URL) with this key."; \
->        echo "A 404 means the model id is wrong for that endpoint; 429 means the daily free allowance is spent."; \
+>   -d "{\"model\":\"$$model\",\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}],\"max_tokens\":1}" \
+>   || { echo "$$model is not reachable at $$base with this key."; \
+>        echo "404 means the model id is wrong for that endpoint; 429 means the allowance is spent."; \
+>        echo "Models this key can see:"; \
+>        curl -sf $$base/models -H "Authorization: Bearer $$key" \
+>          | python3 -c "import json,sys;[print('  ',m['id']) for m in json.load(sys.stdin).get('data',[])]" \
+>          2>/dev/null || echo "  (could not list models)"; \
 >        exit 1; }; \
-> echo "preflight ok: $(SCALE_MODEL) at $(SCALE_BASE_URL)"
+> echo "preflight ok: $$model at $$base"
 
 scale-run: scale-preflight
-> @key="$(scale_key)"; AUTOSWE_SCALE_REPO=$(SCALE_REPO) LLM_BASE_URL=$(SCALE_BASE_URL) \
-> LLM_API_KEY="$$key" LLM_MODEL=$(SCALE_MODEL) \
+> @$(scale_load); AUTOSWE_SCALE_REPO=$(SCALE_REPO) \
+> LLM_BASE_URL="$$base" LLM_API_KEY="$$key" LLM_MODEL="$$model" \
 > uv run pytest -m e2e tests/e2e/test_m5_scale.py -q -s
 
 # The ablation the same step prescribes: the identical run with the ranked map replaced by
 # the v1 tree. Two runs, one variable, which is the only way the v1-vs-v2 question in
 # `docs/numbers.md` can be answered rather than argued.
 scale-ablation: scale-preflight
-> @key="$(scale_key)"; AUTOSWE_SCALE_REPO=$(SCALE_REPO) LLM_BASE_URL=$(SCALE_BASE_URL) \
-> LLM_API_KEY="$$key" LLM_MODEL=$(SCALE_MODEL) REPO_MAP_VERSION=v1 \
+> @$(scale_load); AUTOSWE_SCALE_REPO=$(SCALE_REPO) \
+> LLM_BASE_URL="$$base" LLM_API_KEY="$$key" LLM_MODEL="$$model" REPO_MAP_VERSION=v1 \
 > uv run pytest -m e2e tests/e2e/test_m5_scale.py -q -s
 
 # both end-to-end tests; costs two runs of quota and can trip a per-minute rate limit

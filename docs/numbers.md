@@ -497,14 +497,25 @@ Both default to the Django clone and a cache-capable model; override with `SCALE
 `SCALE_MODEL=` and `SCALE_BASE_URL=`. The fixture clones the repository rather than using
 it in place, so neither touches the checkout.
 
-**The key is never written in the Makefile, never echoed, and does not need to be typed.**
-It is read from the environment, then from `SCALE_ENV_FILE` (default `.env.openrouter.bak`,
-which `.gitignore` covers) — so the usual case is `make scale-run` with nothing after it. A
-secret pasted on a command line ends up in shell history, and the first version of these
-targets also *echoed* it, because make prints recipes by default; both are fixed and the
-key now resolves inside the recipe where `make -n` cannot reach it.
+**The endpoint, the model and the key come from one file.** `SCALE_ENV_FILE` (default
+`.env.cerebras`; `.gitignore` covers `.env.*`) is a dotenv with `LLM_BASE_URL`, `LLM_MODEL`
+and `LLM_API_KEY`, so switching provider is one variable:
 
-The model id and its endpoint are in the Makefile, and they move together — overriding `LLM_MODEL` alone leaves `LLM_BASE_URL` at
+```bash
+make scale-run SCALE_ENV_FILE=.env.openrouter.bak
+```
+
+That grouping is not tidiness. Overriding the model alone leaves the endpoint at whatever
+`.env` says, which is how an earlier version of this target sent an OpenRouter model name
+to a local Ollama and got a 404 — after starting a sandbox and indexing 3 043 files.
+
+**The key is never written in the Makefile, never echoed, and never typed.** It resolves
+inside the recipe where `make -n` cannot reach it, and every recipe touching it is
+`@`-prefixed: make echoes commands by default, and the first version of these targets put
+the key on stdout for anything capturing output.
+
+When the model id is wrong the preflight prints the ids the key can actually see, so the
+usual cause fixes itself. The model id and its endpoint move together — overriding `LLM_MODEL` alone leaves `LLM_BASE_URL` at
 whatever `.env` says, which is how the first version of this target sent an OpenRouter
 model name to a local Ollama and got a 404 after starting a sandbox and indexing 3 043
 files.
