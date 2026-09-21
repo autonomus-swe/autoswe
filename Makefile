@@ -71,6 +71,32 @@ worker:
 test-e2e:
 > uv run pytest -m e2e tests/e2e/test_m1_github.py
 
+# Step 5.10, as one command. The scale run needs a large checkout, a model that both
+# caches and writes working code, and a repository whose size is the point — reconstructing
+# that from the phase document by hand is how a run gets made against the wrong thing and
+# the number quietly means something else.
+#
+# SCALE_REPO defaults to a Django clone because `docs/numbers.md` already carries its
+# host-side figures, so a run against it can be compared rather than just recorded. Any
+# checkout in the 2 000-5 000 file range the phase document asks for will do:
+#   make scale-run SCALE_REPO=~/src/sympy
+#
+# Cloned, never used in place — a run creates branches and resets, and the fixture does
+# the clone so this cannot touch the original.
+SCALE_REPO ?= $(HOME)/.autoswe-scale/django
+SCALE_MODEL ?= nvidia/nemotron-3-ultra-550b-a55b:free
+
+scale-run:
+> AUTOSWE_SCALE_REPO=$(SCALE_REPO) LLM_MODEL=$(SCALE_MODEL) \
+> uv run pytest -m e2e tests/e2e/test_m5_scale.py -q -s
+
+# The ablation the same step prescribes: the identical run with the ranked map replaced by
+# the v1 tree. Two runs, one variable, which is the only way the v1-vs-v2 question in
+# `docs/numbers.md` can be answered rather than argued.
+scale-ablation:
+> AUTOSWE_SCALE_REPO=$(SCALE_REPO) LLM_MODEL=$(SCALE_MODEL) REPO_MAP_VERSION=v1 \
+> uv run pytest -m e2e tests/e2e/test_m5_scale.py -q -s
+
 # both end-to-end tests; costs two runs of quota and can trip a per-minute rate limit
 test-e2e-all:
 > uv run pytest -m e2e tests/e2e
