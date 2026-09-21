@@ -418,9 +418,70 @@ uv run autoswe status <id> --json | jq '{cost_usd, tasks_done, cache_hit_rate, w
 
 ---
 
+## 6.5 Closeout — where this phase actually got to
+
+Seven of ten criteria ticked, and the three that are not each have a different reason,
+which matters more than the count:
+
+| Criterion | State | Evidence |
+|---|---|---|
+| Index 3 000 files < 60 s, on the worker | **met** | 44 292 symbols in 5.4 s **in-process**, Django scale run |
+| Repo map ranks first, < 4 000 tokens | **met** | after the `CHARS_PER_TOKEN` correction; 3 079–3 498 real tokens |
+| Semantic search on the fixture | **met** | real embedding model, lexical control scoring 0.0 |
+| Cache reads from turn 2; run-level > 60 % | **met** | **0.7745** over 11 steps, `m5_cache.jsonl` |
+| Compaction blocks preserved | **deferred** | needs the Anthropic provider — moved to Phase 6 by this document |
+| Budget downgrade at 90 % | **met** | a downgrade reaching a different model that really answered |
+| OTel spans and `/metrics` | **met** | five span kinds, seven metrics, Langfuse profile |
+| Node and Go end to end; egress allow/deny | **met** | real images, real failures with file and line |
+| Scale run: PR opened, < $5, numbers recorded | **partial** | numbers ✅, $0.00 ✅, PR ✅ on the fixture; the 3 000-file PR needs quota |
+| Tag `v0.5.0` | **open** | a `git tag`, once the above is settled |
+
+**The one open engineering item is arithmetic, not unknown.** A completed run needs more
+calls than a free tier allows in a day: the Django attempt reached PLAN at 47 of 50. `make
+scale-run` is the command; $10 of credit raises the allowance to 1 000/day and the run
+itself costs a fraction of a cent.
+
+### What the runs cost to learn
+
+Nine bugs came out of running this phase rather than reasoning about it, and none of them
+were reachable from a unit test:
+
+1. `list[str]` answered with a bare string — killed DECOMPOSE.
+2. An honest `null` where the schema had no default — killed DECOMPOSE again.
+3. The loop *asked* a weak model to submit and gave up, where `parse()` had been forcing
+   the call all along.
+4. `must_call` unenforced on the `max_iterations` exit — the exit a large repository always
+   takes.
+5. The forced turn never reaching the ledger, undercounting the numbers the fix produced.
+6. `_InvalidToolCall` escaping that same block uncaught.
+7. A refusal on that turn filed as running out of turns.
+8. The e2e GitHub stub missing `add_to_labels`, so every run logged a defect it did not
+   have and no test could catch a real one.
+9. The repo map cached in process memory, so a resumed run rebuilt a different prefix.
+
+Four of those are in one twenty-line block added to force a tool call, which is the honest
+lesson of the phase: a second implementation of an existing path fails by omitting the
+cases the first one handles. The main loop had caught every one of them for months.
+
+### What is measured, and what is still asserted on faith
+
+Measured, on a real run: prompt caching end to end (0.7745), the downgrade reaching a
+different model, indexing at scale on the worker, a complete pipeline from repository URL
+to an opened pull request, and per-role token spend.
+
+Not measured: whether the *ranked* map beats the v1 tree on a real task. The switch to ask
+now exists (`make scale-ablation`) and the comparison does not. `docs/numbers.md` says so
+rather than implying the ranking has been validated because it was carefully built.
+
+---
+
 ## 7. Checklist before Phase 6
 
 - [~] Exit criteria in §1 all ticked; `docs/numbers.md` filled with the scale and ablation numbers.
+      Seven ticked, one deferred to Phase 6 by this document, one needing quota, one the
+      tag itself — see §6.5. `docs/numbers.md` carries every host-side figure and the run
+      numbers that exist; the ablation pair is the one table still empty, and
+      `make scale-ablation` is the command that fills it.
       Eight met, one deferred to Phase 6, one pending quota. The ablation and the host-side numbers are in `docs/numbers.md`; the
       run numbers are the ones still missing, and the file says so per row rather than
       leaving a blank that reads as zero.
