@@ -129,7 +129,14 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       exit a large repository takes. See §5.11.
 - [ ] Tag `v0.5.0`.
 
-**Eight of ten met. No code is known to be missing.** What is left:
+**Seven of ten ticked. No code is known to be missing.** Of the three that are not: one is
+a `git tag`, one the phase document itself deferred to Phase 6, and one needs model quota.
+
+(An earlier revision of this line said "eight". It was wrong — I miscounted when ticking
+the caching criterion and published the figure. `tests/unit/test_phase_5_tally.py` now
+counts the boxes, because a summary is the one part of a document nobody re-derives.)
+
+What is left:
 
 - **The scale run** needs the same paid model, for the same reason plus volume. Its **$5
   ceiling turns out to have three orders of magnitude of headroom**: at
