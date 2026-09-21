@@ -1044,3 +1044,67 @@ async def test_a_step_with_no_budget_runs_to_its_own_end(tmp_path: Path) -> None
     )
 
     assert out.stop_reason == "end_turn" and out.final_text == "done"
+
+
+async def test_a_model_that_explores_to_the_cap_is_still_made_to_submit(tmp_path: Path) -> None:
+    """The exit a large repository takes, and the one `must_call` did not cover.
+
+    Every reminder above fires on the path where the model *stops talking*. A model that
+    keeps calling tools until its iterations run out never reaches it, so the loop just
+    ended and threw the step away. Measured on Django: the Analyzer explored 3 043 files
+    for twelve turns and died on `max_iterations` holding a profile it had assembled.
+
+    The bigger the repository, the more certain that exit becomes, which is backwards.
+    """
+    explore = [turn(calls=[("c", "git_status", {})]) for _ in range(2)]
+    submission = turn(calls=[("final", "submit_result", {"ok": True})])
+    provider = ScriptedProvider([*explore, submission])
+    tools = [*tools_for("coder"), submit_tool("submit_result", TaskResult, "task_result")]
+
+    out = await provider.run_tools(
+        Request(role="coder", system="s", must_call="submit_result", max_iterations=2),
+        tools,
+        make_ctx(tmp_path),
+        NullHooks(),
+    )
+
+    assert out.stop_reason == "end_turn", "the run ended at the cap without submitting"
+    assert provider.requests[-1]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "submit_result"},
+    }
+
+
+async def test_the_forced_turn_is_not_taken_when_the_tool_was_already_called(
+    tmp_path: Path,
+) -> None:
+    """The control. A run that hits the cap having already submitted has nothing to force,
+    and spending a call to prove it would be a cost on every long step."""
+    calls = [turn(calls=[("c1", "submit_result", {"ok": True})])]
+    calls += [turn(calls=[("c", "git_status", {})]) for _ in range(2)]
+    provider = ScriptedProvider(calls)
+    tools = [*tools_for("coder"), submit_tool("submit_result", TaskResult, "task_result")]
+
+    out = await provider.run_tools(
+        Request(role="coder", system="s", must_call="submit_result", max_iterations=3),
+        tools,
+        make_ctx(tmp_path),
+        NullHooks(),
+    )
+
+    assert out.stop_reason == "max_iterations"
+    assert all(r["tool_choice"] == "auto" for r in provider.requests)
+
+
+async def test_a_step_with_no_required_tool_still_just_stops_at_the_cap(tmp_path: Path) -> None:
+    """Roles that make one call have no `must_call`, and must not gain an extra turn."""
+    provider = ScriptedProvider([turn(calls=[("c", "git_status", {})]) for _ in range(3)])
+
+    out = await provider.run_tools(
+        Request(role="coder", system="s", max_iterations=2),
+        tools_for("coder"),
+        make_ctx(tmp_path),
+        NullHooks(),
+    )
+
+    assert out.stop_reason == "max_iterations" and out.turns == 2

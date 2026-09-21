@@ -144,7 +144,39 @@ rather than in the messages, stated as a measurement instead of a design intenti
 roles that make one or two calls never do better than ~0.7; the role that loops does 0.914,
 and it is the role that spends the most.
 
-### The scale run, and the wall it hit
+### The scale run: what 7 091 files cost, and the bug it found
+
+Run against a Django clone with `nvidia/nemotron-3-ultra-550b-a55b:free`:
+
+| | |
+|---|---|
+| Repository | **7 091 files**, 3 043 indexed |
+| Index, in-run | **44 292 symbols in 5.4 s** |
+| Reached | SETUP → ANALYZE → **PLAN** |
+| Input / cache read | 585 786 / **544 320** |
+| **Run-level cache hit rate** | **0.482** |
+| Wall clock | 16.8 min |
+| Cost | **$0.00** |
+
+The Analyzer's prefix on this repository is ~230 000 input tokens against 116 640 read from
+cache; the Planner's is 355 458 against 427 680 — it reads more from cache than it sends.
+On the three-file fixture the same roles moved a few thousand tokens. This is the scale the
+cached prefix was designed for, and the first measurement of it.
+
+**It stopped at 47 calls on `free-models-per-day: limit 50`.** That is the quantified
+answer to what the scale run needs: not "quota" as a hand-wave, but three more calls than a
+free tier allows in a day, on a run that costs nothing to make.
+
+**The run also found a real bug, which is why it got as far as PLAN.** The first attempt
+died with `analyzer did not submit a profile (stop_reason=max_iterations, turns=12)`. Every
+`must_call` guard fired only on the path where a model *stops talking*; a model that keeps
+calling tools until its iterations run out never reached them, so the loop simply ended and
+threw away twelve turns of work. The bigger the repository, the more certain that exit
+becomes — a 3 043-file tree is exactly what exhausts an explorer's budget — so the guard
+was absent precisely where it was most needed. One forced turn outside the iteration budget
+now closes it, and the same run then reached PLAN.
+
+### The earlier scale attempt, and the wall it hit
 
 `tests/e2e/test_m5_scale.py` codifies Step 5.10's procedure: clone a large repository, run
 a small realistic goal against it, record everything. It ran against Django and stopped
