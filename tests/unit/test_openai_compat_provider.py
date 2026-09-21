@@ -1108,3 +1108,56 @@ async def test_a_step_with_no_required_tool_still_just_stops_at_the_cap(tmp_path
     )
 
     assert out.stop_reason == "max_iterations" and out.turns == 2
+
+
+async def test_the_forced_turn_reaches_the_ledger(tmp_path: Path) -> None:
+    """`on_message` writes the `llm_calls` row, moves live spend and records the metric.
+
+    Adding the turn's usage to the loop's own `total` is not the same thing: `db.run_cost`
+    reads the table, and every figure in `docs/numbers.md` is computed from it. A turn that
+    never reaches `on_message` is invisible to the cost of the run.
+
+    This mattered more than a missing row usually would. On a large repository the Analyzer
+    hits `max_iterations` every time, so the forced turn is the *normal* exit at scale, and
+    it carries the largest prefix of the step — the undercount would have been worst
+    exactly where the measurement matters most.
+    """
+    explore = [turn(calls=[("c", "git_status", {})]) for _ in range(2)]
+    submission = turn(calls=[("final", "submit_result", {"ok": True})], tokens=(9_000, 40))
+    provider = ScriptedProvider([*explore, submission])
+    tools = [*tools_for("coder"), submit_tool("submit_result", TaskResult, "task_result")]
+    hooks = RecordingHooks()
+
+    out = await provider.run_tools(
+        Request(role="coder", system="s", must_call="submit_result", max_iterations=2),
+        tools,
+        make_ctx(tmp_path),
+        hooks,
+    )
+
+    assert hooks.events.count("message:9000") == 1, "the forced turn never reached on_message"
+    assert out.usage.input_tokens == 9_200, "and its tokens are in the outcome too"
+
+
+async def test_a_forced_turn_the_endpoint_refused_is_not_billed(tmp_path: Path) -> None:
+    """The control. A call that never produced a response must not appear in the ledger,
+    or the fallback would invent spend that did not happen."""
+
+    class Picky(ScriptedProvider):
+        async def _complete(self, **kwargs: Any) -> ChatTurn:
+            if kwargs.get("tool_choice") not in ("auto", None):
+                raise ProviderError("BadRequestError: tool_choice is not supported")
+            return await super()._complete(**kwargs)
+
+    provider = Picky([turn(calls=[("c", "git_status", {})]) for _ in range(2)])
+    hooks = RecordingHooks()
+
+    out = await provider.run_tools(
+        Request(role="coder", system="s", must_call="submit_result", max_iterations=2),
+        [*tools_for("coder"), submit_tool("submit_result", TaskResult, "task_result")],
+        make_ctx(tmp_path),
+        hooks,
+    )
+
+    assert out.stop_reason == "max_iterations"
+    assert hooks.events.count("message:100") == 2, "only the two turns that happened"

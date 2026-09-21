@@ -158,6 +158,13 @@ Run against a Django clone with `nvidia/nemotron-3-ultra-550b-a55b:free`:
 | Wall clock | 16.8 min |
 | Cost | **$0.00** |
 
+**These figures are an undercount, and by a known amount.** They are computed from
+`db.run_cost`, which reads the `llm_calls` table — and the forced turn that ends a
+max-iterations step was not writing a row to it. The Analyzer's final turn on this run,
+carrying the largest prefix of the step, is missing from every number above. The bug is
+fixed; the run is gone, so the row stays as recorded rather than being adjusted by
+arithmetic nobody can check. Treat 0.482 and 585 786 as floors.
+
 The Analyzer's prefix on this repository is ~230 000 input tokens against 116 640 read from
 cache; the Planner's is 355 458 against 427 680 — it reads more from cache than it sends.
 On the three-file fixture the same roles moved a few thousand tokens. This is the scale the

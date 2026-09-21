@@ -13,6 +13,16 @@ from tools.base import RunContext
 from tools.registry import ROLE_TOOLS
 
 SUBMIT_KEY = "profile"
+# Twelve turns to confirm what the map already says, not to read the repository. The repo
+# map arrives ranked and summarised, so the Analyzer's job is to check facts and fill gaps
+# — an Analyzer that explores until satisfied on a large tree would spend the run's budget
+# before the Coder started.
+#
+# Measured consequence, from the Django scale run: on 3 043 indexed files this cap is
+# reached every time, so the forced-submit path in `run_tools` is the *normal* exit at
+# scale rather than an exception. That is the intended trade and not a bug — but it does
+# mean the profile for a large repository is assembled from twelve turns of spot checks,
+# and whether more turns would produce a better one is unmeasured.
 MAX_ITERATIONS = 12
 
 
