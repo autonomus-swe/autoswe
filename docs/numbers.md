@@ -489,13 +489,23 @@ so even a run that stalls leaves its numbers behind.
 Two numbers are still missing and both are one command away once there is model quota:
 
 ```bash
-make scale-run        # the 3 000-file run: PR opened, cost, per-role spend
-make scale-ablation   # the same run with REPO_MAP_VERSION=v1, for the comparison below
+make scale-run      SCALE_API_KEY=sk-or-...   # the 3 000-file run
+make scale-ablation SCALE_API_KEY=sk-or-...   # the same run on the v1 tree
 ```
 
-Both default to the Django clone and a cache-capable model; override with
-`SCALE_REPO=` and `SCALE_MODEL=`. The fixture clones the repository rather than using it in
-place, so neither touches the checkout.
+Both default to the Django clone and a cache-capable model; override with `SCALE_REPO=`,
+`SCALE_MODEL=` and `SCALE_BASE_URL=`. The fixture clones the repository rather than using
+it in place, so neither touches the checkout.
+
+**The key is never defaulted and never in the Makefile.** The model id and its endpoint
+are, and they move together — overriding `LLM_MODEL` alone leaves `LLM_BASE_URL` at
+whatever `.env` says, which is how the first version of this target sent an OpenRouter
+model name to a local Ollama and got a 404 after starting a sandbox and indexing 3 043
+files.
+
+Both targets run `make scale-preflight` first: one call, one second, and a message naming
+what is wrong. A 404 means the model id does not belong to that endpoint; a 429 means the
+daily free allowance is spent.
 
 The free tier is 50 requests a day and the Django attempt reached PLAN at 47, so a
 completed run needs credit rather than patience — at `inclusionai/ling-3.0-flash` rates the
