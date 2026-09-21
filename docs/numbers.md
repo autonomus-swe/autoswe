@@ -491,6 +491,44 @@ of consumption — the runs themselves are nearly free.
 `evals/results/` takes a row per run, and `test_m5_cache` writes its report in a `finally`,
 so even a run that stalls leaves its numbers behind.
 
+### Gemini on a 7 000-file repository, and the bug that blocked it
+
+The scale run reached ANALYZE on Django with `gemini-3.1-flash-lite` and produced real
+cache figures on a large repository for the first time:
+
+    turn  input  cache_read  rate
+      10   2060        8082  0.797
+      11   2376        8077  0.773
+      12   2424        8070  0.769
+
+Twelve turns, no rate limiting. Getting there needed one fix. Gemini 3.x attaches an opaque
+`extra_content.google.thought_signature` to every function call and rejects the *next* turn
+without it — "Function call is missing a thought_signature in functionCall parts". Turn one
+always worked; turn two always 400'd.
+
+The cause was ours. `_assistant_message` rebuilt each tool call from `id`, `type` and
+`function` and dropped everything else, while its own field is named `raw_message` and
+documented as "appended back verbatim". It now carries unknown fields through, which is the
+same thing the line below it already did for OpenRouter's `reasoning_details` — a provider
+handing back a token it needs to see again is not a new idea, and enumerating the known
+names guarantees the next one is missed.
+
+**A wrong fix was shipped and withdrawn on the way.** The first attempt disabled Gemini's
+thinking with `reasoning_effort: "none"`, on the theory that a non-thinking model would not
+emit a signature. It did not help, because the signature was being stripped rather than
+refused — and once the real fix landed, the setting was verified to be unnecessary and
+removed rather than left in as insurance. A behaviour change whose justification has
+collapsed is not free: it would have degraded every Gemini call for a reason that turned
+out to be false.
+
+**The run then died of something else**, and it is unexplained rather than diagnosed: a
+segmentation fault, in a search worker thread, during garbage collection, with the topmost
+frame a `Path` comparison in `tools/search.py`. Two candidate causes were checked and
+eliminated — the tree is 10 411 paths with only 46 inside `.git`, so the walk is not
+enormous, and the machine had 26 GB free with no OOM events. Sorting ten thousand paths
+does not segfault. Recorded as open rather than fixed, because the next step is a
+reproduction and not a third theory.
+
 ## Running the remaining measurements
 
 Two numbers are still missing and both are one command away once there is model quota:

@@ -302,21 +302,42 @@ def _valid_arguments(raw: str | None) -> str:
     return raw or "{}" if isinstance(parsed, dict) else "{}"
 
 
+def _tool_call_back(tc: Any) -> dict[str, Any]:
+    """One tool call, shaped to go back in the transcript with whatever it arrived with.
+
+    The obvious version rebuilds `id`, `type` and `function` and drops the rest. That is
+    what this did, and it made Gemini 3.x unusable: it attaches an opaque
+    `extra_content.google.thought_signature` to a function call and rejects the *next*
+    turn with "Function call is missing a thought_signature in functionCall parts" when it
+    does not come back. Turn one always succeeded, turn two always 400'd.
+
+    Same shape as the `reasoning_details` line below, and the same reason: a provider may
+    hand back a token it needs to see again, whose contents are none of our business. The
+    rule is to carry unknown fields rather than enumerate the known ones, because the next
+    provider will invent a different name for the same idea.
+
+    `arguments` is still normalised — that one is not opaque, and a model emitting invalid
+    JSON there is a case the loop repairs.
+    """
+    out: dict[str, Any] = {
+        "id": tc.id,
+        "type": "function",
+        "function": {
+            "name": tc.function.name,
+            "arguments": _valid_arguments(tc.function.arguments),
+        },
+    }
+    for key, value in (getattr(tc, "model_extra", None) or {}).items():
+        out[key] = value
+    return out
+
+
 def _assistant_message(msg: Any) -> dict[str, Any]:
     out: dict[str, Any] = {"role": "assistant", "content": getattr(msg, "content", None)}
     calls = getattr(msg, "tool_calls", None) or []
     if calls:
         out["tool_calls"] = [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {
-                    "name": tc.function.name,
-                    "arguments": _valid_arguments(tc.function.arguments),
-                },
-            }
-            for tc in calls
-            if getattr(tc, "type", "function") == "function"
+            _tool_call_back(tc) for tc in calls if getattr(tc, "type", "function") == "function"
         ]
     if out["content"] is None and not calls:
         out["content"] = ""
