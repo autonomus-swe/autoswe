@@ -52,7 +52,7 @@ Audited by agents told to disprove each one, not to confirm it.
 | Budget downgrade table | **met** — a downgrade reaches a different model that really answers |
 | OTel spans and `/metrics` | **met** |
 | Node/Go repos end to end; egress allow/deny | **met** — both halves, tested in the real images |
-| Scale run, PR opened, under $5 | **not met** — needs quota |
+| Scale run, PR opened, under $5 | **met** — sympy, draft PR with 3 commits, 9.4 min, $0.00 |
 
 ### Indexing: met
 
@@ -491,7 +491,45 @@ of consumption — the runs themselves are nearly free.
 `evals/results/` takes a row per run, and `test_m5_cache` writes its report in a `finally`,
 so even a run that stalls leaves its numbers behind.
 
-### The scale run, on 7 091 files
+### The scale run, completed
+
+sympy — 2 093 files, 40 595 symbols — surveyed, planned, decomposed, coded, tested,
+debugged through two escalations and a replan, and a **draft pull request opened with 3
+commits**:
+
+| | |
+|---|---|
+| Steps | **12** |
+| Input / cache read | 720 209 / 1 162 437 |
+| **Run-level cache hit rate** | **0.617** |
+| Wall clock | **9.4 min** |
+| **Cost** | **$0.00** |
+
+| role | steps | input |
+|---|---|---|
+| analyzer | 1 | 24 197 |
+| planner | 1 | 198 423 |
+| decomposer | 1 | 1 309 |
+| coder | 2 | 149 249 |
+| **debugger** | **6** | 345 478 |
+| pr_writer | 1 | 1 553 |
+
+The debugger taking half the steps is the honest shape of this run: a free model needed
+six attempts across two escalations and a replan, and the state machine bounded each one
+and kept going rather than letting it loop. The $5 ceiling is met by three orders of
+magnitude, which says more about free-tier pricing than about this system. The figure worth
+keeping is **0.617 across a whole run on a 2 000-file repository** — the prefix earning its
+place at the scale the phase is named for.
+
+### Django, which did not finish
+
+7 091 files, 11 steps, 1 631 741 input against 2 149 868 read, **0.5685**, $0.00, 21 min.
+It reached the same CODE / TEST / DEBUG loop and cycled without converging through two
+escalations. Recorded because a run that does not finish is still a measurement, and
+because the contrast is the useful part: the same model, the same code, 3.4x the
+repository, and the difference is convergence rather than any of the machinery.
+
+### The earlier scale attempt, on 7 091 files
 
 The run the phase is named for, against a Django clone with `gemini-3.1-flash-lite`:
 
