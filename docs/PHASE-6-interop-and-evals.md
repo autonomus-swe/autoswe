@@ -24,7 +24,16 @@ Suggested duration: 6–8 days. Steps 6.1–6.2 (MCP), 6.3 (open-source provider
 
 ## 1. Exit criteria
 
-- [ ] From Claude Code (`claude mcp add autoswe -- uv run autoswe-mcp`), the prompt "use autoswe to implement X in repo Y and tell me when the PR is up" creates a run, waits, and reports the PR URL.
+Ticked only where something was run. A criterion whose proof is a person watching an editor
+is recorded as such rather than ticked from the code that would make it work.
+
+- [~] From Claude Code (`claude mcp add autoswe -- uv run autoswe-mcp`), the prompt "use autoswe to implement X in repo Y and tell me when the PR is up" creates a run, waits, and reports the PR URL.
+      **The transport is proven; the demo is not yet run.** `autoswe-mcp` is spawned as a
+      subprocess in `tests/integration/test_mcp_server.py` and drives `create_run` and
+      `get_run` against a real Postgres and Redis, so the console script resolves, the
+      process serves MCP on its pipes, and nothing corrupts stdout. What remains is a
+      person in Claude Code with a worker running and a GitHub token — `docs/mcp.md` §2 is
+      the script. Ticking this from passing tests would be claiming a result nobody saw.
 - [ ] The Analyzer can call a mounted read-only Postgres MCP tool, and a mutating GitHub MCP tool pauses the run for approval (integration tests with a stub MCP server).
 - [ ] `POST /runs {provider: "openai_compat"}` completes the M1 fixture end to end on Qwen3-Coder via vLLM with no Anthropic call (`llm_calls.provider` all `openai_compat`).
 - [ ] `evals/run.py --suite private` runs the 20–30 task suite and writes per-task resolved/attempts/rounds/cost/cache-hit; `evals/report.py` renders the table.
@@ -172,6 +181,43 @@ tags: [bugfix, security]
 - **Security doc.** README §9 table with a pointer from each row to the test that proves it (sandbox tests, policy tests, gitleaks gate, approvals, budget tests).
 - **Docs index.** `docs/README.md` linking local-dev, observability, mcp, open-source-model, evals, cli, security, numbers.
 - **Release.** `CHANGELOG.md` entries per phase, `v1.0.0` tag, a three-minute demo recording script: start from Claude Code, ask it to use autoswe on the fixture, watch the run, open the PR, show the review and security sections, show Langfuse, show the numbers table.
+
+---
+
+## 3.5 What step 6.1 actually built
+
+`api/service.py` came first, before any MCP code existed. The HTTP routes held their logic
+inline, so "no logic in the MCP layer" was not achievable without somewhere for it to live;
+writing the MCP tools against the routes' internals would have produced a second
+implementation of the approve path, whose `_pending` guard is what stops an approval being
+replayed against a call the human never saw. The 26 existing control-plane tests were the
+behaviour-preservation net and passed unchanged through the extraction.
+
+Then `mcp_bridge/server.py` (13 tools, one resource template), `cli/mcp.py` with the
+`autoswe-mcp` console script, and `api/routes/mcp_mount.py` for streamable HTTP at `/mcp`.
+`docs/mcp.md` is the reference.
+
+**Departures from this plan, and why** — the full list is `docs/mcp.md` §6:
+
+- `FastMCP` is `MCPServer` in the `mcp` SDK's 2.0 release. Same object, new name.
+- `create_run` takes no `provider`. The worker builds its provider from process settings,
+  so a per-run choice would be written to `runs.provider` and then ignored — a promise the
+  system does not keep. Step 6.3 is where the worker learns to honour it.
+- stdio has no `AUTOSWE_API_KEY` check. The process reads `DATABASE_URL` and `REDIS_URL`
+  from its own environment; a key supplied by that same environment guards nothing.
+- Exact routes rather than `app.mount`, so `http://host/mcp` reaches the server instead of
+  a 307 to `/mcp/`.
+
+**Two things found by running it that reading would not have found:**
+
+1. The MCP SDK turns DNS-rebinding protection on by default with a localhost-only
+   allow-list. Any deployment behind a real hostname would have answered every MCP request
+   with a bare `421 Invalid Host header`. `MCP_ALLOWED_HOSTS` makes it opt-in, defaulting
+   off because this transport has no ambient authority for a rebound name to borrow.
+2. The session manager's task group in the app lifespan is incompatible with a yielding
+   async pytest fixture — anyio refuses to leave a cancel scope from a task that did not
+   enter it. It broke *teardown only*, so all 26 existing tests passed and all 26 reported
+   errors. `tests/integration/conftest.py::api_app` is the fix.
 
 ---
 

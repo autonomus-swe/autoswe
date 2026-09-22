@@ -461,6 +461,22 @@ async def list_events(
     return list(res.scalars())
 
 
+async def latest_event(s: AsyncSession, run_id: uuid.UUID, type: str) -> EventRow | None:
+    """The most recent event of one type.
+
+    For "what is this run waiting for" — the `awaiting_input` payload carries either the
+    Planner's open questions or the tool call needing a decision, and a caller that has
+    just seen the status wants that one row, not the run's whole history.
+    """
+    res = await s.execute(
+        select(EventRow)
+        .where(EventRow.run_id == run_id, EventRow.type == type)
+        .order_by(EventRow.id.desc())
+        .limit(1)
+    )
+    return res.scalar_one_or_none()
+
+
 async def save_artifact(
     s: AsyncSession, run_id: uuid.UUID, kind: str, path: str | None, content: dict[str, Any]
 ) -> uuid.UUID:

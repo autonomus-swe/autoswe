@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import artifacts, control, events, health, metrics, runs
+from api.routes import artifacts, control, events, health, mcp_mount, metrics, runs
 from core.settings import Settings, get_settings
 from observability.logging import configure_logging, get_logger
 from storage.db import make_engine
@@ -32,6 +32,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
 
+    # Set by `mcp_mount.mount` below, before the app is ever served. Read inside the
+    # lifespan rather than captured, because the mount needs the app the lifespan belongs
+    # to and neither exists before the other.
+    mcp_server: Any = None
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.settings = settings
@@ -43,7 +48,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.error("arq_pool_failed", error=f"{type(e).__name__}: {e}")
             app.state.arq = None
         try:
-            yield
+            # The mounted MCP app's own lifespan is not run by the parent, and its session
+            # manager owns the task group every streamable-HTTP session lives in. Without
+            # this the mount answers every request with "Task group is not initialized".
+            async with mcp_mount.mcp_lifespan(mcp_server):
+                yield
         finally:
             await app.state.bus.close()
             await app.state.engine.dispose()
@@ -80,6 +89,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(events.router)
     app.include_router(control.router)
     app.include_router(artifacts.router)
+    # After the routers: a mount matches by prefix before routes are consulted, and
+    # mounting first would shadow nothing today but is the wrong order to leave behind.
+    mcp_server = mcp_mount.mount(app, settings)
     return app
 
 
