@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import pytest
+import typer
+from typer.testing import CliRunner
 
-from cli.main import _describe, _frames
+from cli.main import _describe, _frames, app
 
 pytestmark = pytest.mark.unit
 
@@ -182,3 +184,143 @@ def test_artifacts_prints_a_diff_as_the_patch_it_is(monkeypatch: pytest.MonkeyPa
 def test_artifacts_says_so_when_a_run_wrote_none(monkeypatch: pytest.MonkeyPatch) -> None:
     """An empty list printing nothing at all reads as a broken command."""
     assert "no artifacts" in _invoke(monkeypatch, ["run-1"], {"/runs/run-1/artifacts": []})
+
+
+# ---- the finished command surface ---------------------------------------------------------
+
+
+def test_every_command_the_phase_asks_for_exists() -> None:
+    """The exit criterion is a list of names, checked as a set rather than by reading the
+    help text — a command that exists but is not registered is invisible, and one that is
+    registered under a different name is worse."""
+    from typer.main import get_command
+
+    names = set(get_command(app).commands)  # type: ignore[attr-defined]
+    assert {
+        "run",
+        "watch",
+        "status",
+        "artifacts",
+        "answer",
+        "approve",
+        "reject",
+        "cancel",
+        "eval",
+        "mcp",
+    } <= names
+
+
+@pytest.mark.parametrize("command", ["status", "list", "artifacts"])
+def test_json_works_on_every_read_command(command: str) -> None:
+    """A `--json` that worked on four read commands out of six would be worse than none: a
+    script cannot tell which without trying, and the one it tries is the one in production."""
+    from typer.main import get_command
+
+    params = {p.name for p in get_command(app).commands[command].params}  # type: ignore[attr-defined]
+    assert "json_out" in params
+
+
+def test_run_takes_the_options_the_phase_lists() -> None:
+    from typer.main import get_command
+
+    params = {p.name for p in get_command(app).commands["run"].params}  # type: ignore[attr-defined]
+    assert {"repo", "goal", "base", "budget", "unattended", "provider", "follow"} <= params
+
+
+class FakeStream:
+    """An SSE response, as `_follow` consumes it."""
+
+    status_code = 200
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def __enter__(self) -> FakeStream:
+        return self
+
+    def __exit__(self, *a: object) -> None:
+        return None
+
+    def iter_lines(self) -> list[str]:
+        return wire(self.text)
+
+    def read(self) -> None:
+        return None
+
+
+class FakeHttp:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def __enter__(self) -> FakeHttp:
+        return self
+
+    def __exit__(self, *a: object) -> None:
+        return None
+
+    def stream(self, *a: object, **k: object) -> FakeStream:
+        return FakeStream(self.text)
+
+
+def follow_exit(stream: str, monkeypatch: pytest.MonkeyPatch, *, stop_on_input: bool) -> int:
+    """Run `_follow` over a scripted stream and return the exit code it produced."""
+    import cli.main as main
+
+    monkeypatch.setattr(main, "_client", lambda api, key: FakeHttp(stream))
+    try:
+        main._follow("r1", None, None, stop_on_input=stop_on_input)
+    except typer.Exit as e:
+        return int(e.exit_code)
+    return 0
+
+
+PARKED = (
+    "id: 1\r\nevent: phase_changed\r\ndata: {}\r\n\r\n"
+    'id: 2\r\nevent: awaiting_input\r\ndata: {"kind": "open_questions"}\r\n\r\n'
+)
+FINISHED_OK = 'id: 1\r\nevent: run_finished\r\ndata: {"status": "done"}\r\n\r\n'
+FINISHED_BAD = 'id: 1\r\nevent: run_finished\r\ndata: {"status": "failed"}\r\n\r\n'
+
+
+def test_follow_exits_two_when_the_run_is_waiting_for_you(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """0 done, 1 failed, 2 awaiting input. The third is not a failure — it means the run
+    wants an answer — and a script that treated it as one would give up on a question it
+    could have answered."""
+    assert follow_exit(PARKED, monkeypatch, stop_on_input=True) == 2
+
+
+@pytest.mark.parametrize(("stream", "code"), [(FINISHED_OK, 0), (FINISHED_BAD, 1)])
+def test_follow_exits_with_the_runs_own_outcome(
+    monkeypatch: pytest.MonkeyPatch, stream: str, code: int
+) -> None:
+    assert follow_exit(stream, monkeypatch, stop_on_input=True) == code
+
+
+def test_watch_keeps_following_through_a_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`watch` is for a second terminal, where answering happens elsewhere. Stopping there
+    would end the stream every time the run asked something, which is the moment its
+    reader most wants to keep watching."""
+    stream = PARKED + FINISHED_OK
+    assert follow_exit(stream, monkeypatch, stop_on_input=False) == 0
+
+
+def test_emit_prints_json_or_lines_but_not_both() -> None:
+    from cli.main import _emit
+
+    runner = CliRunner()
+
+    @app.command("probe-json")
+    def probe_json() -> None:
+        _emit({"a": 1}, True, ["human line"])
+
+    @app.command("probe-lines")
+    def probe_lines() -> None:
+        _emit({"a": 1}, False, ["human line"])
+
+    as_json = runner.invoke(app, ["probe-json"]).output
+    assert '"a": 1' in as_json and "human line" not in as_json
+
+    as_lines = runner.invoke(app, ["probe-lines"]).output
+    assert "human line" in as_lines and '"a"' not in as_lines

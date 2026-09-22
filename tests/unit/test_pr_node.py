@@ -625,3 +625,22 @@ async def test_the_empty_run_is_checked_before_the_branch_is_pushed(
         await pr_node(state(), cast("Any", FakeDeps()), resources(tmp_path))
 
     assert "push" not in sent.order, sent.order
+
+
+# ---- cross-fork ---------------------------------------------------------------------------
+
+
+async def test_the_run_s_upstream_reaches_the_pull_request(tmp_path: Path, sent: Recorder) -> None:
+    """Where the PR is opened is the run's decision, taken when it was created.
+
+    A node that dropped it would push to the fork and open the pull request on the fork
+    too — which succeeds, returns a URL, and is silently the wrong repository. Nothing
+    downstream could tell.
+    """
+    await pr_node(state(upstream="them/project"), cast("Any", FakeDeps()), resources(tmp_path))
+    assert sent.prs[0]["upstream"] == "them/project"
+
+
+async def test_an_ordinary_run_passes_no_upstream(tmp_path: Path, sent: Recorder) -> None:
+    await pr_node(state(), cast("Any", FakeDeps()), resources(tmp_path))
+    assert sent.prs[0]["upstream"] is None

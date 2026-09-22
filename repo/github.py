@@ -83,17 +83,33 @@ async def open_pr(
     client: GitHubClient,
     draft: bool = False,
     labels: list[str] | None = None,
+    upstream: str | None = None,
 ) -> str:
-    """Return the PR URL, reusing an open PR for ``head`` if one exists (idempotent)."""
+    """Return the PR URL, reusing an open PR for ``head`` if one exists (idempotent).
+
+    ``upstream`` (``owner/repo``) opens the pull request somewhere other than where the
+    branch was pushed — the fork workflow, from the agent's side. The branch still lives
+    on ``repo_url``, so the cross-repository ``head`` is ``<fork_owner>:<branch>``; GitHub
+    reads the owner prefix as "the branch is over there".
+
+    That qualified form is used for the *search* as well as the creation, and it has to
+    be: `get_pulls(head="agent/x")` on an upstream repository matches a branch of that
+    name on the upstream, which is a different branch belonging to somebody else. Reusing
+    it would mean commenting on a stranger's pull request and calling it ours.
+    """
     import asyncio
 
     owner, name = parse_repo_url(repo_url)
+    target = upstream or f"{owner}/{name}"
+    qualified = f"{owner}:{head}"
 
     def _open() -> str:
-        repo = client.get_repo(f"{owner}/{name}")
-        for pr in repo.get_pulls(state="open", head=f"{owner}:{head}"):
+        repo = client.get_repo(target)
+        for pr in repo.get_pulls(state="open", head=qualified):
             return str(pr.html_url)
-        pr = repo.create_pull(title=title, body=body, head=head, base=base, draft=draft)
+        pr = repo.create_pull(
+            title=title, body=body, head=qualified if upstream else head, base=base, draft=draft
+        )
         if labels:
             # After creation, not part of it: `create_pull` takes no labels, and a label
             # that does not exist in the repository is a 422 on a pull request that has

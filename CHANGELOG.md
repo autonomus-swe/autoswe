@@ -1,6 +1,53 @@
 # Changelog
 
-## Unreleased — Phase 6 step 6.4: the evaluation harness
+## 1.0.0 — Phase 6: interop, independence, and evaluation
+
+The platform is an MCP server another agent can drive and an MCP client that mounts other
+people's tools; a run chooses its provider and the worker honours it; there is an
+evaluation harness that produces the numbers rather than anyone's recollection; the CLI is
+finished and the documentation has an index.
+
+Four steps, each with its own entry below. What is *not* here, and deliberately: the
+Anthropic provider. The project runs on whatever is cheap or free, which is why
+`docs/open-source-model.md` is candid that for this build the open-model path is not a fallback
+but the only path.
+
+Three of the phase's eight exit criteria are marked `[~]` rather than ticked, and
+`docs/PHASE-6-interop-and-evals.md` §1 gives the reason for each. The shortest version:
+one needs a person watching an editor, one needs a GPU, and one needs `RunCreate` to
+accept a base commit. None of them is met by the code alone, and ticking them from a
+passing test suite would be claiming a result nobody saw.
+
+### Phase 6 step 6.5–6.6: the CLI, cross-fork pull requests, and the release
+
+Added
+- `RunCreate.upstream` (`owner/repo`) and migration 0006. The branch is pushed to
+  `repo_url` — your fork — and the pull request is opened on the upstream with
+  `head="<fork_owner>:agent/<id>"`. The fork workflow this project insists on for its own
+  development is now one it can offer.
+- `cli/config.py`: flags, then environment, then `~/.config/autoswe/config.toml`, in order
+  of how specific the intent is.
+- `autoswe list`; `--json` on every read command; `--follow` on `run`, exiting 0 done,
+  1 failed, 2 awaiting input; `--budget`, `--unattended`, `--provider`, `--upstream`.
+- `docs/security.md` — every guarantee, the test that proves it, and what this build does
+  *not* guarantee. `tests/unit/test_security_doc.py` checks that every cited test exists,
+  so the document cannot rot quietly.
+- `docs/cli.md` and `docs/README.md`, the documentation index. A test asserts every link
+  resolves and that no document is left unlinked.
+
+Fixed
+- The cross-repository `head` is used to *search* for an existing pull request as well as
+  to create one. `get_pulls(head="agent/x")` on an upstream matches a branch of that name
+  on the upstream — a different branch belonging to somebody else — and reusing it would
+  mean reporting a stranger's pull request as ours.
+- A forbidden command is no longer a candidate for approval. `curl … | sh` is on both the
+  DENY and ASK lists, and there is no legitimate yes to it; it now falls through to
+  `check_bash`, which is the layer that owns the decision.
+- `test_the_version_matches_the_latest_tag` demanded equality, which fails for a
+  repository in the ordinary state of having a release prepared and not yet tagged. It now
+  asserts the version is never *behind* the tag, which is the drift it was written for.
+
+### Phase 6 step 6.4: the evaluation harness
 
 Added
 - `evals/suite.py`, `evals/run.py`, `evals/report.py`, `evals/judge.py`,
@@ -27,7 +74,7 @@ Notes
   harness's job. `--require-sha` refuses to run until `RunCreate` accepts a base commit,
   rather than producing a low number nobody can attribute.
 
-## Unreleased — Phase 6 step 6.3: a run chooses its provider
+### Phase 6 step 6.3: a run chooses its provider
 
 Added
 - `gateway/providers.py`: which providers exist (`KNOWN`), which this build can construct
@@ -55,7 +102,7 @@ Notes
   loop shared between two providers, and an abstraction with one implementation is a guess
   about the second.
 
-## Unreleased — Phase 6 step 6.2: external MCP servers as agent tools
+### Phase 6 step 6.2: external MCP servers as agent tools
 
 A GitHub server that can read issues, a Postgres server that can run a read-only query:
 tools the agents did not have to be written to know about. `docs/mcp.md` Part B.
@@ -85,7 +132,7 @@ Notes
   `debugger`. `${VAR}` expands in `env` only, not in `command` — the plan put a database
   DSN in argv, where `ps` shows it to everyone on the box.
 
-## Unreleased — Phase 6 step 6.1: the control plane as an MCP server
+### Phase 6 step 6.1: the control plane as an MCP server
 
 An editor can drive a run: start it, wait for it, answer its questions, approve the tool
 calls it asks about, and read the diff and the PR URL. Over stdio (`autoswe-mcp`, a child

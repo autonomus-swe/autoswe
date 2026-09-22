@@ -39,6 +39,7 @@ async def create_run(
         provider=body.provider or request.app.state.settings.llm_provider,
         budget=body.budget,
         unattended=body.unattended,
+        upstream=body.upstream,
     )
     return RunAccepted(run_id=run_id)
 

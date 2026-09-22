@@ -38,6 +38,7 @@ async def create_run(
     budget: Budget,
     provider: str = "anthropic",
     unattended: bool = False,
+    upstream: str | None = None,
 ) -> uuid.UUID:
     run_id = uuid.uuid4()
     s.add(
@@ -52,6 +53,7 @@ async def create_run(
             budget=budget.model_dump(mode="json"),
             provider=provider,
             unattended=unattended,
+            upstream=upstream,
         )
     )
     await s.flush()

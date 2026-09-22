@@ -5,26 +5,50 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from collections.abc import Iterable, Iterator
 from typing import Annotated, Any
 
 import typer
 
+from cli import config as cli_config
+
 app = typer.Typer(help="autoswe: autonomous software engineering agent", no_args_is_help=True)
 
-DEFAULT_API = os.environ.get("AUTOSWE_API", "http://127.0.0.1:8000")
+# `None` means "no flag given", which `cli.config.load` needs in order to tell a flag
+# apart from a default. Typer shows the resolved value in `--help` through the help text
+# rather than through a default, so nobody reads a placeholder as a promise.
+API_HELP = "Control-plane base URL (or AUTOSWE_API, or ~/.config/autoswe/config.toml)."
+KEY_HELP = "API key (or AUTOSWE_API_KEY, or ~/.config/autoswe/config.toml)."
+DEFAULT_API = cli_config.DEFAULT_API
 
 
-def _client(api: str, key: str | None) -> Any:
+def _client(api: str | None, key: str | None) -> Any:
     import httpx
 
-    token = key or os.environ.get("AUTOSWE_API_KEY", "")
-    if not token:
-        typer.echo("error: pass --key or set AUTOSWE_API_KEY", err=True)
+    settings = cli_config.load(api=api, key=key)
+    if not settings.key:
+        typer.echo(
+            'error: pass --key, set AUTOSWE_API_KEY, or put `key = "..."` in '
+            f"{cli_config.CONFIG_PATH}",
+            err=True,
+        )
         raise typer.Exit(2)
-    return httpx.Client(base_url=api.rstrip("/"), headers={"X-API-Key": token}, timeout=30.0)
+    return httpx.Client(base_url=settings.api, headers={"X-API-Key": settings.key}, timeout=30.0)
+
+
+def _emit(body: Any, as_json: bool, lines: Iterable[str]) -> None:
+    """Print a read command's result, as JSON or as the human rendering.
+
+    One helper rather than an `if` in every command: `--json` that worked on four commands
+    out of six would be worse than none, because a script cannot tell which without
+    trying.
+    """
+    if as_json:
+        typer.echo(json.dumps(body, indent=2))
+        return
+    for line in lines:
+        typer.echo(line)
 
 
 def _raise(response: Any) -> None:
@@ -75,30 +99,79 @@ def run(
     repo: Annotated[str, typer.Option(help="https://github.com/owner/name")],
     goal: Annotated[str, typer.Option(help="What the agent should accomplish.")],
     base: Annotated[str, typer.Option(help="Branch to start from.")] = "main",
-    api: Annotated[str, typer.Option(help="Control-plane base URL.")] = DEFAULT_API,
-    key: Annotated[str | None, typer.Option(help="API key (or AUTOSWE_API_KEY).")] = None,
+    budget: Annotated[float | None, typer.Option(help="Dollar ceiling for this run.")] = None,
+    unattended: Annotated[
+        bool, typer.Option(help="Nobody is watching: refuse approvals rather than park.")
+    ] = False,
+    provider: Annotated[str | None, typer.Option(help="LLM provider for this run.")] = None,
+    upstream: Annotated[
+        str | None,
+        typer.Option(help="owner/repo to open the PR on, when --repo is your fork."),
+    ] = None,
+    follow: Annotated[
+        bool, typer.Option(help="Stream events and exit with the run's status.")
+    ] = False,
+    api: Annotated[str | None, typer.Option(help=API_HELP)] = None,
+    key: Annotated[str | None, typer.Option(help=KEY_HELP)] = None,
 ) -> None:
-    """Start a run and print its id."""
+    """Start a run and print its id.
+
+    With `--follow`, stream its events and exit with the run's own outcome: 0 done,
+    1 failed, 2 awaiting input. The third is not a failure — it means the run is waiting
+    for you — and a script that treated it as one would give up on a question it could
+    have answered.
+    """
+    body: dict[str, Any] = {"repo_url": repo, "goal": goal, "base_branch": base}
+    if budget is not None:
+        body["budget"] = {"max_usd": budget}
+    if unattended:
+        body["unattended"] = True
+    if provider:
+        body["provider"] = provider
+    if upstream:
+        body["upstream"] = upstream
+
     with _client(api, key) as client:
-        body = _check(
-            client.post("/runs", json={"repo_url": repo, "goal": goal, "base_branch": base})
-        )
-    typer.echo(body["run_id"])
+        started = _check(client.post("/runs", json=body))
+    run_id = started["run_id"]
+    typer.echo(run_id)
+    if follow:
+        _follow(run_id, api, key)
 
 
 @app.command()
 def status(
     run_id: Annotated[str, typer.Argument(help="Run id printed by `autoswe run`.")],
-    api: Annotated[str, typer.Option(help="Control-plane base URL.")] = DEFAULT_API,
-    key: Annotated[str | None, typer.Option(help="API key (or AUTOSWE_API_KEY).")] = None,
+    json_out: Annotated[bool, typer.Option("--json", help="The server's JSON, verbatim.")] = False,
+    api: Annotated[str | None, typer.Option(help=API_HELP)] = None,
+    key: Annotated[str | None, typer.Option(help=KEY_HELP)] = None,
 ) -> None:
     """Print one run's summary."""
     with _client(api, key) as client:
         body = _check(client.get(f"/runs/{run_id}"))
-    for field in ("phase", "status", "cost_usd", "pr_url", "error", "work_branch", "updated_at"):
-        value = body.get(field)
-        if value not in (None, ""):
-            typer.echo(f"{field:12} {value}")
+    fields = ("phase", "status", "cost_usd", "pr_url", "error", "work_branch", "updated_at")
+    _emit(
+        body,
+        json_out,
+        (f"{f:12} {body[f]}" for f in fields if body.get(f) not in (None, "")),
+    )
+
+
+@app.command(name="list")
+def list_runs(
+    limit: Annotated[int, typer.Option(help="How many, newest first.")] = 20,
+    json_out: Annotated[bool, typer.Option("--json", help="The server's JSON, verbatim.")] = False,
+    api: Annotated[str | None, typer.Option(help=API_HELP)] = None,
+    key: Annotated[str | None, typer.Option(help=KEY_HELP)] = None,
+) -> None:
+    """Recent runs, newest first — for picking up where you left off."""
+    with _client(api, key) as client:
+        rows = _check(client.get("/runs", params={"limit": limit}))
+    _emit(
+        rows,
+        json_out,
+        (f"{r['run_id']}  {r['status']:14} {r['phase']:10} {r['goal'][:60]}" for r in rows),
+    )
 
 
 def _frames(lines: Iterable[str]) -> Iterator[tuple[str, str, str]]:
@@ -153,13 +226,18 @@ def _describe(type_: str, p: dict[str, Any]) -> str:
             return str(p.get("pr_url") or p.get("message") or "")
 
 
-@app.command()
-def watch(
-    run_id: Annotated[str, typer.Argument(help="Run id printed by `autoswe run`.")],
-    api: Annotated[str, typer.Option(help="Control-plane base URL.")] = DEFAULT_API,
-    key: Annotated[str | None, typer.Option(help="API key (or AUTOSWE_API_KEY).")] = None,
-) -> None:
-    """Follow a run's events until it finishes. Exits non-zero if the run did not pass."""
+AWAITING_INPUT_EXIT = 2
+
+
+def _follow(run_id: str, api: str | None, key: str | None, *, stop_on_input: bool = False) -> None:
+    """Stream a run's events, printing each, and exit with the run's own outcome.
+
+    One implementation for `watch` and for `run --follow`, which differ in a single
+    question: whether a run that parks for input is something to keep waiting through or
+    something to hand back. `watch` was written for a second terminal, where answering
+    happens elsewhere and the stream should carry on; `--follow` is the foreground of the
+    command that started the run, so it returns control with exit 2.
+    """
     import httpx
 
     last_id = ""
@@ -182,6 +260,12 @@ def watch(
                         continue
                     payload = json.loads(data) if data else {}
                     typer.echo(f"{type_:16} {_describe(type_, payload)}")
+                    if type_ == "awaiting_input" and stop_on_input:
+                        typer.echo(
+                            f"the run is waiting for you: autoswe answer {run_id} '<your answer>'",
+                            err=True,
+                        )
+                        raise typer.Exit(AWAITING_INPUT_EXIT)
                     if type_ == "run_finished":
                         raise typer.Exit(0 if payload.get("status") == "done" else 1)
         except httpx.TransportError:
@@ -191,11 +275,21 @@ def watch(
 
 
 @app.command()
+def watch(
+    run_id: Annotated[str, typer.Argument(help="Run id printed by `autoswe run`.")],
+    api: Annotated[str | None, typer.Option(help=API_HELP)] = None,
+    key: Annotated[str | None, typer.Option(help=KEY_HELP)] = None,
+) -> None:
+    """Follow a run's events until it finishes. Exits non-zero if the run did not pass."""
+    _follow(run_id, api, key)
+
+
+@app.command()
 def answer(
     run_id: Annotated[str, typer.Argument(help="Run id printed by `autoswe run`.")],
     text: Annotated[str, typer.Argument(help="The answer to the run's open questions.")],
-    api: Annotated[str, typer.Option(help="Control-plane base URL.")] = DEFAULT_API,
-    key: Annotated[str | None, typer.Option(help="API key (or AUTOSWE_API_KEY).")] = None,
+    api: Annotated[str | None, typer.Option(help=API_HELP)] = None,
+    key: Annotated[str | None, typer.Option(help=KEY_HELP)] = None,
 ) -> None:
     """Answer a run parked on an open question, so it can carry on."""
     with _client(api, key) as client:
@@ -207,8 +301,8 @@ def answer(
 def approve(
     run_id: Annotated[str, typer.Argument(help="Run id printed by `autoswe run`.")],
     tool_call_id: Annotated[str, typer.Argument(help="From the awaiting_input event.")],
-    api: Annotated[str, typer.Option(help="Control-plane base URL.")] = DEFAULT_API,
-    key: Annotated[str | None, typer.Option(help="API key (or AUTOSWE_API_KEY).")] = None,
+    api: Annotated[str | None, typer.Option(help=API_HELP)] = None,
+    key: Annotated[str | None, typer.Option(help=KEY_HELP)] = None,
 ) -> None:
     """Let a tool call the run is parked on proceed."""
     with _client(api, key) as client:
@@ -221,8 +315,8 @@ def reject(
     run_id: Annotated[str, typer.Argument(help="Run id printed by `autoswe run`.")],
     tool_call_id: Annotated[str, typer.Argument(help="From the awaiting_input event.")],
     reason: Annotated[str, typer.Argument(help="Why. The model is told, so be specific.")],
-    api: Annotated[str, typer.Option(help="Control-plane base URL.")] = DEFAULT_API,
-    key: Annotated[str | None, typer.Option(help="API key (or AUTOSWE_API_KEY).")] = None,
+    api: Annotated[str | None, typer.Option(help=API_HELP)] = None,
+    key: Annotated[str | None, typer.Option(help=KEY_HELP)] = None,
 ) -> None:
     """Refuse the call. The reason comes back to the model as the tool's result."""
     with _client(api, key) as client:
@@ -238,8 +332,8 @@ def reject(
 @app.command()
 def cancel(
     run_id: Annotated[str, typer.Argument(help="Run id printed by `autoswe run`.")],
-    api: Annotated[str, typer.Option(help="Control-plane base URL.")] = DEFAULT_API,
-    key: Annotated[str | None, typer.Option(help="API key (or AUTOSWE_API_KEY).")] = None,
+    api: Annotated[str | None, typer.Option(help=API_HELP)] = None,
+    key: Annotated[str | None, typer.Option(help=KEY_HELP)] = None,
 ) -> None:
     """Ask a run to stop at the next node or tool call, whichever comes first."""
     with _client(api, key) as client:
@@ -259,8 +353,9 @@ def artifacts(
     kind: Annotated[
         str | None, typer.Argument(help="Which artifact. Omit to list what the run wrote.")
     ] = None,
-    api: Annotated[str, typer.Option(help="Control-plane base URL.")] = DEFAULT_API,
-    key: Annotated[str | None, typer.Option(help="API key (or AUTOSWE_API_KEY).")] = None,
+    json_out: Annotated[bool, typer.Option("--json", help="The server's JSON, verbatim.")] = False,
+    api: Annotated[str | None, typer.Option(help=API_HELP)] = None,
+    key: Annotated[str | None, typer.Option(help=KEY_HELP)] = None,
 ) -> None:
     """List a run's artifacts, or print one of them.
 
@@ -271,11 +366,14 @@ def artifacts(
     with _client(api, key) as client:
         if kind is None:
             rows = _check(client.get(f"/runs/{run_id}/artifacts"))
-            if not rows:
+            if not rows and not json_out:
                 typer.echo("no artifacts")
                 return
-            for row in rows:
-                typer.echo(f"{row['kind']:16} {row['size']:>9}  {row['created_at']}")
+            _emit(
+                rows,
+                json_out,
+                (f"{r['kind']:16} {r['size']:>9}  {r['created_at']}" for r in rows),
+            )
             return
         response = client.get(f"/runs/{run_id}/artifacts/{kind}")
         _raise(response)
@@ -293,8 +391,8 @@ def eval(
     tags: Annotated[str, typer.Option(help="Comma-separated; runs only tasks with one.")] = "",
     concurrency: Annotated[int, typer.Option(help="Tasks in flight at once.")] = 1,
     provider: Annotated[str | None, typer.Option(help="Override the run provider.")] = None,
-    api: Annotated[str, typer.Option(help="Control-plane base URL.")] = DEFAULT_API,
-    key: Annotated[str | None, typer.Option(help="API key (or AUTOSWE_API_KEY).")] = None,
+    api: Annotated[str | None, typer.Option(help=API_HELP)] = None,
+    key: Annotated[str | None, typer.Option(help=KEY_HELP)] = None,
     results: Annotated[str | None, typer.Option(help="Results file stem.")] = None,
 ) -> None:
     """Run an eval suite and print the table.
@@ -310,8 +408,8 @@ def eval(
     from evals.run import run_suite
     from evals.suite import load
 
-    token = key or os.environ.get("AUTOSWE_API_KEY", "")
-    if not token:
+    resolved = cli_config.load(api=api, key=key)
+    if not resolved.key:
         typer.echo("error: pass --key or set AUTOSWE_API_KEY", err=True)
         raise typer.Exit(2)
 
@@ -323,8 +421,8 @@ def eval(
     rows = asyncio.run(
         run_suite(
             chosen,
-            api=api,
-            key=token,
+            api=resolved.api,
+            key=resolved.key,
             concurrency=concurrency,
             provider=provider,
             results_name=results,

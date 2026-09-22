@@ -31,6 +31,11 @@ class RunCreate(BaseModel):
     # a 422 the caller can act on, not a run that is accepted, queued, and fails thirty
     # seconds later in a process they cannot see.
     provider: str | None = None
+    # `owner/repo` the pull request is opened on, when that is not `repo_url`. The branch
+    # is still pushed to `repo_url` — which must therefore be a fork you can push to — and
+    # the PR is opened on this one with `head="<fork_owner>:agent/<id>"`. The token needs
+    # pull-request write here; it never needs push access, which is the point.
+    upstream: str | None = Field(default=None, max_length=200)
 
     @field_validator("repo_url")
     @classmethod
@@ -52,6 +57,18 @@ class RunCreate(BaseModel):
         if v is not None and (why := unavailable(v)) is not None:
             raise ValueError(why)
         return v
+
+    @field_validator("upstream")
+    @classmethod
+    def owner_repo(cls, v: str | None) -> str | None:
+        """`owner/repo`, not a URL. GitHub's API takes the pair and a URL here would be
+        accepted and then fail at PR time, after the branch had already been pushed."""
+        if v is None:
+            return None
+        parts = [p for p in v.strip().split("/") if p]
+        if len(parts) != 2 or any("." in p and p.endswith((".com", ".org")) for p in parts):
+            raise ValueError("upstream must be in the form owner/repo")
+        return "/".join(parts)
 
     @field_validator("base_branch")
     @classmethod

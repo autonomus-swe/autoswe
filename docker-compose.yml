@@ -140,6 +140,28 @@ services:
     volumes:
       - langfusedata:/var/lib/postgresql/data
 
+  # Production is not a profile here, and that is a decision rather than an omission.
+  # A compose profile can add services; it cannot give the *same* services stricter
+  # settings without a second copy of `api` and `worker`, and two copies of a service
+  # definition is how the one nobody looks at drifts. What production needs is settings,
+  # so it is written down where settings live — `.env`, and `docs/security.md` §10:
+  #
+  #   SANDBOX_RUNTIME=runsc        gVisor. Without it a container escape is a container
+  #                                escape; this is the single biggest difference between
+  #                                the development and the production threat model.
+  #   EGRESS_ENFORCED=true         the sandbox joins an internal network and reaches the
+  #                                outside only through the allow-listed proxy.
+  #   KEEP_FAILED_SANDBOX_TTL      short. A kept container is a debugging aid in
+  #                                development and a running process with a checkout of
+  #                                somebody's repository in production.
+  #   API_KEYS                     rotated by adding the new key, deploying, then removing
+  #                                the old one — never by replacing it in one step, which
+  #                                is an outage for every caller that has not been told.
+  #
+  # TLS is not here on purpose. It belongs at a reverse proxy in front of this, and a
+  # self-signed certificate baked into a compose file is the kind of thing that ends up in
+  # production because it worked.
+
   # `docker compose --profile gpu up -d vllm`, then point the worker at it:
   #   LLM_BASE_URL=http://localhost:8001/v1  LLM_API_KEY=unused
   #   LLM_MODEL=Qwen/Qwen3-Coder-30B-A3B-Instruct

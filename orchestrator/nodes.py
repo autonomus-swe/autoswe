@@ -1739,6 +1739,7 @@ async def _push_and_open(state: RunState, deps: Deps, res: RunResources) -> str:
         client=deps.github,
         draft=draft,
         labels=["autoswe", "needs-review"],
+        upstream=state.upstream,
     )
     async with session(deps.engine) as s:
         await db.save_artifact(
