@@ -36,7 +36,7 @@ async def create_run(
         repo_url=body.repo_url,
         goal=body.goal,
         base_branch=body.base_branch,
-        provider=request.app.state.settings.llm_provider,
+        provider=body.provider or request.app.state.settings.llm_provider,
         budget=body.budget,
         unattended=body.unattended,
     )

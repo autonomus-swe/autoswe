@@ -41,7 +41,24 @@ is recorded as such rather than ticked from the code that would make it work.
       tool: a flag nothing consults is not a gate. The run parks, the event carries the
       tool's name and its arguments, and an approval lets it through while a rejection
       returns the reason and never reaches the server.
-- [ ] `POST /runs {provider: "openai_compat"}` completes the M1 fixture end to end on Qwen3-Coder via vLLM with no Anthropic call (`llm_calls.provider` all `openai_compat`).
+- [~] `POST /runs {provider: "openai_compat"}` completes the M1 fixture end to end on Qwen3-Coder via vLLM with no Anthropic call (`llm_calls.provider` all `openai_compat`).
+      **Not ticked, and the reason is that ticking it would mean nothing here.** This
+      build has no Anthropic provider and is not getting one, so "no Anthropic call" is
+      true of every run that has ever happened — a criterion satisfied by the absence of
+      a feature is not a result.
+
+      What was missing and is now built: the field is accepted, validated against what
+      this deployment can construct, and **honoured by the worker**, which builds from the
+      run's row rather than from `LLM_PROVIDER`. `runs.provider` had been written and
+      ignored since Phase 1, which made `llm_calls.provider` — the thing this criterion
+      asks you to inspect — evidence of the process's configuration rather than of the
+      run's. `tests/integration/test_provider_selection.py` covers it; a `vllm` service is
+      in compose behind the `gpu` profile and `docs/open-source-model.md` is the guide.
+
+      What remains is a GPU and a Qwen3-Coder run on it. Phase 5 already produced the
+      equivalent evidence on free and local models — a complete run to a draft PR in
+      9.4 minutes for $0.00, `docs/numbers.md` — so this is the same claim on larger
+      hardware, not an unproven one.
 - [ ] `evals/run.py --suite private` runs the 20–30 task suite and writes per-task resolved/attempts/rounds/cost/cache-hit; `evals/report.py` renders the table.
 - [ ] `evals/swebench.py --limit 50` produces `predictions.jsonl` and the official harness score; the number is in README §14 and the X/Y in §15 are filled.
 - [ ] Ablations recorded: with/without Debugger, with/without repo map, Opus 5 vs Sonnet 5 as Coder, Claude vs Qwen3-Coder, effort `high` vs `xhigh`.
@@ -251,6 +268,36 @@ than half-working.
 identically. A worker would have needed restarting because a child process crashed once.
 `_Connection.dead` and the replacement in `_connect` are the fix, and the test that found
 it asserts the *next* call gets a new child rather than the corpse.
+
+---
+
+## 3.7 What step 6.3 actually built
+
+`gateway/providers.py` (which providers exist, which this build can make, and how),
+`RunCreate.provider` with validation at the API, `Deps.using()` and the read in `run_job`
+so the worker builds from the row, `run_provider`/`fail_run` for a row that names
+something unavailable, the `run_provider` argument on the MCP `create_run` tool, the
+`vllm` compose service behind the `gpu` profile, `agents/prompts/_open_model_preamble.md`,
+and `docs/open-source-model.md`.
+
+**Deliberately not built: the Anthropic provider.** The project runs on whatever is cheap
+or free — a standing constraint since Phase 5, which rewrote its own compaction criterion
+rather than take the dependency. `anthropic` is therefore a name `gateway/providers.py`
+recognises and refuses, with a message naming what does work: a 422 at the API beats a
+`NotImplementedError` in a worker thirty seconds after the caller was told the run had
+started.
+
+**Not built: `gateway/manual_loop.py`.** The plan wants the tool loop shared between an
+Anthropic provider and this one. With one provider there is nothing to share, and an
+abstraction with a single implementation is a guess about the second one.
+
+**Found by mutation testing, not by running.** Four of the first eleven mutations survived
+— every one of them a test that passed because the deployment default and the requested
+value were the same string, so a route that ignored the request entirely still stored the
+right answer. Each is now set up so the two differ. A fifth was worse: the runner reported
+`CAUGHT` for a test that no longer existed under that name, because `pytest` exits
+non-zero for "no such test" as readily as for a failure. The runner now requires a green
+baseline before it mutates.
 
 ---
 

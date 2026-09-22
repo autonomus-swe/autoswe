@@ -359,8 +359,15 @@ class OpenAICompatProvider:
         client: Any | None = None,
         timeout_s: float = 600.0,
         models: dict[str, str] | None = None,
+        preamble: str = "",
     ) -> None:
         self.model = model
+        # Prepended to every role prompt rather than written into each of them. The eleven
+        # `.md` files are the roles; this is about the model driving them, and a rule
+        # copied into eleven files is a rule that will be true in nine of them by the time
+        # anyone checks. Joined into the same string as the role prompt so the cached
+        # prefix keeps its shape: one stable block, not two.
+        self._preamble = f"{preamble.strip()}\n\n" if preamble.strip() else ""
         # Tier -> model id, for deployments that have more than one model to offer. Empty
         # is the normal case and means every tier resolves to `model`, which is exactly
         # what every call did before budget-aware routing existed.
@@ -502,12 +509,14 @@ class OpenAICompatProvider:
     # ---- the cached prefix ------------------------------------------------------
 
     def _system(self, req: Request) -> dict[str, Any]:
-        """The system message: role prompt then run block, marked cacheable where that is
-        read. See `gateway/caching` for why the split is where it is."""
+        """The system message: preamble, role prompt, then run block, marked cacheable
+        where that is read. See `gateway/caching` for why the split is where it is."""
         return {
             "role": "system",
             "content": caching.build_system(
-                req.system, req.run_block, breakpoints=self._breakpoints
+                self._preamble + req.system if self._preamble else req.system,
+                req.run_block,
+                breakpoints=self._breakpoints,
             ),
         }
 

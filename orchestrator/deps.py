@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
 
 from contracts import RepoFacts
 from core.settings import Settings
+from gateway import providers
 from gateway.provider import LLMProvider
 from observability.logging import get_logger
 from repo.github import GitHubClient, pygithub_client
@@ -88,25 +89,9 @@ def docker_sandbox_factory(settings: Settings) -> SandboxFactory:
     return build
 
 
-def build_provider(settings: Settings) -> LLMProvider:
-    if settings.llm_provider == "anthropic":  # Phase 6 ships the Anthropic provider
-        raise NotImplementedError(
-            "the anthropic provider arrives in Phase 6; set LLM_PROVIDER=openai_compat"
-        )
-    from gateway.openai_compat_provider import OpenAICompatProvider
-
-    key = settings.llm_api_key.get_secret_value() if settings.llm_api_key else None
-    return OpenAICompatProvider(
-        model=settings.llm_model,
-        api_key=key,
-        base_url=settings.llm_base_url,
-        timeout_s=settings.llm_timeout_s,
-        models={
-            "opus": settings.llm_model_opus or "",
-            "sonnet": settings.llm_model_sonnet or "",
-            "haiku": settings.llm_model_haiku or "",
-        },
-    )
+def build_provider(settings: Settings, provider: str | None = None) -> LLMProvider:
+    """The provider for a run. See `gateway/providers.py` for what `provider` may be."""
+    return providers.build(settings, provider)
 
 
 @dataclass
@@ -119,16 +104,32 @@ class Deps:
     github: GitHubClient | None = None
 
     @classmethod
-    def build(cls, settings: Settings) -> Deps:
+    def build(cls, settings: Settings, provider: str | None = None) -> Deps:
+        """`provider` is the run's, from its row. `None` takes the deployment's default.
+
+        Passed in rather than read from settings, because a run records which provider it
+        used and that record is only worth having if it is the one that ran.
+        """
         token = settings.github_token.get_secret_value() if settings.github_token else None
         return cls(
             settings=settings,
-            provider=build_provider(settings),
+            provider=build_provider(settings, provider),
             engine=make_engine(settings.database_url, pool_size=5, max_overflow=2),
             bus=RedisBus(settings.redis_url),
             sandbox_factory=docker_sandbox_factory(settings),
             github=pygithub_client(token) if token else None,
         )
+
+    def using(self, provider: str | None) -> Deps:
+        """The same dependencies with this run's provider.
+
+        A copy rather than a mutation: `engine`, `bus` and the sandbox factory are shared
+        deliberately — they are the process's, not the run's — and `replace` makes that
+        sharing explicit instead of leaving a reader to work out which fields were swapped.
+        """
+        if provider is None or provider == self.provider.provider_name:
+            return self
+        return replace(self, provider=build_provider(self.settings, provider))
 
     async def aclose(self) -> None:
         await self.bus.close()

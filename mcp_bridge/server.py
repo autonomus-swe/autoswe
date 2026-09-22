@@ -41,6 +41,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from api.service import ControlError, ControlPlane
 from contracts import Budget
+from gateway.providers import unavailable
 from mcp_bridge import workspace
 from observability.logging import get_logger
 
@@ -71,10 +72,9 @@ def build_server(
 ) -> MCPServer:
     """An MCP server over one control plane.
 
-    `provider` is the deployment's configured LLM provider, recorded on each run. It is
-    not a tool argument: the worker builds its provider from process settings, so a run
-    that asked for a different one would be recorded as something it is not. Per-run
-    provider selection is Phase 6 step 6.3, which is where the worker learns to honour it.
+    `provider` is the deployment's default, used by any run that does not name one. Step
+    6.3 taught the worker to build from the run's row, so `create_run` now takes a provider
+    too — the record and the process that ran are the same thing again.
 
     `worktrees_dir` is the worker's checkout root. Without it `search_code` and `read_file`
     are not registered at all, rather than registered and always failing — a tool a client
@@ -97,21 +97,26 @@ def build_server(
         base_branch: str = "main",
         budget_usd: float = 10.0,
         unattended: bool = False,
+        run_provider: str = "",
     ) -> dict[str, str]:
         """Start a run: clone `repo_url`, pursue `goal`, open a pull request.
 
         Returns the run id immediately; the work happens on a worker. Set `unattended`
         when nobody will be watching — approvals are then refused rather than parking the
-        run, and the planner is told not to ask questions.
+        run, and the planner is told not to ask questions. `run_provider` overrides which
+        LLM provider the run uses; leave it empty for the deployment's default.
         """
         if budget_usd <= 0:
             raise ToolError("budget_usd must be greater than zero")
+        chosen = run_provider.strip() or provider
+        if (why := unavailable(chosen)) is not None:
+            raise ToolError(why)
         try:
             run_id = await _plane(get_plane).create_run(
                 repo_url=repo_url,
                 goal=goal,
                 base_branch=base_branch,
-                provider=provider,
+                provider=chosen,
                 budget=Budget(max_usd=budget_usd),
                 unattended=unattended,
             )

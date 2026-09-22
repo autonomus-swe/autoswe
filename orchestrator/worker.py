@@ -20,6 +20,8 @@ from orchestrator.gc import run_gc
 from orchestrator.nodes import RunResources
 from orchestrator.resume import load_state, reattach
 from orchestrator.runner import run
+from storage import repo as db
+from storage.db import session
 
 log = get_logger(__name__)
 
@@ -29,6 +31,23 @@ def worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}"
 
 
+async def run_provider(engine: Any, run_id: UUID) -> str | None:
+    """Which provider this run asked for, from its row.
+
+    Read here rather than taken from `RunState`, because a resumed run loads a checkpoint
+    and never reads the row — including checkpoints written before the column meant
+    anything. The row is the record either way.
+    """
+    async with session(engine) as s:
+        row = await db.get_run(s, run_id)
+    return None if row is None else str(row.provider)
+
+
+async def fail_run(engine: Any, run_id: UUID, error: str) -> None:
+    async with session(engine) as s:
+        await db.finish_run(s, run_id, status="failed", error=error)
+
+
 async def run_job(ctx: dict[str, Any], run_id: str) -> str:
     """One run. Resumes from its last checkpoint, or starts fresh when there is none."""
     settings = get_settings()
@@ -36,6 +55,15 @@ async def run_job(ctx: dict[str, Any], run_id: str) -> str:
     deps = Deps.build(settings)
     res = RunResources()
     try:
+        try:
+            deps = deps.using(await run_provider(deps.engine, UUID(run_id)))
+        except ConfigError as e:
+            # The row names a provider this build cannot make. Retrying will not change
+            # that, and a run left `queued` while arq burns its three attempts tells
+            # whoever started it nothing at all.
+            await fail_run(deps.engine, UUID(run_id), str(e))
+            log.error("run_provider_unavailable", run_id=run_id, error=str(e))
+            return "failed"
         state, resumed = await load_state(deps, UUID(run_id))
         if resumed:
             log.info("resuming", run_id=run_id, phase=state.phase.value, seq=state.seq)

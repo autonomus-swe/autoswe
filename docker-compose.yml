@@ -140,6 +140,52 @@ services:
     volumes:
       - langfusedata:/var/lib/postgresql/data
 
+  # `docker compose --profile gpu up -d vllm`, then point the worker at it:
+  #   LLM_BASE_URL=http://localhost:8001/v1  LLM_API_KEY=unused
+  #   LLM_MODEL=Qwen/Qwen3-Coder-30B-A3B-Instruct
+  #
+  # Its own profile because it needs a GPU, and a service that fails to start takes
+  # `docker compose up` with it — a laptop running the `app` profile should not have to
+  # care that this exists. `docs/open-source-model.md` covers the parser flags, the VRAM
+  # each size wants, and the Ollama path for a machine with no GPU at all.
+  vllm:
+    profiles: ["gpu"]
+    image: vllm/vllm-openai:latest
+    ports: ["${VLLM_PORT:-8001}:8000"]
+    ipc: host  # vLLM's workers talk over shared memory; the default 64 MB is not enough
+    command:
+      - --model=${VLLM_MODEL:-Qwen/Qwen3-Coder-30B-A3B-Instruct}
+      # Tool calls are parsed out of the model's text by a per-family parser. The wrong
+      # one does not error — it silently yields no tool calls, and every agent loop ends
+      # on `max_iterations` having done nothing. Check the parser against the release you
+      # pull; `hermes` matches the Qwen3-Coder instruct models.
+      - --enable-auto-tool-choice
+      - --tool-call-parser=${VLLM_TOOL_PARSER:-hermes}
+      - --max-model-len=${VLLM_MAX_MODEL_LEN:-131072}
+      # Structured output for `parse()`. xgrammar rejects some JSON Schema features;
+      # Phase 0 kept the contracts flat for exactly this reason, and the answer to a
+      # rejected schema is to simplify the contract rather than special-case the provider.
+      - --guided-decoding-backend=xgrammar
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    volumes:
+      - huggingface:/root/.cache/huggingface  # a 30B download, once
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${VLLM_GPUS:-1}
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      # Weights are downloaded and loaded before the server answers anything; on a cold
+      # cache that is minutes, not seconds.
+      retries: 90
+      start_period: 60s
+
 networks:
   # Declared `external` because the worker creates it — and creates it `internal`. A plain
   # compose entry would make `<project>_agent-egress`, a different network from the one the
@@ -149,4 +195,5 @@ networks:
 
 volumes:
   pgdata: {}
+  huggingface: {}
   langfusedata: {}
