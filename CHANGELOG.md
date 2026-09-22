@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — run from a base commit
+
+Added
+- `RunCreate.base_commit` and migration 0007: start a run from a commit rather than from
+  the head of a branch. `base_branch` keeps its other job — it is what the pull request
+  targets — because "start here, merge there" is exactly what a benchmark instance asks
+  for.
+- `--ablate no-debugger` on the eval driver, recorded on every row so `report.compare
+  --by ablation` groups by a fact about how the run was made rather than a guess.
+
+Fixed
+- `Budget.max_debug_attempts` decided nothing. It has been in the contract since Phase 3
+  and the state machine read a module constant instead — the same defect as `runs.provider`
+  before 6.3 and `unattended` before 6.1. The default is unchanged, because `Budget()`
+  already declared the number the constant held.
+- The worktree is created at the resolved commit rather than at the branch. They name the
+  same thing a moment apart, and a branch that moved in between would give a run a worktree
+  at one commit and a `base_sha` recording another.
+- `evals/swebench.py` no longer refuses to run. `--require-sha` existed because every run
+  would have started from a branch head, so a patch would fail to apply for a reason the
+  score could not show; that is no longer true.
+
 ## 1.0.0 — Phase 6: interop, independence, and evaluation
 
 The platform is an MCP server another agent can drive and an MCP client that mounts other

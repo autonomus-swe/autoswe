@@ -39,6 +39,7 @@ async def create_run(
     provider: str = "anthropic",
     unattended: bool = False,
     upstream: str | None = None,
+    base_commit: str | None = None,
 ) -> uuid.UUID:
     run_id = uuid.uuid4()
     s.add(
@@ -54,6 +55,7 @@ async def create_run(
             provider=provider,
             unattended=unattended,
             upstream=upstream,
+            base_commit=base_commit,
         )
     )
     await s.flush()

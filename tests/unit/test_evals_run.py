@@ -62,8 +62,10 @@ class FakeClient:
         self.cancelled: list[str] = []
         self._polls = 0
 
-    async def create(self, t: Task, provider: str | None) -> str:
-        self.created.append({"task": t.id, "provider": provider, "budget": t.budget_usd})
+    async def create(self, t: Task, provider: str | None, ablation: str | None = None) -> str:
+        self.created.append(
+            {"task": t.id, "provider": provider, "budget": t.budget_usd, "ablation": ablation}
+        )
         return "r1"
 
     async def summary(self, run_id: str) -> dict[str, Any]:
@@ -154,7 +156,7 @@ async def test_a_crash_in_the_harness_becomes_a_row() -> None:
     """The outcome most worth having in the record is the one nobody wants to write down."""
 
     class Broken(FakeClient):
-        async def create(self, t: Task, provider: str | None) -> str:
+        async def create(self, t: Task, provider: str | None, ablation: str | None = None) -> str:
             raise RuntimeError("the control plane refused")
 
     row = await evals_run.run_task(Broken(), task(), verifier=verifier(0))
@@ -245,3 +247,104 @@ def test_measure_survives_a_detail_with_nothing_in_it() -> None:
     zero rather than raise, so the failure is recorded instead of hiding the whole task."""
     row = evals_run.measure({})
     assert row.tasks == 0 and row.cost_usd == 0.0 and row.cache_hit_rate == 0.0
+
+
+# ---- ablation arms -------------------------------------------------------------------------
+
+
+async def test_an_arm_changes_the_request_and_is_recorded_on_the_row() -> None:
+    """Recorded rather than inferred: what an ablation changed is a fact about how the run
+    was made, and `report.compare` groups by that fact instead of guessing from the shape
+    of the results."""
+    client = FakeClient()
+    row = await evals_run.run_task(client, task(), verifier=verifier(0), ablation="no-debugger")
+    assert row.ablation == "no-debugger"
+    assert client.created[0]["ablation"] == "no-debugger"
+
+
+async def test_the_no_debugger_arm_sends_a_zero_ceiling() -> None:
+    """`Budget.max_debug_attempts = 0` sends the first failing test straight to ESCALATE,
+    which is what "without the Debugger" means for this state machine."""
+    import httpx
+
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(202, json={"run_id": "r1"})
+
+    client = evals_run.Client("http://x", "k")
+    client._client = httpx.AsyncClient(base_url="http://x", transport=httpx.MockTransport(handler))
+    try:
+        await client.create(task(), None, "no-debugger")
+    finally:
+        await client.aclose()
+    assert captured["budget"]["max_debug_attempts"] == 0
+
+
+async def test_an_arm_merges_into_the_budget_rather_than_replacing_it() -> None:
+    """The task's dollar ceiling has to survive. An arm that reset the whole budget would
+    be changing two things and reporting one."""
+    import httpx
+
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(202, json={"run_id": "r1"})
+
+    client = evals_run.Client("http://x", "k")
+    client._client = httpx.AsyncClient(base_url="http://x", transport=httpx.MockTransport(handler))
+    try:
+        await client.create(task(), None, "no-debugger")
+    finally:
+        await client.aclose()
+    assert captured["budget"] == {"max_usd": 3.0, "max_debug_attempts": 0}
+
+
+async def test_no_arm_leaves_the_request_alone() -> None:
+    import httpx
+
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(202, json={"run_id": "r1"})
+
+    client = evals_run.Client("http://x", "k")
+    client._client = httpx.AsyncClient(base_url="http://x", transport=httpx.MockTransport(handler))
+    try:
+        await client.create(task(), None, None)
+    finally:
+        await client.aclose()
+    assert captured["budget"] == {"max_usd": 3.0}
+
+
+def test_only_arms_that_are_actually_per_run_are_offered() -> None:
+    """`no-repomap` is a worker process setting (`REPO_MAP_VERSION=v1`), not a run field.
+    Offering it here and quietly ignoring it would produce two identical columns with
+    different labels, which is worse than not offering it at all."""
+    assert set(evals_run.ABLATIONS) == {"no-debugger"}
+
+
+async def test_a_task_pins_its_base_commit_when_it_has_one() -> None:
+    """A benchmark instance does; an ordinary task does not, and must not send a null that
+    the schema would then have to accept."""
+    import httpx
+
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(202, json={"run_id": "r1"})
+
+    client = evals_run.Client("http://x", "k")
+    client._client = httpx.AsyncClient(base_url="http://x", transport=httpx.MockTransport(handler))
+    try:
+        await client.create(task(base_commit="a" * 40), None)
+        assert captured["base_commit"] == "a" * 40
+        captured.clear()
+        await client.create(task(), None)
+        assert "base_commit" not in captured
+    finally:
+        await client.aclose()

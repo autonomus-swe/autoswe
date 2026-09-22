@@ -65,7 +65,12 @@ class RunRow(Base):
     pr_url: Mapped[str | None] = mapped_column(Text)
     provider: Mapped[str] = mapped_column(Text, nullable=False, server_default="anthropic")
     unattended: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
+    # What SETUP resolved: the commit this run actually started from.
     base_sha: Mapped[str | None] = mapped_column(Text)
+    # What the caller asked for. Null means "the head of `base_branch`, whatever that was
+    # when the run started" — and keeping the two apart is what makes "the branch moved
+    # under us" a visible fact rather than a rewritten one. See migration 0007.
+    base_commit: Mapped[str | None] = mapped_column(Text)
     # `owner/repo` of the repository the pull request is opened on, when that is not
     # `repo_url`. Null for the ordinary case, where a run pushes to and opens on the same
     # repository — see migration 0006.

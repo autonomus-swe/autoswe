@@ -14,6 +14,9 @@ from __future__ import annotations
 
 from orchestrator.state import Phase, RunState
 
+# The default, and the value `Budget.max_debug_attempts` declares. Kept as a constant
+# because it is what a run with no opinion gets, and because the ceiling is a number the
+# state machine reasons about rather than one the caller must always supply.
 MAX_DEBUG_ATTEMPTS = 3
 
 
@@ -112,7 +115,12 @@ def _after_test(s: RunState) -> Phase:
         # moves on, so the artifact set is the same shape for every run.
         return Phase.REVIEW
 
-    if s.attempts.get(s.current_task_id or "", 0) >= MAX_DEBUG_ATTEMPTS:
+    # The run's ceiling, not the module's. `Budget.max_debug_attempts` has been in the
+    # contract since Phase 3 and nothing read it — a declared field that decided nothing,
+    # which is the same defect as a recorded provider nobody honoured. It also makes the
+    # phase's `no-debugger` ablation expressible: zero attempts sends the first failure
+    # straight to ESCALATE.
+    if s.attempts.get(s.current_task_id or "", 0) >= s.budget.max_debug_attempts:
         s.escalation_reason = "debug_attempts_exhausted"
         return Phase.ESCALATE
 

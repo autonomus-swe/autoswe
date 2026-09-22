@@ -43,11 +43,10 @@ from orchestrator.deps import Deps
 from orchestrator.events import emit
 from orchestrator.hooks import OrchestratorHooks
 from orchestrator.state import Phase, RunState
-from orchestrator.transition import MAX_DEBUG_ATTEMPTS
 from repo import diff, embeddings, graph, pr_body, repomap, stacks, symbols
 from repo import profile as repo_profile
 from repo import worktree as wt
-from repo.clone import ensure_bare_clone, repo_key, resolve_sha
+from repo.clone import ensure_bare_clone, repo_key, resolve_commit, resolve_sha
 from repo.gitcmd import git
 from repo.github import gitleaks_gate, open_pr, push_branch
 from repo.repomap import render_map
@@ -149,6 +148,23 @@ def synthetic_task(goal: str) -> TaskSpec:
     )
 
 
+async def starting_commit(bare: Path, state: RunState) -> str:
+    """Where this run's work begins, as a full sha.
+
+    A named commit wins over the branch head, and `base_branch` keeps its other job: it is
+    what the pull request targets. The two are not alternatives — "start here, merge
+    there" is exactly what a benchmark instance asks for, and it is the reason
+    `RunCreate` takes both.
+
+    Its own function because the choice is one line inside a node that needs a lock, a
+    clone, a container and a repository profile to run at all — and a one-line choice
+    buried in machinery is precisely the kind that gets dropped without anyone noticing.
+    """
+    if state.base_commit:
+        return await resolve_commit(bare, state.base_commit)
+    return await resolve_sha(bare, state.base_branch)
+
+
 async def setup_node(state: RunState, deps: Deps, res: RunResources) -> RunState:
     res.lock_key = f"lock:repo:{repo_key(state.repo_url)}:{state.base_branch}"
     res.lock_owner = f"worker-{uuid4()}"
@@ -160,8 +176,11 @@ async def setup_node(state: RunState, deps: Deps, res: RunResources) -> RunState
 
     token = deps.settings.github_token.get_secret_value() if deps.settings.github_token else None
     bare = await ensure_bare_clone(state.repo_url, deps.repos_dir(), token)
-    state.base_sha = await resolve_sha(bare, state.base_branch)
-    res.worktree = await wt.create(bare, deps.worktrees_dir(), state.run_id, state.base_branch)
+    state.base_sha = await starting_commit(bare, state)
+    # The resolved commit, not the branch. They name the same thing a moment apart, and a
+    # branch that moves in between would give the run a worktree at one commit and a
+    # `base_sha` recording another — a diff computed against a base the run never had.
+    res.worktree = await wt.create(bare, deps.worktrees_dir(), state.run_id, state.base_sha)
 
     # Deterministic facts first: SETUP uses the detected install command, ANALYZE gets them
     # as context rather than re-deriving what a file read can settle, and — since this
@@ -1034,7 +1053,7 @@ async def escalate_node(state: RunState, deps: Deps, res: RunResources) -> RunSt
     # The Coder produced nothing. That is one failed attempt, not a verdict on the task.
     if reason == "coder_no_result" and task_obj is not None:
         state.attempts[task_obj.id] = state.attempts.get(task_obj.id, 0) + 1
-        if state.attempts[task_obj.id] < MAX_DEBUG_ATTEMPTS:
+        if state.attempts[task_obj.id] < state.budget.max_debug_attempts:
             task_obj.status = "pending"
             state.resume_phase = Phase.CODE
             return state
@@ -1059,7 +1078,7 @@ async def escalate_node(state: RunState, deps: Deps, res: RunResources) -> RunSt
             state,
             deps,
             res,
-            f"task {task_obj.id} failed {MAX_DEBUG_ATTEMPTS} times after a replan",
+            f"task {task_obj.id} failed {state.budget.max_debug_attempts} times after a replan",
         )
 
     state.resume_phase = Phase.AWAITING_INPUT

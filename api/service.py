@@ -96,6 +96,7 @@ class ControlPlane:
         budget: Budget | None = None,
         unattended: bool = False,
         upstream: str | None = None,
+        base_commit: str | None = None,
     ) -> uuid.UUID:
         async with session(self.engine) as s:
             run_id = await db.create_run(
@@ -107,6 +108,7 @@ class ControlPlane:
                 provider=provider,
                 unattended=unattended,
                 upstream=upstream,
+                base_commit=base_commit,
             )
         if self.arq is not None:
             await self.arq.enqueue_job("run_job", str(run_id), _job_id=str(run_id))

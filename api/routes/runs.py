@@ -40,6 +40,7 @@ async def create_run(
         budget=body.budget,
         unattended=body.unattended,
         upstream=body.upstream,
+        base_commit=body.base_commit,
     )
     return RunAccepted(run_id=run_id)
 

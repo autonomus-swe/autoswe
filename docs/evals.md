@@ -122,15 +122,33 @@ An arm is a suite run with one thing changed, written to its own results file:
 
 ```bash
 uv run autoswe eval --suite private --results baseline
-uv run autoswe eval --suite private --provider openai_compat --results open-model
-uv run python -m evals.report evals/results/baseline.jsonl --by task_id
+uv run autoswe eval --suite private --ablate no-debugger --results no-debugger
+uv run python -m evals.report evals/results/no-debugger.jsonl --by ablation
 ```
 
-The plan asks for five arms: with and without the Debugger, with and without the repo map,
-two Coder models, two providers, two effort levels. Two of those are settings this build
-already has — `REPO_MAP_VERSION=v1` is the repo-map arm, and `Budget.max_debug_attempts=0`
-is the Debugger arm — and the rest need model-tier configuration a single-model deployment
-does not have. Run what your deployment can distinguish and say which arms you ran.
+`--ablate` takes the arms that are a property of the **run**, so one suite can be compared
+against another without restarting anything. Today that is `no-debugger`, which sets
+`Budget.max_debug_attempts = 0` and sends the first failing test straight to ESCALATE. The
+arm is recorded on every row, so `report.compare --by ablation` groups by a fact about how
+the run was made rather than a guess.
+
+The plan asks for five arms. Where each one lives:
+
+| Arm | How |
+|---|---|
+| without the Debugger | `--ablate no-debugger` |
+| without the repo map | `REPO_MAP_VERSION=v1` on the **worker**, then restart it |
+| Opus vs Sonnet as Coder | needs two model tiers configured; a single-model deployment cannot distinguish them |
+| Claude vs an open model | needs a second provider; this build has one |
+| effort `high` vs `xhigh` | needs a provider that takes an effort parameter |
+
+`no-repomap` is deliberately absent from `--ablate`: the repo map version is a worker
+process setting, not a run field, and offering it as a run flag that quietly did nothing
+would produce two identical columns with different labels.
+
+**Say which arms you ran.** Three of the five cannot be distinguished on a single-model
+deployment, and a comparison table that silently omits them reads as though they were
+tried.
 
 ---
 
@@ -170,11 +188,14 @@ instance to provide them. Making this project's sandbox images solve that would 
 reimplementing SWE-bench in order to run SWE-bench, and the score would be against our
 reconstruction of the environment rather than against the benchmark.
 
-**`base_commit` is not honoured yet.** Each instance pins a commit and `RunCreate` takes a
-branch, so a run starts from the branch head and a patch may not apply to the instance's
-base. `--require-sha` refuses to produce predictions at all rather than writing a file
-that will score badly for a reason the score cannot show. Until `RunCreate` accepts a SHA,
-any number from this path needs that caveat printed next to it.
+**Each run starts at the instance's pinned commit.** `RunCreate.base_commit` is what makes
+a score meaningful: without it every run started from a branch head, a patch produced there
+does not apply to the instance's base, and the harness would report failures caused by the
+wrong starting point.
+
+The mirror fetches branch heads, so an instance whose `base_commit` is reachable from no
+branch fails in SETUP with a message saying exactly that. Its prediction is an empty patch,
+which is the honest answer: not solved, and the row says why.
 
 An empty `model_patch` is a legitimate prediction meaning "not solved". Omitting the row
 would shrink the denominator, which is a way of improving a score by not reporting the
@@ -191,8 +212,10 @@ attempts that failed.
 | Private suite, resolved / cost / attempts | yes, needs a fork and a key |
 | Cache hit rate per run | yes, from `/runs/{id}/detail` |
 | PR-description quality | yes, with the caveat in §6 |
-| SWE-bench Lite patches | yes; scoring is the official harness's |
-| SWE-bench Lite *score* | not until `RunCreate` accepts a base commit |
+| SWE-bench Lite patches | yes, each at the instance's pinned commit |
+| SWE-bench Lite *score* | yes, with the official harness |
+| Ablation: without the Debugger | yes, `--ablate no-debugger` |
+| Ablation: without the repo map | yes, by restarting the worker with `REPO_MAP_VERSION=v1` |
 | Opus vs Sonnet as Coder | not on a single-model deployment |
 
 `docs/numbers.md` is where measured figures live, each with the run that produced it.
