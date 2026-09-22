@@ -525,4 +525,6 @@ rather than implying the ranking has been validated because it was carefully bui
       documentation bugs of exactly that kind (`"decompose"` for `"decomposer"`, `["usd"]`
       for `["budget_usd"]`), and prose has no way of failing when the constant beneath it
       moves.
-- [ ] Tag `v0.5.0`.
+- [x] Tag `v0.5.0`. Pushed to upstream, pointing at the commit where §1 is ten of ten —
+      it was first cut three commits earlier, before the Debugger fix and the completed
+      scale run, so it was moved rather than left naming a phase it did not contain.
