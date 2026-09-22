@@ -216,3 +216,49 @@ def test_a_step_with_no_required_tool_is_still_asked_to_commit() -> None:
     message = _land_it(Request(role="coder", system="s"))
 
     assert "git_commit" in message and "submit_result" not in message
+
+
+# ---- the criterion this satisfies -------------------------------------------------------
+
+
+def test_trimming_is_not_conditional_on_which_provider_is_configured() -> None:
+    """The reason the compaction criterion no longer names a vendor.
+
+    It used to ask for `provider.compacted`, an Anthropic SDK feature, which made "a long
+    session survives its context window" contingent on one vendor being chosen. This
+    mechanism is host-side and runs for every OpenAI-compatible endpoint, so the property
+    belongs to the system rather than to a purchase.
+
+    Read out of the source because that is where the conditionality would live: the
+    breakpoint placement two lines below *is* host-conditional, and a reviewer moving
+    `trim` inside that branch would silently make long sessions work only on OpenRouter.
+    """
+    import inspect
+
+    from gateway.openai_compat_provider import OpenAICompatProvider
+
+    loop = inspect.getsource(OpenAICompatProvider.run_tools)
+    trim_line = next(ln for ln in loop.splitlines() if "context.trim(messages)" in ln)
+    breakpoint_line = next(ln for ln in loop.splitlines() if "if self._breakpoints" in ln)
+
+    assert len(trim_line) - len(trim_line.lstrip()) == len(breakpoint_line) - len(
+        breakpoint_line.lstrip()
+    ), "trim is nested under the breakpoint branch; it must run for every provider"
+
+
+def test_a_session_far_past_the_trigger_still_knows_what_it_did() -> None:
+    """The half that makes outliving the window safe rather than merely possible.
+
+    A real run crossed the trigger ten times in one step and made 122 calls. That only
+    works because clearing removes bodies and never the record: an agent that forgets it
+    already ran a command runs it again, which costs more than the clearing saved.
+    """
+    messages = transcript(120)
+
+    for _ in range(10):
+        context.trim(messages)
+
+    calls = [m for m in messages if m.get("tool_calls")]
+    assert len(calls) == 120, "a call disappeared from the transcript"
+    assert all(c["tool_calls"][0]["function"]["arguments"] for c in calls)
+    assert any(context.CLEARED in str(m.get("content", "")) for m in messages)
