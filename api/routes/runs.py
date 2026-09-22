@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from api.auth import rate_limit, read_rate_limit
+from api.errors import http_error
 from api.schemas import (
     EventView,
     LLMCallView,
@@ -18,7 +19,7 @@ from api.schemas import (
     TaskView,
     ToolCallView,
 )
-from contracts import Budget
+from api.service import ControlError, plane_from
 from observability.logging import get_logger
 from storage import repo as db
 from storage.db import session
@@ -31,21 +32,14 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 async def create_run(
     body: RunCreate, request: Request, _key: str = Depends(rate_limit)
 ) -> RunAccepted:
-    async with session(request.app.state.engine) as s:
-        run_id = await db.create_run(
-            s,
-            repo_url=body.repo_url,
-            base_branch=body.base_branch,
-            goal=body.goal,
-            budget=body.budget or Budget(),
-            provider=request.app.state.settings.llm_provider,
-        )
-    pool = request.app.state.arq
-    if pool is not None:
-        await pool.enqueue_job("run_job", str(run_id), _job_id=str(run_id))
-    else:  # the queue is unavailable: the run stays queued rather than silently vanishing
-        log.warning("arq_unavailable", run_id=str(run_id))
-    log.info("run_created", run_id=str(run_id), repo_url=body.repo_url)
+    run_id = await plane_from(request.app.state).create_run(
+        repo_url=body.repo_url,
+        goal=body.goal,
+        base_branch=body.base_branch,
+        provider=request.app.state.settings.llm_provider,
+        budget=body.budget,
+        unattended=body.unattended,
+    )
     return RunAccepted(run_id=run_id)
 
 
@@ -54,8 +48,7 @@ async def list_runs(
     request: Request, limit: int = 50, _key: str = Depends(read_rate_limit)
 ) -> list[RunSummary]:
     """Most recent runs first — what the dashboard opens on."""
-    async with session(request.app.state.engine) as s:
-        rows = await db.list_runs(s, limit=min(max(limit, 1), 200))
+    rows = await plane_from(request.app.state).list_runs(limit)
     return [RunSummary.from_row(r) for r in rows]
 
 
@@ -129,8 +122,8 @@ async def run_detail(
 async def get_run(
     run_id: UUID, request: Request, _key: str = Depends(read_rate_limit)
 ) -> RunSummary:
-    async with session(request.app.state.engine) as s:
-        row = await db.get_run(s, run_id)
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="run not found")
+    try:
+        row = await plane_from(request.app.state).get_run(run_id)
+    except ControlError as e:
+        raise http_error(e) from e
     return RunSummary.from_row(row)

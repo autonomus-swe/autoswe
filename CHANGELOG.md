@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased — Phase 6 step 6.1: the control plane as an MCP server
+
+An editor can drive a run: start it, wait for it, answer its questions, approve the tool
+calls it asks about, and read the diff and the PR URL. Over stdio (`autoswe-mcp`, a child
+process) or streamable HTTP at `/mcp`. `docs/mcp.md` is the reference.
+
+Added
+- `api/service.py`: the control plane, extracted from the HTTP routes so both transports
+  call one implementation. The routes became shape conversion; the 26 control-plane tests
+  passed unchanged through the extraction. This came first and on purpose — writing MCP
+  tools against the routes' internals would have produced a second copy of the approve
+  path, whose replay guard is what stops a human authorising a call they never saw.
+- `mcp_bridge/server.py`: 13 tools and the `run://{run_id}/artifacts/{kind}` resource.
+- `mcp_bridge/workspace.py`: `search_code` and `read_file` over a run's checkout, routed
+  through the agents' own tools so `tools/policy.confine` contains them, rather than a
+  second path check to keep in step.
+- `cli/mcp.py` and the `autoswe-mcp` console script; `api/routes/mcp_mount.py` for HTTP.
+- `RunCreate.unattended`. The column and the orchestrator's handling of it have existed
+  since Phase 1 and nothing outside a seed script could set it.
+- `MCP_ALLOWED_HOSTS`. The MCP SDK enables DNS-rebinding protection by default with a
+  localhost-only allow-list, so the first deployment behind a real hostname would have
+  answered every request with a bare `421` naming nothing. Off by default here: the
+  transport requires `X-API-Key`, a header no cross-origin page can set, and the app
+  installs no CORS middleware.
+
+Fixed
+- The HTTP transport is authorised at the ASGI layer, not by a FastAPI dependency. It is a
+  separate ASGI application, so a `Depends` beside it would never run and every tool
+  including `cancel_run` would have been open while looking guarded.
+- `/mcp` and `/mcp/` are both exact routes. A mount would have answered `/mcp` — what goes
+  in an editor's configuration — with a 307.
+
+Changed
+- `tests/integration/conftest.py::api_app` replaces the per-file `api` fixtures. The app's
+  lifespan now holds the MCP session manager's anyio task group, and a yielding async
+  fixture is resumed in a different task at teardown, which anyio refuses. It failed on
+  teardown only, so every test passed and every test errored.
+
 ## 0.5.0 — Phase 5: scale and cost
 
 The system works on repositories it cannot hold in one prompt, and the cost of doing so is

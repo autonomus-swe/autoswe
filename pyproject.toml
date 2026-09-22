@@ -25,7 +25,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-api = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "sse-starlette>=2.1"]
+api = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sse-starlette>=2.1",
+    "mcp>=1.12",
+]
 cli = ["httpx>=0.27"]
 worker = [
     "arq>=0.26",
@@ -67,6 +72,10 @@ dev = [
 
 [project.scripts]
 autoswe = "cli.main:app"
+# Its own console script rather than `autoswe mcp`, because an editor's MCP config runs
+# one command and typer prints its own diagnostics to stdout — which on this transport is
+# the protocol. See the module docstring in cli/mcp.py.
+autoswe-mcp = "cli.mcp:main"
 
 [build-system]
 requires = ["hatchling"]

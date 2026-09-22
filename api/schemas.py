@@ -21,6 +21,11 @@ class RunCreate(BaseModel):
     goal: str = Field(min_length=10, max_length=4000)
     base_branch: str = Field(default="main", max_length=200)
     budget: Budget | None = None
+    # Nobody is watching, so approvals are auto-rejected rather than parking the run
+    # forever. The column and the orchestrator's handling of it have existed since Phase 1;
+    # until now only a seed script could set it, which made every unattended run a run
+    # somebody had to start by hand.
+    unattended: bool = False
 
     @field_validator("repo_url")
     @classmethod

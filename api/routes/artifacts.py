@@ -20,13 +20,13 @@ from __future__ import annotations
 import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import PlainTextResponse
 
 from api.auth import read_rate_limit
+from api.errors import http_error
 from api.schemas import ArtifactView
-from storage import repo as db
-from storage.db import session
+from api.service import ControlError, plane_from
 
 router = APIRouter(prefix="/runs", tags=["artifacts"])
 
@@ -40,10 +40,10 @@ async def list_artifacts(
     run_id: UUID, request: Request, _key: str = Depends(read_rate_limit)
 ) -> list[ArtifactView]:
     """What this run wrote, in the order it wrote it, with sizes and without content."""
-    async with session(request.app.state.engine) as s:
-        if await db.get_run(s, run_id) is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="run not found")
-        rows = await db.list_artifacts(s, run_id)
+    try:
+        rows = await plane_from(request.app.state).list_artifacts(run_id)
+    except ControlError as e:
+        raise http_error(e) from e
     return [
         ArtifactView(
             kind=r.kind,
@@ -66,12 +66,10 @@ async def get_artifact(
     four `test_report` rows, and "what did it end up with" is the question this answers.
     The listing above is where the sequence is visible.
     """
-    async with session(request.app.state.engine) as s:
-        if await db.get_run(s, run_id) is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="run not found")
-        row = await db.latest_artifact(s, run_id, kind)
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"run has no {kind!r} artifact")
+    try:
+        row = await plane_from(request.app.state).get_artifact(run_id, kind)
+    except ControlError as e:
+        raise http_error(e) from e
     if kind in TEXT_KINDS:
         text = row.content.get("text") if isinstance(row.content, dict) else None
         return PlainTextResponse(str(text if text is not None else row.content))

@@ -29,6 +29,17 @@ class Settings(BaseSettings):
     database_url: str = Field(pattern=r"^postgresql\+asyncpg://")
     redis_url: str = Field(pattern=r"^rediss?://")
     api_keys_raw: str = Field(validation_alias="API_KEYS", min_length=8)
+    # Host headers the MCP transport at `/mcp` accepts, comma-separated; `host:*` matches
+    # any port. Empty — the default — turns the SDK's DNS-rebinding check off.
+    #
+    # That check exists for a localhost server a browser can reach with the user's ambient
+    # authority. This one has none to borrow: every request needs `X-API-Key`, a custom
+    # header a cross-origin page cannot set without a preflight, and the app installs no
+    # CORS middleware to answer one. Left on with its localhost-only default, the first
+    # deployment behind a real hostname answers every MCP request with a bare 421 that
+    # names nothing about configuration, which is a worse outcome than the attack it is
+    # guarding against here. Operators who want it anyway set this.
+    mcp_allowed_hosts_raw: str = Field(default="", validation_alias="MCP_ALLOWED_HOSTS")
 
     # ---- Phase 1+: worker only ----
     # LLM provider. ``openai_compat`` talks to any OpenAI-compatible endpoint (OpenRouter by
@@ -156,6 +167,10 @@ class Settings(BaseSettings):
     def api_keys(self) -> frozenset[str]:
         return frozenset(k.strip() for k in self.api_keys_raw.split(",") if k.strip())
 
+    @property
+    def mcp_allowed_hosts(self) -> tuple[str, ...]:
+        return tuple(h.strip() for h in self.mcp_allowed_hosts_raw.split(",") if h.strip())
+
     def require_worker(self) -> None:
         """Worker entrypoint only. Exits naming any missing worker secret."""
         key_field = "anthropic_api_key" if self.llm_provider == "anthropic" else "llm_api_key"
@@ -169,6 +184,7 @@ class Settings(BaseSettings):
             "database_url": _mask_dsn(self.database_url),
             "redis_url": _mask_dsn(self.redis_url),
             "api_keys": f"{len(self.api_keys)} key(s)",
+            "mcp_allowed_hosts": ", ".join(self.mcp_allowed_hosts) or "any (api key is the gate)",
             "llm_provider": self.llm_provider,
             "llm_base_url": self.llm_base_url,
             "llm_model": self.llm_model,
