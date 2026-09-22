@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.5.0 — Phase 5: scale and cost
+
+The system works on repositories it cannot hold in one prompt, and the cost of doing so is
+measured rather than estimated. A tree-sitter symbol index, a repo map ranked by centrality
+and goal, semantic retrieval in pgvector, prompt caching with hit rates from real runs,
+budget-aware routing, tracing and metrics, and per-stack sandboxes.
+
+Seven of ten exit criteria met, one deferred to Phase 6 with the Anthropic provider, one
+pending a completed scale run. `docs/PHASE-5-scale-and-cost.md` §6.5 records exactly what
+is measured and what is not; `docs/numbers.md` carries every figure with the run it came
+from.
+
+Added
+- `repo/symbols.py` and `tools/symbols.py`: a tree-sitter symbol index keyed by SHA.
+  Django, 7 120 files and 44 292 symbols, parsed in 9.9 s — and measured **on the worker**
+  in a real run at 5.4 s, closing a caveat the criterion had carried since it was ticked.
+- Repo map v2: PageRank over the import graph mixed 0.6/0.4 with BM25 over the goal, inside
+  a token budget. `REPO_MAP_VERSION=v1` selects the ablation arm the phase prescribes,
+  which until now could not be run at all.
+- `repo/embeddings.py` and `search_code(semantic=True)`, answering the criterion's own
+  question on a fixture built so only meaning can answer it.
+- `gateway/caching.py`: breakpoints placed most-stable-first. **0.7745 run-level on a local
+  model, 0.6178 on a 7 091-file Django clone** — both from the `llm_calls` ledger.
+- Budget-aware routing, proven against a server that reports which model answered.
+- OpenTelemetry spans, Prometheus metrics, and the `observability` compose profile the demo
+  script had always told you to start.
+- Node and Go images, an egress proxy that fails closed, container GC, per-profile limits.
+- `make scale-run` / `make scale-ablation`, with a preflight that fails in one second on a
+  wrong key, model or endpoint rather than after a sandbox and a 3 000-file index.
+
+Fixed
+- Nine defects that only running it could find, four of them in one twenty-line block added
+  to force a tool call — a second implementation of an existing path omitting the cases the
+  first one handles. Notably: a tool call is now returned to the provider with whatever it
+  arrived with, because Gemini attaches an opaque `thought_signature` and rejects the next
+  turn without it; and the Debugger enforced the tool whose absence it survives instead of
+  the one whose absence kills the step.
+
+Corrected
+- `CHARS_PER_TOKEN` was the prose figure, so the map criterion was reported as met while
+  missed by a third. The Analyzer's "first call" of 43 990 tokens was a whole step summed
+  over twelve turns, and a summary read "eight of ten" while the boxes said seven. Each is
+  recorded in place rather than quietly edited, and `tests/unit/test_design_notes.py` and
+  `test_phase_5_tally.py` now count what the prose claims.
+
 ## 0.4.0 — Phase 4: review, security, and a pull request worth reading
 
 Before anything is pushed, the change is reviewed in two passes, scanned by four tools plus

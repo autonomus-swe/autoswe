@@ -222,3 +222,42 @@ def test_many_failures_are_capped_with_a_count(tmp_path: Path) -> None:
     )
     out = render_report(many)
     assert "more failures" in out
+
+
+async def test_the_step_enforces_the_tool_whose_absence_is_fatal() -> None:
+    """`must_call` takes one tool and this step has two, so it has to be the right one.
+
+    `run` raises when the hypothesis is missing — "a failed attempt rather than a partial
+    one" — and explicitly tolerates a missing result, because the hypothesis is still worth
+    recording and the next TEST decides whether the edits helped. Enforcing the result
+    therefore guarded the outcome the step survives and left the one that kills it to
+    chance.
+
+    Measured on a Django scale run: the loop forced `submit_result` twice, succeeded both
+    times, and the step still died with "debugger did not submit a hypothesis". Every
+    reminder and the forced call were spent on the tool that did not need them.
+    """
+    import inspect
+
+    from agents import debugger as mod
+
+    source = inspect.getsource(mod.DebuggerAgent.run)
+
+    assert "must_call=hypothesis_tool.name" in source
+    assert "must_call=result_tool.name" not in source, (
+        "the enforced tool is the survivable one again"
+    )
+
+
+async def test_a_missing_result_is_still_survivable() -> None:
+    """The other half, and the reason the choice above is not arbitrary. If both were
+    fatal, which one `must_call` names would not matter."""
+    import inspect
+
+    from agents import debugger as mod
+
+    source = inspect.getsource(mod.DebuggerAgent.run)
+    after_result = source[source.index("result = ctx.submitted.get(RESULT_KEY)") :]
+
+    assert "raise" not in after_result, "a missing result must not raise"
+    assert "result if isinstance(result, TaskResult) else None" in after_result

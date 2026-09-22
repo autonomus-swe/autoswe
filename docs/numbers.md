@@ -491,6 +491,32 @@ of consumption — the runs themselves are nearly free.
 `evals/results/` takes a row per run, and `test_m5_cache` writes its report in a `finally`,
 so even a run that stalls leaves its numbers behind.
 
+### The scale run, on 7 091 files
+
+The run the phase is named for, against a Django clone with `gemini-3.1-flash-lite`:
+
+| | |
+|---|---|
+| Repository | **7 091 files**, 3 043 indexed, 44 292 symbols |
+| Calls / steps | **152** across 5 steps |
+| Input / cache read | 1 167 021 / **1 886 663** |
+| **Run-level cache hit rate** | **0.6178** |
+| Wall clock | 15.2 min |
+| **Cost** | **$0.00** |
+
+Per role: planner 967 810 input against 1 659 064 read, debugger 136 199 / 150 618, coder
+43 542 / 64 805, analyzer 19 470 / 12 176.
+
+**0.6178 clears the 60 % the criterion asks for, on a repository 2.4× the size it
+specifies, for nothing.** It reads lower than the 0.7745 measured locally for a structural
+reason rather than a regression: this run spent most of its calls in a Planner step whose
+context grows faster than the prefix it reuses.
+
+What it did not do is open a pull request. It ran SETUP, ANALYZE, PLAN, DECOMPOSE, CODE,
+TEST and two DEBUG rounds, then failed — see below. So the criterion's three parts stand at
+numbers recorded, cost well under $5, and the pull request still outstanding *on a repo
+this size*.
+
 ### Gemini on a 7 000-file repository, and the bug that blocked it
 
 The scale run reached ANALYZE on Django with `gemini-3.1-flash-lite` and produced real
