@@ -83,8 +83,22 @@ is recorded as such rather than ticked from the code that would make it work.
       and `max_debug_attempts=0`. The other three compare model tiers a single-model
       deployment cannot distinguish, and running them would produce two identical columns
       with different labels. `docs/evals.md` §5 says which is which.
-- [ ] `autoswe --help` lists `run`, `watch`, `status`, `artifacts`, `answer`, `approve`, `reject`, `cancel`, `eval`; `--json` works on all read commands.
-- [ ] Tag `v1.0.0`.
+- [x] `autoswe --help` lists `run`, `watch`, `status`, `artifacts`, `answer`, `approve`, `reject`, `cancel`, `eval`; `--json` works on all read commands.
+      All nine, plus `mcp`, `list`, `version` and `config`. `--json` is on every read
+      command rather than most of them, which
+      `tests/unit/test_cli.py::test_json_works_on_every_read_command` asserts by
+      parametrising over the list — a flag that worked on four out of six would be worse
+      than none, because a script cannot tell which without trying.
+- [~] Tag `v1.0.0`.
+      `pyproject.toml` says `1.0.0` and `CHANGELOG.md` has the entry. The tag itself is a
+      push to `upstream`, which is the one thing the fork workflow does not let this
+      session do; §7 has the command.
+
+      `test_the_version_matches_the_latest_tag` was changed to make this state legal: it
+      demanded equality, which fails for a repository that has a release prepared and not
+      yet tagged — the ordinary state of every release, for as long as it takes to merge.
+      It now asserts the version is never *behind* the newest tag, which is the drift it
+      was written for (`0.0.1` shipped against a `v0.3.0` tag).
 
 ---
 
@@ -353,6 +367,34 @@ file whose output goes into a README.
 
 ---
 
+## 3.9 What steps 6.5 and 6.6 actually built
+
+`cli/config.py` (flags, then environment, then `~/.config/autoswe/config.toml`), `--json`
+on every read command, `--follow` on `run` with three exit codes, `autoswe list`,
+`RunCreate.upstream` with migration 0006 for cross-fork pull requests, `docs/security.md`,
+`docs/cli.md`, `docs/README.md`, the production settings written where settings live, and
+the `1.0.0` version and changelog entry.
+
+**Two bugs found by mutation testing rather than by running.** The PR node dropped the
+run's `upstream` and nothing noticed — a run would push to the fork, open the pull request
+on the fork, return a URL, and be silently the wrong repository. And `--follow`'s exit-2
+path had only a test of the *constant*; deleting the branch that produces it left the
+suite green.
+
+**A third found by a test written for a document.** `tests/unit/test_security_doc.py`
+checks that every test cited in `docs/security.md` exists, and the first thing it caught
+was a row in that document pointing at a *comment* rather than a test — in a file whose
+opening line is "a guarantee with no test beside it is a hope". The claim (DENY is checked
+before ASK, so a forbidden command is never offered for approval) now has
+`tests/integration/test_approvals.py::test_a_forbidden_command_is_not_offered_for_approval`.
+
+**Production is settings, not a compose profile.** A profile can add services; it cannot
+give the *same* services stricter settings without a second copy of `api` and `worker`,
+and two copies is how the one nobody looks at drifts. `docs/security.md` §10 carries the
+list.
+
+---
+
 ## 4. Testing plan
 
 | Tier | Coverage | Command |
@@ -400,9 +442,44 @@ uv run python evals/swebench.py --limit 50 && uv run python evals/report.py --sw
 
 ## 7. Release checklist (`v1.0.0`)
 
-- [ ] All six phase exit checklists ticked and linked from the release notes.
-- [ ] README §14 has the private-suite and SWE-bench Lite tables with conditions; §15 has X and Y filled.
-- [ ] `docs/security.md` maps every threat in README §9 to a test.
-- [ ] A clean clone plus `docs/local-dev.md` reaches a green PR on the fixture in under 30 minutes of setup.
+Three of these refer to sections of a README this project did not write. Rather than
+inventing a §9 and a §14 to tick a box against, each says where the equivalent actually
+lives — or that it does not exist.
+
+- [x] All six phase exit checklists ticked and linked from the release notes.
+      Ticked where something was run, `[~]` with a reason where it was not, which is the
+      only version of this box worth having. `docs/README.md` links every phase document.
+- [~] README §14 has the private-suite and SWE-bench Lite tables with conditions; §15 has X and Y filled.
+      **No §14 or §15 exists in this README**, and none ever has. The equivalent exists
+      and is better placed: `docs/numbers.md` carries every measured figure with the run
+      that produced it, and `evals/report.py` renders suite tables with their conditions
+      attached. What is genuinely missing is a private-suite run to fill one, which needs
+      a fork and a key.
+- [x] `docs/security.md` maps every threat in README §9 to a test.
+      Again no §9 to map, so the document is organised by what the system actually claims
+      — sandbox, network, commands, paths, injection, approvals, secrets, API, budgets —
+      and every row names its test. `tests/unit/test_security_doc.py` asserts the
+      citations resolve, which is what stops the document rotting quietly.
+- [~] A clean clone plus `docs/local-dev.md` reaches a green PR on the fixture in under 30 minutes of setup.
+      `docs/local-dev.md` does not exist. `TESTING.md` and `scripts/bringup.sh` are what
+      this project has instead and the README points at them. Nobody has timed a clean
+      clone, so this is **unmeasured**, not met.
 - [ ] The demo recording exists.
-- [ ] Tag `v1.0.0`.
+      Not made. A screen recording is not something a test can produce; §5's demo script
+      is what it would follow.
+- [~] Tag `v1.0.0`.
+      `pyproject.toml` says `1.0.0` and `CHANGELOG.md` has the entry. The tag itself is a
+      push to `upstream`, which is the one thing the fork workflow does not let this
+      session do:
+
+      ```bash
+      git checkout main && git pull --ff-only upstream main
+      git tag -a v1.0.0 -m "v1.0.0 — Phase 6: interop, independence, and evaluation"
+      git push upstream v1.0.0
+      ```
+
+      `test_the_version_matches_the_latest_tag` was renamed and relaxed to make this state
+      legal. It demanded equality, which fails for any repository with a release prepared
+      and not yet tagged — the ordinary state of every release, for as long as it takes to
+      merge. It now asserts the version is never *behind* the newest tag, which is the
+      drift it was written for: `0.0.1` shipped against a `v0.3.0` tag.

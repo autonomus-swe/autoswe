@@ -68,6 +68,8 @@ class RunState(StateModel):
     phase: Phase = Phase.SETUP
     base_sha: str | None = None
     unattended: bool = False
+    # `owner/repo` the PR is opened on, when that is not where the branch was pushed.
+    upstream: str | None = None
     test_command: str = DEFAULT_TEST_COMMAND
 
     facts: RepoFacts | None = None

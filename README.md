@@ -1,4 +1,4 @@
-# autoswe — Phase 3 (the verification loop)
+# autoswe
 
 An autonomous software engineering agent. Give it a repository and a goal; it profiles
 the repository, plans, splits the work into a task graph, then edits inside a locked-down
@@ -7,23 +7,29 @@ checkpoints after every step, so a crashed worker resumes instead of starting ov
 it can stop to ask a question when the goal is ambiguous. Every command it runs and every
 model turn is a row in Postgres.
 
-Phase 3 made a failing test something it reasons about rather than reports: failures are
-parsed into stack frames with a signature that survives an edit, a Debugger must state a
-hypothesis before it may change anything, the same failure twice puts it on a different
-strategy, and a stuck run escalates instead of looping. Budgets are enforced from the
-usage ledger, some commands stop to ask a human, and a cancel lands inside a running
-command rather than after it.
+It reviews its own diff and scans it before pushing, reasons about a failing test rather
+than reporting it, enforces budgets from the usage ledger, stops to ask a human before
+commands that change the environment, and lands a cancel inside a running command rather
+than after it.
 
-**It does not yet review its own diff or scan it for anything** — Phase 4. Read
-[TESTING.md Part 6](TESTING.md) before relying on a pull request it opens.
+It is also an **MCP server**, so an editor can drive a run and read what it produced, and
+an **MCP client**, so the agents can call tools from servers you mount. It runs on any
+OpenAI-compatible endpoint — Ollama on a laptop, vLLM on a GPU, or a free hosted model —
+and there is no vendor dependency to remove.
+
+**Read [docs/security.md](docs/security.md) before pointing it at anything you care
+about.** It lists every guarantee, the test that proves it, and — the part worth reading
+twice — what this build does not guarantee.
 
 There is a console at **<http://127.0.0.1:8000/>** once the API is up: a list of runs and,
 for any one of them, its phases, tasks, live event stream, every tool call and model turn,
 and the controls to answer or cancel it. **[TESTING.md](TESTING.md) gets you looking at it
 with real data in five minutes, without an API key or any quota.**
 
-The design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the build plan is in
-[docs/PHASES.md](docs/PHASES.md).
+**[docs/README.md](docs/README.md) is the documentation index.** The design is in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the build plan is in
+[docs/PHASES.md](docs/PHASES.md); every measured figure, with the run that produced it, is
+in [docs/numbers.md](docs/numbers.md).
 
 ## Quick start
 
@@ -110,7 +116,9 @@ operations are host-side tools the agent has to call.
 | `gateway/` | provider protocol, the OpenAI-compatible provider, routing and pricing |
 | `agents/` | agent base, prompts, and the Coder |
 | `orchestrator/` | phases, transitions, nodes, the runner and the worker |
-| `api/`, `cli/` | control plane and command line |
+| `api/`, `cli/` | control plane, its service layer, and the command line |
+| `mcp_bridge/` | the MCP server, and the client that mounts other people's |
+| `evals/` | task suites, the driver, the report, the judge, SWE-bench |
 | `observability/` | structured logging with secret redaction, tracing |
 
 ## Testing
@@ -122,9 +130,10 @@ make test-int        # integration: real Postgres, Redis and Docker; no API key,
 make test-e2e        # end to end with a real model; needs LLM_API_KEY, skips without it
 ```
 
-`make test` should report **446 passed** and `make test-int` **93 passed**, with no skips.
-A much lower count with `skipped` in it means the sandbox image is missing and the tests
-that matter most are not running.
+`make test` and `make test-int` should both finish with **no skips**. A much lower count
+with `skipped` in it means the sandbox image is missing and the tests that matter most are
+not running. The suite is roughly 1 400 tests; the count is not pinned here because a
+number in a README is a thing that goes stale silently — `pytest --co` is the answer.
 
 - **[TESTING.md](TESTING.md)** — start here. `./scripts/bringup.sh` gets the whole product
   running; the rest is a proof for every claim, and a verified list of what is missing.

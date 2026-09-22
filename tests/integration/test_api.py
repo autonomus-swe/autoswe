@@ -406,3 +406,56 @@ async def test_run_detail_carries_the_cache_totals_the_eval_harness_needs(
     # 3000 / (1000 + 3000). Against input + cache_read rather than every token, because
     # output tokens were never candidates for a cache hit.
     assert totals["cache_hit_rate"] == 0.75
+
+
+async def test_a_cross_fork_run_records_where_the_pr_goes(engine: AsyncEngine) -> None:
+    """The branch goes to `repo_url` — a fork you can push to — and the pull request is
+    opened on `upstream`. Both are on the row, because a resumed run reads the row and a
+    run that forgot its upstream would open the PR on the fork instead, silently."""
+    from storage import repo as db
+    from storage.db import session
+
+    body = {
+        "repo_url": "https://github.com/me/project",
+        "goal": "Implement subtract(a, b)",
+        "upstream": "them/project",
+    }
+    async with api_app(engine) as (client, _arq):
+        res = await client.post("/runs", json=body, headers={"X-API-Key": KEY})
+    assert res.status_code == 202
+
+    async with session(engine) as s:
+        row = await db.get_run(s, UUID(res.json()["run_id"]))
+    assert row is not None
+    assert row.repo_url == "https://github.com/me/project"
+    assert row.upstream == "them/project"
+
+
+async def test_an_ordinary_run_has_no_upstream(engine: AsyncEngine) -> None:
+    """Nullable with no default: almost every run pushes and opens in the same place, and
+    a column defaulted to something would claim otherwise."""
+    from storage import repo as db
+    from storage.db import session
+
+    body = {"repo_url": "https://github.com/me/project", "goal": "Implement subtract(a, b)"}
+    async with api_app(engine) as (client, _arq):
+        res = await client.post("/runs", json=body, headers={"X-API-Key": KEY})
+    async with session(engine) as s:
+        row = await db.get_run(s, UUID(res.json()["run_id"]))
+    assert row is not None and row.upstream is None
+
+
+async def test_an_upstream_that_is_a_url_is_refused_before_anything_is_pushed(
+    engine: AsyncEngine,
+) -> None:
+    """GitHub's API takes `owner/repo`. A URL accepted here fails at PR time — after the
+    branch has been pushed, which is the most expensive moment to find out."""
+    body = {
+        "repo_url": "https://github.com/me/project",
+        "goal": "Implement subtract(a, b)",
+        "upstream": "https://github.com/them/project",
+    }
+    async with api_app(engine) as (client, arq):
+        res = await client.post("/runs", json=body, headers={"X-API-Key": KEY})
+    assert res.status_code == 422 and "owner/repo" in res.text
+    assert arq.jobs == []

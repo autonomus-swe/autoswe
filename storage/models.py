@@ -66,6 +66,10 @@ class RunRow(Base):
     provider: Mapped[str] = mapped_column(Text, nullable=False, server_default="anthropic")
     unattended: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
     base_sha: Mapped[str | None] = mapped_column(Text)
+    # `owner/repo` of the repository the pull request is opened on, when that is not
+    # `repo_url`. Null for the ordinary case, where a run pushes to and opens on the same
+    # repository — see migration 0006.
+    upstream: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

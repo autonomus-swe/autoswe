@@ -43,8 +43,18 @@ def test_the_changelog_documents_the_version_being_shipped() -> None:
     )
 
 
-def test_the_version_matches_the_latest_tag() -> None:
-    """The check that would have caught the original drift.
+def test_the_version_is_never_behind_the_latest_tag() -> None:
+    """The check that would have caught the original drift, without failing a release.
+
+    The bug this exists for was the version *behind* the tag: `pyproject.toml` said
+    `0.0.1` while the repository was tagged `v0.3.0`. Equality caught that, and also
+    caught the ordinary state of a release being prepared — the version bumped in the pull
+    request that writes the changelog, the tag created after it merges. Between those two
+    moments an equality check fails for a repository that is entirely correct, which turns
+    a useful guard into one people learn to ignore.
+
+    So: the version may be ahead of the newest tag, and may equal it, and may never be
+    behind it. Ahead is "a release is prepared"; behind is the bug.
 
     Skipped where the tags are not fetched — CI checks out shallow — so it is a local and
     release-time guard rather than a gate. Better than nothing, and honest about which.
@@ -64,6 +74,13 @@ def test_the_version_matches_the_latest_tag() -> None:
         pytest.skip("no tags in this checkout (a shallow clone has none)")
 
     tag = described.stdout.strip().removeprefix("v")
-    assert tag == package_version(), (
-        f"the newest tag is v{tag} but the package reports {package_version()}"
+    if not SEMVER.match(tag):
+        pytest.skip(f"the newest tag is not a version: {tag!r}")
+
+    def parts(v: str) -> tuple[int, ...]:
+        return tuple(int(p) for p in v.split("."))
+
+    assert parts(package_version()) >= parts(tag), (
+        f"the package reports {package_version()} but the newest tag is v{tag}; "
+        "a version behind its own tag is the drift this test exists for"
     )
