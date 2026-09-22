@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -20,10 +21,15 @@ from gateway import context as gateway_context
 from gateway.openai_compat_provider import (
     RATE_LIMIT_FALLBACK_WAIT_S,
     RATE_LIMIT_MAX_WAIT_S,
+    SERVER_ERROR_BACKOFF_S,
+    SERVER_ERROR_MAX_WAIT_S,
+    SERVER_ERROR_RETRIES,
+    SERVER_ERROR_STATUSES,
     ChatTurn,
     OpenAICompatProvider,
     ToolCallReq,
     _retry_after_s,
+    _server_error_wait_s,
     repair_structured,
     usage_from,
 )
@@ -276,7 +282,10 @@ class _FakeCompletions:
 
     async def create(self, **kwargs: Any) -> Any:
         self.calls += 1
-        return self.script.pop(0)
+        answer = self.script.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer  # an upstream failure is a scripted outcome like any other
+        return answer
 
 
 class _FakeClient:
@@ -1265,3 +1274,108 @@ def test_invalid_arguments_are_still_normalised_through_the_new_path() -> None:
     )
 
     assert _tool_call_back(call)["function"]["arguments"] == "{}"
+
+
+# ---- upstream server errors ------------------------------------------------------------
+# Measured, not anticipated. A private-suite run on a free Gemini tier lost two of three
+# tasks to `503 UNAVAILABLE — high demand ... please try again later`, one of them after
+# four and a half minutes of real work. The loop already retries a 200 with no choices
+# because "an agentic run dies on a blip after minutes of real work"; a 503 that asks to
+# be retried is the same blip wearing a status code.
+
+
+def _server_err(status: int) -> Any:
+    kind = type("InternalServerError", (SimpleNamespace,), {})
+    return kind(status_code=status, body=None, response=SimpleNamespace(headers={}))
+
+
+@pytest.mark.parametrize("status", sorted(SERVER_ERROR_STATUSES))
+def test_every_5xx_the_upstream_owns_is_waited_out(status: int) -> None:
+    assert _server_error_wait_s(_server_err(status), 0) == SERVER_ERROR_BACKOFF_S
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 422, 429])
+def test_a_4xx_is_not_retried(status: int) -> None:
+    """It will say the same thing however many times it is asked. 429 has its own path,
+    which reads the provider's own hint rather than guessing a backoff."""
+    assert _server_error_wait_s(_server_err(status), 0) is None
+
+
+def test_something_with_no_status_is_not_retried_here() -> None:
+    assert _server_error_wait_s(SimpleNamespace(body=None), 0) is None
+
+
+def test_the_wait_grows_and_then_stops_growing() -> None:
+    """A free tier under load can stay unavailable for a while, so waiting longer each
+    time is right — and clamped, because a run parked for an hour has failed differently
+    rather than succeeded."""
+    waits = [_server_error_wait_s(_server_err(503), n) or 0.0 for n in range(8)]
+    assert waits[0] == SERVER_ERROR_BACKOFF_S
+    assert all(a <= b for a, b in pairwise(waits))
+    assert max(waits) == SERVER_ERROR_MAX_WAIT_S
+
+
+def _api_error(status: int, message: str = "high demand") -> Exception:
+    """An `openai.APIError` subclass carrying a status, as the SDK raises for a 5xx."""
+    from openai import APIError
+
+    kind = type("InternalServerError", (APIError,), {"status_code": status})
+    err: Exception = kind(message, request=None, body=None)
+    err.status_code = status  # type: ignore[attr-defined]
+    return err
+
+
+async def test_a_run_survives_a_transient_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The behaviour the constants exist for: the call is made again and the run goes on.
+
+    Without this a 503 raised straight through as a `ProviderError` and killed the step —
+    which is what happened to two tasks of a three-task suite, one of them four and a half
+    minutes in.
+    """
+    slept: list[float] = []
+
+    async def no_wait(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr("gateway.openai_compat_provider.asyncio.sleep", no_wait)
+    client = _FakeClient([_api_error(503), _api_error(503), _resp([_choice("recovered")])])
+    provider = OpenAICompatProvider(model="m", api_key="k", base_url="http://x", client=client)
+
+    turn = await provider._complete(messages=[], tools=[], tool_choice=None, max_tokens=10)
+
+    assert turn.content == "recovered"
+    assert client.chat.completions.calls == 3, "the first two were the upstream's problem"
+    assert slept == [SERVER_ERROR_BACKOFF_S, SERVER_ERROR_BACKOFF_S * 2], "and it backs off"
+
+
+async def test_a_503_that_never_clears_still_gives_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bounded. An upstream down for the afternoon is not something to wait out, and a run
+    that hangs forever is worse than one that says why it stopped."""
+
+    async def no_wait(seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("gateway.openai_compat_provider.asyncio.sleep", no_wait)
+    attempts = SERVER_ERROR_RETRIES + 1
+    client = _FakeClient([_api_error(503) for _ in range(attempts)])
+    provider = OpenAICompatProvider(model="m", api_key="k", base_url="http://x", client=client)
+
+    with pytest.raises(ProviderError, match="high demand"):
+        await provider._complete(messages=[], tools=[], tool_choice=None, max_tokens=10)
+    assert client.chat.completions.calls == attempts
+
+
+async def test_a_400_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bad request says the same thing however many times it is asked, and retrying it
+    spends a run's clock on an answer that will not change."""
+
+    async def no_wait(seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("gateway.openai_compat_provider.asyncio.sleep", no_wait)
+    client = _FakeClient([_api_error(400, "bad request")])
+    provider = OpenAICompatProvider(model="m", api_key="k", base_url="http://x", client=client)
+
+    with pytest.raises(ProviderError, match="bad request"):
+        await provider._complete(messages=[], tools=[], tool_choice=None, max_tokens=10)
+    assert client.chat.completions.calls == 1

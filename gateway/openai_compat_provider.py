@@ -59,6 +59,18 @@ TASK_BUDGET_GRACE_TURNS = 3
 RATE_LIMIT_RETRIES = 6
 RATE_LIMIT_MAX_WAIT_S = 90.0
 RATE_LIMIT_FALLBACK_WAIT_S = 20.0
+# A 5xx is the server saying the problem is its own. Retried like an empty response and
+# unlike a 4xx, which will say the same thing however many times it is asked.
+#
+# Measured, not anticipated: a private-suite run on a free Gemini tier lost two of three
+# tasks to `503 UNAVAILABLE — high demand ... please try again later`, one of them after
+# four and a half minutes of real work. The module already retries a 200 with no choices
+# because "an agentic run dies on a blip after minutes of real work"; a 503 that asks to
+# be retried is the same blip wearing a status code.
+SERVER_ERROR_STATUSES = frozenset({500, 502, 503, 504})
+SERVER_ERROR_RETRIES = 4
+SERVER_ERROR_BACKOFF_S = 3.0
+SERVER_ERROR_MAX_WAIT_S = 45.0
 
 
 class _InvalidToolCall(Exception):
@@ -200,6 +212,18 @@ def repair_structured[T: BaseModel](raw: str, output: type[T]) -> T | None:
             if not _repair_once(data, e.errors()):
                 return None
     return None
+
+
+def _server_error_wait_s(err: Any, attempt: int) -> float | None:
+    """How long to wait out an upstream 5xx, or None when this is not one.
+
+    Exponential and clamped. A free tier under load can stay unavailable for a while, and
+    a run that waits five minutes and finishes beats one that dies in four and a half.
+    """
+    status = getattr(err, "status_code", None)
+    if status not in SERVER_ERROR_STATUSES:
+        return None
+    return float(min(SERVER_ERROR_BACKOFF_S * (2**attempt), SERVER_ERROR_MAX_WAIT_S))
 
 
 def _retry_after_s(err: Any, now_s: float) -> float | None:
@@ -436,6 +460,7 @@ class OpenAICompatProvider:
 
         resp = None
         rate_limited = 0
+        server_errors = 0
         attempt = 0
         annotate(llm_model=model, llm_max_tokens=max_tokens, llm_tools=len(tools))
         while attempt <= EMPTY_RESPONSE_RETRIES:
@@ -457,6 +482,19 @@ class OpenAICompatProvider:
                     )
                     await asyncio.sleep(wait_s)
                     continue  # the window, not the response, was the problem
+                server_wait = _server_error_wait_s(e, server_errors)
+                if server_wait is not None and server_errors < SERVER_ERROR_RETRIES:
+                    server_errors += 1
+                    log.warning(
+                        "provider_server_error",
+                        model=model,
+                        status=getattr(e, "status_code", None),
+                        wait_s=round(server_wait, 1),
+                        attempt=server_errors,
+                        retries=SERVER_ERROR_RETRIES,
+                    )
+                    await asyncio.sleep(server_wait)
+                    continue  # the upstream said the problem was its own
                 raise ProviderError(f"{type(e).__name__}: {getattr(e, 'message', e)}") from e
             if resp.choices:
                 break

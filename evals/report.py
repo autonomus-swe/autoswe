@@ -50,21 +50,47 @@ def summarise(rows: Sequence[Row]) -> dict[str, Any]:
 
 
 def render(rows: Sequence[Row], *, title: str = "Results") -> str:
-    """One suite: a row per task, then the aggregate."""
+    """One suite: a row per task, then the aggregate.
+
+    The `why` column appears only when something went wrong, and it does **not** change
+    the denominator. A suite whose tasks all died on the same upstream 503 still reads
+    `0/3 resolved`, because that is what happened — but a reader can now see that all
+    three say the same thing without opening the JSONL, which is the difference between a
+    number they can interpret and one they can only quote.
+    """
     if not rows:
         return f"## {title}\n\n_no rows_\n"
+    why = any(r.get("error") for r in rows)
     head = "| task | resolved | status | tasks | debug | review | wall s | cost $ | cache | PR |"
     rule = "|---|---|---|---|---|---|---|---|---|---|"
+    if why:
+        head += " why |"
+        rule += "---|"
     lines = [f"## {title}", "", head, rule]
     for r in rows:
-        lines.append(
+        line = (
             f"| `{r.get('task_id', '')}` | {_mark(r.get('resolved'))} | {r.get('status', '')} "
             f"| {r.get('tasks', 0)} | {r.get('debug_attempts', 0)} "
             f"| {r.get('review_rounds', 0)} | {float(r.get('wall_clock_s') or 0):.0f} "
             f"| {float(r.get('cost_usd') or 0):.4f} "
             f"| {float(r.get('cache_hit_rate') or 0):.3f} | {_link(r.get('pr_url'))} |"
         )
+        if why:
+            line += f" {_why(r)} |"
+        lines.append(line)
     return "\n".join([*lines, "", _aggregate(summarise(rows)), ""])
+
+
+def _why(row: Row) -> str:
+    """The first line of what went wrong, short enough for a table cell.
+
+    Pipes escaped, because an error message containing one would end the row early and
+    silently move every later column left by one — a corrupted table that still renders.
+    """
+    text = str(row.get("error") or "").strip().splitlines()
+    if not text:
+        return ""
+    return text[0][:90].replace("|", "\\|")
 
 
 def compare(groups: Mapping[str, Sequence[Row]], *, title: str = "Ablations") -> str:
