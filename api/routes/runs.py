@@ -111,6 +111,13 @@ async def run_detail(
         totals={
             "input_tokens": usage.input_tokens,
             "output_tokens": usage.output_tokens,
+            # The two the eval harness needs and could not get: a run-level cache hit rate
+            # is a ratio of columns `run_cost` already sums, and without them here the
+            # harness would have to reach past the API into the database to compute the
+            # one number Phase 5 leads with.
+            "cache_read_tokens": usage.cache_read_tokens,
+            "cache_write_tokens": usage.cache_write_tokens,
+            "cache_hit_rate": round(usage.cache_hit_rate, 4),
             "cost_usd": usage.cost_usd,
             "tool_calls": len(tool_calls),
             "llm_calls": len(llm_calls),

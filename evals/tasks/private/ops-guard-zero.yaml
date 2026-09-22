@@ -1,0 +1,15 @@
+# A bugfix shape rather than a feature: the change is a guard, and the test that proves it
+# has to be written by the agent. `verify` runs the whole suite, so deleting the failing
+# case is not a way through.
+id: ops-guard-zero
+repo: "${AUTOSWE_FIXTURE_REPO}"
+base: main
+goal: >-
+  Add divide(a, b) to fixture/ops.py. It must raise ValueError with a clear message when b
+  is zero rather than propagating ZeroDivisionError, and tests/test_ops.py must cover both
+  the normal case and the zero case.
+verify:
+  command: "uv run pytest -q"
+  expect_exit: 0
+tags: [bugfix, fixture]
+budget_usd: 3.0

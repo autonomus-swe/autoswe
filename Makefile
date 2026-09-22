@@ -147,6 +147,20 @@ scale-ablation: scale-preflight
 > LLM_BASE_URL="$$base" LLM_API_KEY="$$key" LLM_MODEL="$$model" REPO_MAP_VERSION=v1 \
 > uv run pytest -m e2e tests/e2e/test_m5_scale.py -q -s
 
+# The private eval suite against a running control plane. Needs AUTOSWE_API_KEY and a
+# fork to work against — see docs/evals.md. Exits non-zero when a task went unresolved, so
+# this is usable in CI without a wrapper that greps the table.
+EVAL_SUITE ?= private
+eval:
+> @test -n "$$AUTOSWE_API_KEY" || { echo "set AUTOSWE_API_KEY"; exit 2; }
+> @test -n "$$AUTOSWE_FIXTURE_REPO" || { echo "set AUTOSWE_FIXTURE_REPO to a fork you own"; exit 2; }
+> uv run autoswe eval --suite $(EVAL_SUITE)
+
+# Render a results file. `BY=provider` renders the comparison table instead.
+EVAL_RESULTS ?= evals/results/eval-private.jsonl
+eval-report:
+> uv run python -m evals.report $(EVAL_RESULTS) $(if $(BY),--by $(BY),)
+
 # both end-to-end tests; costs two runs of quota and can trip a per-minute rate limit
 test-e2e-all:
 > uv run pytest -m e2e tests/e2e

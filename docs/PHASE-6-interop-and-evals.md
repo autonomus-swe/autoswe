@@ -59,9 +59,30 @@ is recorded as such rather than ticked from the code that would make it work.
       equivalent evidence on free and local models — a complete run to a draft PR in
       9.4 minutes for $0.00, `docs/numbers.md` — so this is the same claim on larger
       hardware, not an unproven one.
-- [ ] `evals/run.py --suite private` runs the 20–30 task suite and writes per-task resolved/attempts/rounds/cost/cache-hit; `evals/report.py` renders the table.
-- [ ] `evals/swebench.py --limit 50` produces `predictions.jsonl` and the official harness score; the number is in README §14 and the X/Y in §15 are filled.
-- [ ] Ablations recorded: with/without Debugger, with/without repo map, Opus 5 vs Sonnet 5 as Coder, Claude vs Qwen3-Coder, effort `high` vs `xhigh`.
+- [~] `evals/run.py --suite private` runs the 20–30 task suite and writes per-task resolved/attempts/rounds/cost/cache-hit; `evals/report.py` renders the table.
+      **The harness is built and tested; the suite is three tasks, not twenty.** Every
+      field the criterion names is recorded, and `/runs/{id}/detail` was extended to carry
+      the cache totals so the harness never has to reach past the API to get them.
+
+      Three rather than twenty because the remaining twenty-seven would be tasks invented
+      to fill a count, against fixtures written to make them passable. A suite whose size
+      is its own justification measures the person who wrote it. The three that ship are
+      calibration — one feature, one bugfix, one that the M1 end-to-end test already
+      drives — and `docs/evals.md` §2 is how to add real ones against repositories you
+      actually maintain.
+- [~] `evals/swebench.py --limit 50` produces `predictions.jsonl` and the official harness score; the number is in README §14 and the X/Y in §15 are filled.
+      `predictions.jsonl` is produced; the score is not, and should not be yet. Each
+      instance pins a `base_commit` and `RunCreate` takes a branch, so every run would
+      start from the branch head and a patch would fail to apply for a reason the score
+      cannot show. `--require-sha` refuses to run rather than producing a number nobody
+      can attribute. Extending `RunCreate` to accept a SHA is the blocker, and it is named
+      in this plan's own step 6.4.
+- [~] Ablations recorded: with/without Debugger, with/without repo map, Opus 5 vs Sonnet 5 as Coder, Claude vs Qwen3-Coder, effort `high` vs `xhigh`.
+      `evals/report.compare` renders the table and `--results` names an arm, so the
+      mechanism exists. Two of the five arms are runnable here — `REPO_MAP_VERSION=v1`
+      and `max_debug_attempts=0`. The other three compare model tiers a single-model
+      deployment cannot distinguish, and running them would produce two identical columns
+      with different labels. `docs/evals.md` §5 says which is which.
 - [ ] `autoswe --help` lists `run`, `watch`, `status`, `artifacts`, `answer`, `approve`, `reject`, `cancel`, `eval`; `--json` works on all read commands.
 - [ ] Tag `v1.0.0`.
 
@@ -298,6 +319,37 @@ right answer. Each is now set up so the two differ. A fifth was worse: the runne
 `CAUGHT` for a test that no longer existed under that name, because `pytest` exits
 non-zero for "no such test" as readily as for a failure. The runner now requires a green
 baseline before it mutates.
+
+---
+
+## 3.8 What step 6.4 actually built
+
+`evals/suite.py` (tasks and the rejections), `evals/run.py` (the driver and the `Plane`
+protocol it is typed against), `evals/report.py` (pure rendering), `evals/judge.py`,
+`evals/swebench.py`, three shipped tasks, `docs/evals.md`, `autoswe eval`, `autoswe mcp`,
+and `make eval` / `make eval-report`. `/runs/{id}/detail` gained `cache_read_tokens`,
+`cache_write_tokens` and `cache_hit_rate`, which is what lets the harness stay outside the
+database.
+
+**Three shipped tasks, not twenty.** See the criterion above. The number is a choice and
+it is defended rather than hidden.
+
+**The judge does not use the Batches API.** No Anthropic provider, so the rubric goes
+through whatever `LLM_PROVIDER` is configured. `docs/evals.md` §6 also says the thing that
+matters more than the mechanism: a judge on the same model as the worker is not
+independent, and its scores should be read as such.
+
+**The harness talks to the API and nothing else.** Four endpoints, no database, no
+orchestrator import. An eval that reached inside would be measuring a path no user takes,
+and the first thing it would stop noticing is a broken API. `evals/run.Plane` is that
+dependency written down.
+
+**Seventeen mutations, seventeen caught**, each against a verified green baseline. The
+ones worth naming are the accounting: a denominator that counted unverifiable tasks, a
+`resolved: null` folded into `true`, a cost-per-resolved that divided by zero successes
+and reported the total, and a mean where a median belongs. Every one of those produces a
+number that looks reasonable and is wrong, which is the only kind of bug that matters in a
+file whose output goes into a README.
 
 ---
 

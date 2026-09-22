@@ -1,0 +1,13 @@
+# The M1 fixture, as an eval task. The same goal `tests/e2e/test_m1_local.py` drives, so a
+# regression here and a regression there are the same regression.
+id: ops-subtract-slugify
+repo: "${AUTOSWE_FIXTURE_REPO}"
+base: main
+goal: >-
+  Implement subtract(a, b) and slugify(text) in fixture/ops.py so that tests/test_ops.py
+  passes. Do not change the tests.
+verify:
+  command: "uv run pytest -q tests/test_ops.py"
+  expect_exit: 0
+tags: [feature, fixture]
+budget_usd: 3.0

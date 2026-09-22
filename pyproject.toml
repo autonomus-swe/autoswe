@@ -120,6 +120,13 @@ exclude = ["storage/migrations/", "tests/fixtures/", "\\.venv/", "venv/"]
 module = ["testcontainers.*", "asyncpg.*", "docker.*", "arq.*", "rank_bm25.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# `datasets` is deliberately not a dependency: it brings pyarrow and several hundred
+# megabytes for one optional benchmark. `evals/swebench.py` imports it inside a function
+# and turns its absence into an instruction, so mypy is told not to look for it here.
+module = ["datasets.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
