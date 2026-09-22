@@ -42,6 +42,7 @@ async def initial_state(engine: Any, run_id: UUID) -> RunState:
         work_branch=row.work_branch,
         unattended=bool(row.unattended),
         upstream=row.upstream,
+        base_commit=row.base_commit,
         phase=Phase.SETUP,
         test_command=DEFAULT_TEST_COMMAND,
     )

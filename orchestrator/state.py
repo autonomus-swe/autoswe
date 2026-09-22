@@ -70,6 +70,9 @@ class RunState(StateModel):
     unattended: bool = False
     # `owner/repo` the PR is opened on, when that is not where the branch was pushed.
     upstream: str | None = None
+    # The commit the caller asked to start from, when they named one. `base_sha` is what
+    # SETUP resolved; this is the request.
+    base_commit: str | None = None
     test_command: str = DEFAULT_TEST_COMMAND
 
     facts: RepoFacts | None = None

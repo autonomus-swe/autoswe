@@ -36,6 +36,10 @@ class RunCreate(BaseModel):
     # the PR is opened on this one with `head="<fork_owner>:agent/<id>"`. The token needs
     # pull-request write here; it never needs push access, which is the point.
     upstream: str | None = Field(default=None, max_length=200)
+    # Start from this commit rather than from the head of `base_branch`. SWE-bench pins
+    # one per instance and a patch produced against a branch head will not apply to it.
+    # `base_branch` still matters when this is set: it is what the pull request targets.
+    base_commit: str | None = Field(default=None, max_length=40)
 
     @field_validator("repo_url")
     @classmethod
@@ -57,6 +61,22 @@ class RunCreate(BaseModel):
         if v is not None and (why := unavailable(v)) is not None:
             raise ValueError(why)
         return v
+
+    @field_validator("base_commit")
+    @classmethod
+    def a_commit(cls, v: str | None) -> str | None:
+        """Hex, 7 to 40 characters. Not a branch name and not `HEAD`.
+
+        Accepting a ref here would make `base_branch` and `base_commit` two ways to say
+        the same thing that disagree, and the abbreviation floor is git's own: shorter
+        than seven is ambiguous in any repository worth running this against.
+        """
+        if v is None:
+            return None
+        commit = v.strip().lower()
+        if not 7 <= len(commit) <= 40 or not all(c in "0123456789abcdef" for c in commit):
+            raise ValueError("base_commit must be a hex commit sha of 7 to 40 characters")
+        return commit
 
     @field_validator("upstream")
     @classmethod

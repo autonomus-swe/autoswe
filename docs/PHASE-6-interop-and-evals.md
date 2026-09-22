@@ -71,18 +71,30 @@ is recorded as such rather than ticked from the code that would make it work.
       drives — and `docs/evals.md` §2 is how to add real ones against repositories you
       actually maintain.
 - [~] `evals/swebench.py --limit 50` produces `predictions.jsonl` and the official harness score; the number is in README §14 and the X/Y in §15 are filled.
-      `predictions.jsonl` is produced; the score is not, and should not be yet. Each
-      instance pins a `base_commit` and `RunCreate` takes a branch, so every run would
-      start from the branch head and a patch would fail to apply for a reason the score
-      cannot show. `--require-sha` refuses to run rather than producing a number nobody
-      can attribute. Extending `RunCreate` to accept a SHA is the blocker, and it is named
-      in this plan's own step 6.4.
+      **The blocker is gone.** `RunCreate.base_commit` was the reason this file refused to
+      produce predictions at all: each instance pins a commit, `RunCreate` took only a
+      branch, and a patch produced against a branch head does not apply to the instance's
+      base — so the harness would have reported failures caused by the wrong starting
+      point and the number would have been unattributable.
+
+      Runs now start at the pinned commit (`tests/integration/test_setup_base_commit.py`),
+      and `--require-sha` is gone with the reason for it. What remains is a fork, a key
+      and fifty instances at a few dollars each, which is spend rather than code.
 - [~] Ablations recorded: with/without Debugger, with/without repo map, Opus 5 vs Sonnet 5 as Coder, Claude vs Qwen3-Coder, effort `high` vs `xhigh`.
-      `evals/report.compare` renders the table and `--results` names an arm, so the
-      mechanism exists. Two of the five arms are runnable here — `REPO_MAP_VERSION=v1`
-      and `max_debug_attempts=0`. The other three compare model tiers a single-model
-      deployment cannot distinguish, and running them would produce two identical columns
-      with different labels. `docs/evals.md` §5 says which is which.
+      `--ablate no-debugger` is a real arm now rather than a setting somebody could pass:
+      `Budget.max_debug_attempts` had been in the contract since Phase 3 and **nothing read
+      it** — the state machine used a module constant — so the field decided nothing. It
+      does now, and a run with a ceiling of zero sends its first failing test straight to
+      ESCALATE.
+
+      The repo-map arm is `REPO_MAP_VERSION=v1` on the worker; it is a process setting
+      rather than a run field, so it is run by restarting the worker rather than by a
+      flag. `no-repomap` is deliberately **not** in `--ablate`: a run flag that quietly did
+      nothing would produce two identical columns with different labels.
+
+      The other three compare model tiers a single-model deployment cannot distinguish.
+      `docs/evals.md` §5 tabulates which is which, and says to name the arms you ran —
+      a comparison that silently omits three of five reads as though they were tried.
 - [x] `autoswe --help` lists `run`, `watch`, `status`, `artifacts`, `answer`, `approve`, `reject`, `cancel`, `eval`; `--json` works on all read commands.
       All nine, plus `mcp`, `list`, `version` and `config`. `--json` is on every read
       command rather than most of them, which
@@ -392,6 +404,35 @@ before ASK, so a forbidden command is never offered for approval) now has
 give the *same* services stricter settings without a second copy of `api` and `worker`,
 and two copies is how the one nobody looks at drifts. `docs/security.md` §10 carries the
 list.
+
+---
+
+## 3.10 After the phase: the one blocker that was code
+
+Everything left on the `[~]` criteria after step 6.6 needed a person, a GPU, or money —
+except one, and this closed it. `RunCreate.base_commit` (migration 0007) lets a run start
+from a commit rather than a branch head, which is what SWE-bench pins per instance and what
+`evals/swebench.py` was refusing to run without.
+
+Two other things came out of it, both the same defect class this phase kept finding:
+
+**`Budget.max_debug_attempts` decided nothing.** It has been in the contract since Phase 3
+and the state machine read a module constant instead — a declared field with no effect,
+exactly like `runs.provider` before step 6.3 and `unattended` before 6.1. Wiring it in
+makes the `no-debugger` ablation arm expressible, and the default is unchanged because
+`Budget()` already declared the same number the constant held.
+
+**The worktree is now created at the resolved commit rather than at the branch.** They name
+the same thing a moment apart, and a branch that moved in between would give the run a
+worktree at one commit and a `base_sha` recording another — a diff computed against a base
+the run never had.
+
+**A mutation survived the first pass**, and it was the familiar shape: `starting_commit`
+was tested in isolation, so replacing the *call* in `setup_node` with the old
+branch-head lookup left the suite green. That is the same failure that dropped `upstream`
+from the pull-request node in step 6.6. `tests/integration/test_setup_base_commit.py` drives
+the real node against a real repository and a real lock, and stops it at the first thing
+that needs Docker.
 
 ---
 

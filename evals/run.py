@@ -42,6 +42,17 @@ from observability.logging import get_logger
 
 log = get_logger(__name__)
 
+# Arms that are a property of the *run*, so one suite can be compared against another
+# without restarting anything. Each maps to a field the control plane already takes.
+#
+# `no-repomap` is deliberately absent: the repo map version is a worker process setting
+# (`REPO_MAP_VERSION=v1`), not a run field, so that arm is run by restarting the worker.
+# Listing it here and quietly ignoring it would produce two identical columns with
+# different labels, which is worse than not offering it.
+ABLATIONS: dict[str, dict[str, Any]] = {
+    "no-debugger": {"budget": {"max_debug_attempts": 0}},
+}
+
 POLL_S = 5.0
 TERMINAL = frozenset({"done", "failed", "cancelled"})
 VERIFY_TIMEOUT_S = 900
@@ -72,6 +83,9 @@ class Row:
     cost_usd: float = 0.0
     pr_url: str | None = None
     provider: str = ""
+    # The arm this row belongs to. Recorded rather than inferred, so `report.compare`
+    # groups by a fact about how the run was made instead of a guess.
+    ablation: str = ""
     error: str | None = None
 
 
@@ -87,7 +101,9 @@ class Plane(Protocol):
     orchestrator.
     """
 
-    async def create(self, task: Task, provider: str | None) -> str: ...
+    async def create(
+        self, task: Task, provider: str | None, ablation: str | None = None
+    ) -> str: ...
 
     async def summary(self, run_id: str) -> dict[str, Any]: ...
 
@@ -109,7 +125,7 @@ class Client:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def create(self, task: Task, provider: str | None) -> str:
+    async def create(self, task: Task, provider: str | None, ablation: str | None = None) -> str:
         body: dict[str, Any] = {
             "repo_url": task.repo,
             "goal": task.goal,
@@ -121,6 +137,12 @@ class Client:
         }
         if provider:
             body["provider"] = provider
+        if task.base_commit:
+            body["base_commit"] = task.base_commit
+        for name, value in ABLATIONS.get(ablation or "", {}).items():
+            # Merged rather than replaced: `budget` already carries the task's ceiling,
+            # and an arm that reset it would be changing two things and reporting one.
+            body[name] = {**body.get(name, {}), **value} if isinstance(value, dict) else value
         response = await self._client.post("/runs", json=body)
         response.raise_for_status()
         return str(response.json()["run_id"])
@@ -224,19 +246,30 @@ async def checkout_and_verify(task: Task, summary: dict[str, Any]) -> tuple[int,
 
 
 async def run_task(
-    client: Plane, task: Task, *, verifier: Verifier, provider: str | None = None
+    client: Plane,
+    task: Task,
+    *,
+    verifier: Verifier,
+    provider: str | None = None,
+    ablation: str | None = None,
 ) -> Row:
     """One task end to end: start it, wait for it, verify it, and say what happened."""
     started = time.monotonic()
-    row = Row(task_id=task.id, suite=task.suite, tags=list(task.tags), provider=provider or "")
+    row = Row(
+        task_id=task.id,
+        suite=task.suite,
+        tags=list(task.tags),
+        provider=provider or "",
+        ablation=ablation or "",
+    )
     try:
-        run_id = await client.create(task, provider)
+        run_id = await client.create(task, provider, ablation)
         row.run_id = run_id
         row.status = await wait(client, run_id, task.timeout_s)
 
         measured = measure(await client.detail(run_id))
         for name, value in asdict(measured).items():
-            if name not in ("task_id", "suite", "tags", "provider", "status"):
+            if name not in ("task_id", "suite", "tags", "provider", "ablation", "status"):
                 setattr(row, name, value)
         row.status = row.status or measured.status
 
@@ -267,6 +300,7 @@ async def run_suite(
     key: str,
     concurrency: int = 1,
     provider: str | None = None,
+    ablation: str | None = None,
     verifier: Verifier | None = None,
     results_name: str | None = None,
 ) -> list[Row]:
@@ -284,7 +318,9 @@ async def run_suite(
     async def one(task: Task) -> Row:
         async with limit:
             log.info("eval_task_started", task=task.id, suite=suite.name)
-            row = await run_task(client, task, verifier=verify, provider=provider)
+            row = await run_task(
+                client, task, verifier=verify, provider=provider, ablation=ablation
+            )
             record.append(name, asdict(row))
             log.info("eval_task_finished", task=task.id, resolved=row.resolved, status=row.status)
             return row
@@ -308,6 +344,12 @@ async def main() -> int:
     parser.add_argument("--tags", default="", help="comma-separated; runs only tasks with one")
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--provider", default=None, help="override the run provider")
+    parser.add_argument(
+        "--ablate",
+        default=None,
+        choices=sorted(ABLATIONS),
+        help="run one arm of the ablation; recorded on every row",
+    )
     parser.add_argument("--api", default=os.environ.get("AUTOSWE_API", "http://127.0.0.1:8000"))
     parser.add_argument("--results", default=None, help="results file stem")
     args = parser.parse_args()
@@ -329,6 +371,7 @@ async def main() -> int:
         key=key,
         concurrency=args.concurrency,
         provider=args.provider,
+        ablation=args.ablate,
         results_name=args.results,
     )
     print(report.render([asdict(r) for r in rows], title=f"Suite: {suite.name}"))

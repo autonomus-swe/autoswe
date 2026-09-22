@@ -459,3 +459,53 @@ async def test_an_upstream_that_is_a_url_is_refused_before_anything_is_pushed(
         res = await client.post("/runs", json=body, headers={"X-API-Key": KEY})
     assert res.status_code == 422 and "owner/repo" in res.text
     assert arq.jobs == []
+
+
+async def test_a_run_can_pin_the_commit_it_starts_from(engine: AsyncEngine) -> None:
+    """A benchmark instance pins one, and a patch produced against a branch head does not
+    apply to it. The branch is still recorded, because it is what the PR targets."""
+    from storage import repo as db
+    from storage.db import session
+
+    body = {
+        "repo_url": "https://github.com/me/project",
+        "goal": "Implement subtract(a, b)",
+        "base_branch": "develop",
+        "base_commit": "A" * 40,
+    }
+    async with api_app(engine) as (client, _arq):
+        res = await client.post("/runs", json=body, headers={"X-API-Key": KEY})
+    assert res.status_code == 202
+
+    async with session(engine) as s:
+        row = await db.get_run(s, UUID(res.json()["run_id"]))
+    assert row is not None
+    assert row.base_commit == "a" * 40  # normalised
+    assert row.base_branch == "develop"
+    assert row.base_sha is None  # SETUP resolves that; this is what was asked for
+
+
+async def test_an_ordinary_run_pins_nothing(engine: AsyncEngine) -> None:
+    from storage import repo as db
+    from storage.db import session
+
+    body = {"repo_url": "https://github.com/me/project", "goal": "Implement subtract(a, b)"}
+    async with api_app(engine) as (client, _arq):
+        res = await client.post("/runs", json=body, headers={"X-API-Key": KEY})
+    async with session(engine) as s:
+        row = await db.get_run(s, UUID(res.json()["run_id"]))
+    assert row is not None and row.base_commit is None
+
+
+async def test_a_branch_name_in_base_commit_is_refused(engine: AsyncEngine) -> None:
+    """Otherwise `base_branch` and `base_commit` are two ways to say the same thing, and
+    they eventually disagree."""
+    body = {
+        "repo_url": "https://github.com/me/project",
+        "goal": "Implement subtract(a, b)",
+        "base_commit": "main",
+    }
+    async with api_app(engine) as (client, arq):
+        res = await client.post("/runs", json=body, headers={"X-API-Key": KEY})
+    assert res.status_code == 422 and "hex commit sha" in res.text
+    assert arq.jobs == []

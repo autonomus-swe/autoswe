@@ -346,6 +346,44 @@ def test_a_failing_test_escalates_once_attempts_are_exhausted() -> None:
     assert s.escalation_reason == "debug_attempts_exhausted"
 
 
+def test_the_ceiling_is_the_runs_budget_not_a_module_constant() -> None:
+    """`Budget.max_debug_attempts` had been in the contract since Phase 3 and nothing read
+    it — a declared field that decided nothing, which is the same defect as a recorded
+    provider the worker ignored.
+
+    It is also what makes the phase's `no-debugger` ablation expressible: a run with a
+    ceiling of zero sends its first failing test straight to ESCALATE, which is what
+    "without the Debugger" means for this state machine.
+    """
+    zero = state(
+        phase=Phase.TEST,
+        tasks=graph("t1"),
+        current_task_id="t1",
+        attempts={},  # nothing tried yet
+        budget=Budget(max_debug_attempts=0),
+        last_test_report=report(False),
+    )
+    assert transition(zero) == Phase.ESCALATE
+    assert zero.escalation_reason == "debug_attempts_exhausted"
+
+    # And the other direction: a run allowed more keeps going where the default would stop.
+    generous = state(
+        phase=Phase.TEST,
+        tasks=graph("t1"),
+        current_task_id="t1",
+        attempts={"t1": MAX_DEBUG_ATTEMPTS},
+        budget=Budget(max_debug_attempts=MAX_DEBUG_ATTEMPTS + 2),
+        last_test_report=report(False),
+    )
+    assert transition(generous) == Phase.DEBUG
+
+
+def test_the_default_budget_matches_the_constant() -> None:
+    """The two are separate now, and a default that drifted from the constant would change
+    every run's behaviour without a line of the state machine changing."""
+    assert Budget().max_debug_attempts == MAX_DEBUG_ATTEMPTS
+
+
 def test_the_same_signature_twice_asks_for_an_alternative_strategy() -> None:
     """Without this the Debugger forms the same theory three times and calls it three tries."""
     s = state(

@@ -59,6 +59,9 @@ class Task:
     repo: str
     goal: str
     base: str = "main"
+    # Start from this commit rather than the head of `base`. A benchmark instance pins
+    # one; an ordinary task does not care.
+    base_commit: str | None = None
     verify: Verify | None = None
     tags: tuple[str, ...] = ()
     budget_usd: float = DEFAULT_BUDGET_USD
@@ -131,6 +134,7 @@ def _one(path: Path, environ: Mapping[str, str], suite: str) -> Task:
         repo=repo,
         goal=goal,
         base=str(raw.get("base") or "main"),
+        base_commit=(str(raw["base_commit"]) if raw.get("base_commit") else None),
         verify=_verify(raw.get("verify"), where),
         tags=tuple(_str_list(raw.get("tags"), f"{where}: `tags`")),
         budget_usd=float(raw.get("budget_usd", DEFAULT_BUDGET_USD)),

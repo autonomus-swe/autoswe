@@ -17,13 +17,17 @@ reconstruction of the environment rather than against the benchmark.
 artifact the run wrote becomes `model_patch`. Nothing here reaches into the orchestrator,
 for the same reason `evals/run.py` does not.
 
-## `base_commit` is not yet honoured
+## Each run starts at the instance's pinned commit
 
-Each instance pins a commit, and `RunCreate` takes a branch. The plan says to extend it to
-accept a SHA; until it does, a run starts from the branch head and a patch may not apply
-to the instance's base. `--require-sha` refuses to produce predictions rather than writing
-a file that will score badly for a reason the score cannot show — a low number nobody can
-attribute is worse than no number.
+`RunCreate.base_commit` is what makes a score meaningful. Without it every run started
+from the head of a branch, and a patch produced there does not apply to the instance's
+base — so the harness would report failures caused by the wrong starting point and the
+number would be unattributable. That was the reason this file refused to produce
+predictions at all until the control plane could take a commit.
+
+The mirror fetches branch heads, so an instance whose `base_commit` is reachable from no
+branch fails in SETUP with a message saying exactly that. Its prediction is an empty
+patch, which is the honest answer: not solved, and the row says why.
 """
 
 from __future__ import annotations
@@ -70,6 +74,7 @@ class Instance:
             repo=self.repo_url(fork_owner),
             goal=self.problem_statement.strip()[:4000],
             base="main",
+            base_commit=self.base_commit,
             verify=None,  # the official harness decides; see the module docstring
             tags=("swebench",),
             budget_usd=budget_usd,
@@ -200,11 +205,6 @@ async def main() -> int:
     parser.add_argument("--api", default=os.environ.get("AUTOSWE_API", "http://127.0.0.1:8000"))
     parser.add_argument("--budget-usd", type=float, default=DEFAULT_BUDGET_USD)
     parser.add_argument("--out", type=Path, default=Path("evals/results/predictions.jsonl"))
-    parser.add_argument(
-        "--require-sha",
-        action="store_true",
-        help="refuse to run until RunCreate accepts a base commit (see the module docstring)",
-    )
     args = parser.parse_args()
 
     configure_logging("INFO")
@@ -212,14 +212,6 @@ async def main() -> int:
     if not key:
         print("error: set AUTOSWE_API_KEY")
         return 2
-    if args.require_sha:
-        print(
-            "error: RunCreate does not accept a base commit yet, so every instance would "
-            "start from its branch head rather than its pinned base. Re-run without "
-            "--require-sha to produce predictions anyway, and say so beside the score."
-        )
-        return 2
-
     instances = load_instances(args.limit)
     predictions = await predict(
         instances,
