@@ -87,6 +87,58 @@ def tools_for(role: str) -> list[BaseTool]:
     return [REGISTRY[name] for name in ROLE_TOOLS[role]]
 
 
-for _role in READ_ONLY_ROLES:  # enforced by the tool layer, not the prompt (README §4.3)
-    _bad = [t.name for t in tools_for(_role) if t.mutating]
-    assert not _bad, f"read-only role {_role} has mutating tools: {_bad}"
+def _check_read_only(role: str) -> None:
+    """A read-only role has no mutating tools. Enforced by the tool layer, not the prompt
+    (README §4.3)."""
+    bad = [t.name for t in tools_for(role) if t.mutating]
+    assert not bad, f"read-only role {role} has mutating tools: {bad}"
+
+
+def register(tools: list[tuple[BaseTool, list[str]]]) -> None:
+    """Add tools discovered at runtime — mounted MCP servers — to the registry.
+
+    Registration is what makes a mounted tool subject to the harness rather than beside
+    it. `orchestrator/hooks.py` looks a tool up here by name to read `requires_approval`
+    and `mutating` off it; a tool the registry has never heard of is a `None` in that
+    lookup, and a `None` is approved by nobody and audited as nothing.
+
+    The read-only-role rule is re-checked over the result, not just over the additions. A
+    mutating tool added to `analyzer` fails here even if it slipped past
+    `mcp_bridge.config`, and it fails at startup rather than the first time an analyzer
+    decides to use it.
+
+    Rejections leave the registry as it was. A half-applied mount is worse than none:
+    the process would carry some of the tools the configuration named and none of the
+    reason why, which is the state hardest to diagnose from a log.
+
+    Both containers are mutated **in place**, and that is load-bearing rather than a
+    style. Each agent holds its role's list by reference — `tool_names: ClassVar[list[str]]
+    = ROLE_TOOLS["coder"]`, bound at import — so an append reaches agents that were
+    defined before this ran, and rebinding `ROLE_TOOLS[role]` to a new list would reach
+    none of them. `tests/unit/test_mcp_registry.py` pins that a mounted tool arrives at
+    its agent, because the failure is silent: the configuration parses, the server
+    connects, the tool registers, and no model is ever offered it.
+    """
+    if clash := [t.name for t, _ in tools if t.name in REGISTRY]:
+        raise ValueError(f"tools already registered: {clash}")
+    if unknown := sorted({r for _, roles in tools for r in roles if r not in ROLE_TOOLS}):
+        raise ValueError(f"unknown roles: {unknown}")
+
+    added_names = {t.name for t, _ in tools}
+    for tool, roles in tools:
+        REGISTRY[tool.name] = tool
+        for role in roles:
+            ROLE_TOOLS[role].append(tool.name)
+    try:
+        for role in READ_ONLY_ROLES:
+            _check_read_only(role)
+    except AssertionError:
+        for name in added_names:
+            REGISTRY.pop(name, None)
+        for names in ROLE_TOOLS.values():
+            names[:] = [n for n in names if n not in added_names]
+        raise
+
+
+for _role in READ_ONLY_ROLES:
+    _check_read_only(_role)

@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — Phase 6 step 6.2: external MCP servers as agent tools
+
+A GitHub server that can read issues, a Postgres server that can run a read-only query:
+tools the agents did not have to be written to know about. `docs/mcp.md` Part B.
+
+Added
+- `mcp_bridge/config.py` and `mcp_servers.yaml.example`. Every field is a policy the
+  harness enforces — `allow` is the boundary, `roles` decides who gets them, `mutating`
+  drives approval, `env` is everything the child process receives. Read from the file and
+  never from the server's own annotations: a server that declared its write tool read-only
+  would otherwise be disarming its own approval gate.
+- `mcp_bridge/client.py`: one session per server per worker process, each in a supervisor
+  task that owns its cancel scope, shared across runs, replaced when it dies.
+- `tools.registry.register`, so a mounted tool is subject to the harness rather than
+  beside it. `orchestrator/hooks.py` reads `requires_approval` out of the registry; a tool
+  that never got there is a `None` in that lookup, and a `None` is approved by nobody.
+  A rejected registration is rolled back whole.
+
+Fixed
+- A connection whose session had died stayed registered with its `ready` future already
+  resolved, so every later call found it, found no client, and failed identically — a
+  worker needing a restart because a child process crashed once.
+
+Notes
+- The Phase 6 plan's own example routes a mutating GitHub tool to `planner`, `analyzer`
+  and `pr_writer`, all read-only roles. That configuration is refused by the rule the same
+  section states two paragraphs later; `mcp_servers.yaml.example` gives it to `coder` and
+  `debugger`. `${VAR}` expands in `env` only, not in `command` — the plan put a database
+  DSN in argv, where `ps` shows it to everyone on the box.
+
 ## Unreleased — Phase 6 step 6.1: the control plane as an MCP server
 
 An editor can drive a run: start it, wait for it, answer its questions, approve the tool
