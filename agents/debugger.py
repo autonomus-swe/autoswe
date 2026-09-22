@@ -137,7 +137,17 @@ class DebuggerAgent(Agent):
             ),
             hooks,
             extra_tools=[hypothesis_tool, result_tool],
-            must_call=result_tool.name,
+            # The hypothesis, not the result — `must_call` takes one tool and this step
+            # has two, so it has to be the one whose absence is fatal. Twenty lines below,
+            # a missing hypothesis raises and a missing result is explicitly survivable;
+            # enforcing the result therefore guarded the outcome the step can live without
+            # and left the one that kills it to chance.
+            #
+            # Measured on a Django scale run: the loop forced `submit_result` twice,
+            # succeeded both times, and the step still died with "debugger did not submit
+            # a hypothesis". Every reminder and the forced call were spent on the wrong
+            # tool.
+            must_call=hypothesis_tool.name,
         )
         hypothesis = ctx.submitted.get(HYPOTHESIS_KEY)
         if not isinstance(hypothesis, DebugHypothesis):
