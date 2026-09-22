@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased — Phase 6 step 6.4: the evaluation harness
+
+Added
+- `evals/suite.py`, `evals/run.py`, `evals/report.py`, `evals/judge.py`,
+  `evals/swebench.py`, three shipped tasks in `evals/tasks/private/`, and
+  `docs/evals.md`.
+- `autoswe eval` and `autoswe mcp`; `make eval` and `make eval-report`.
+- `cache_read_tokens`, `cache_write_tokens` and `cache_hit_rate` on
+  `GET /runs/{id}/detail`. The run-level cache hit rate is the number Phase 5 leads with
+  and it could not be read through the API at all, so the harness would have had to reach
+  past the control plane into the database for it.
+- `core/envsubst.py`: `${VAR}` expansion with a missing variable as an error, now shared
+  by `mcp_servers.yaml` and the eval tasks rather than copied.
+
+Notes
+- "Resolved" means a command exited zero on a checkout of the branch the agent pushed. A
+  task with no verify command is `resolved: null`, counted in its own column and excluded
+  from the denominator — never folded into either, which is how a suite starts reporting a
+  percentage of a denominator that quietly changed.
+- Three tasks ship, not the twenty the plan asks for. The remaining twenty-seven would be
+  invented to fill a count, against fixtures written to make them passable.
+- The judge does not use the Anthropic Batches API, because there is no Anthropic
+  provider. It also says plainly that a judge on the worker's own model is not independent.
+- `evals/swebench.py` produces patches and does not score them; scoring is the official
+  harness's job. `--require-sha` refuses to run until `RunCreate` accepts a base commit,
+  rather than producing a low number nobody can attribute.
+
 ## Unreleased — Phase 6 step 6.3: a run chooses its provider
 
 Added

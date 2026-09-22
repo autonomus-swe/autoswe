@@ -121,9 +121,15 @@ async def test_run_detail_carries_everything_the_console_draws(engine: AsyncEngi
         # a fresh run has nothing yet, and every list must still be present and empty
         assert detail["tasks"] == detail["steps"] == detail["events"] == []
         assert detail["tool_calls"] == detail["llm_calls"] == []
+        # Pinned as a whole dict rather than key by key: the console and the eval
+        # harness both read this block, and a key that quietly disappears is a chart that
+        # renders as zero rather than an error anyone sees.
         assert detail["totals"] == {
             "input_tokens": 0,
             "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "cache_hit_rate": 0,
             "cost_usd": 0,
             "tool_calls": 0,
             "llm_calls": 0,
@@ -357,3 +363,46 @@ async def test_metrics_is_not_in_the_public_schema(engine: AsyncEngine) -> None:
         schema = (await client.get("/openapi.json")).json()
 
         assert "/metrics" not in schema["paths"]
+
+
+async def test_run_detail_carries_the_cache_totals_the_eval_harness_needs(
+    engine: AsyncEngine,
+) -> None:
+    """A run-level cache hit rate is the number Phase 5 leads with, and until now it could
+    not be read through the API at all — the eval harness would have had to reach past the
+    control plane into the database to compute it, which is the one thing that harness
+    must not do."""
+    from contracts import Budget, Usage
+    from storage import repo as db
+    from storage.db import session
+
+    async with session(engine) as s:
+        run_id = await db.create_run(
+            s,
+            repo_url="https://github.com/acme/demo",
+            base_branch="main",
+            goal="do the thing",
+            budget=Budget(),
+        )
+        step_id = await db.start_step(s, run_id=run_id, task_id=None, agent="coder", phase="code")
+        await db.insert_llm_call(
+            s,
+            step_id=step_id,
+            provider="openai_compat",
+            model="m",
+            effort=None,
+            usage=Usage(input_tokens=1000, output_tokens=100, cache_read_tokens=3000),
+            latency_ms=10,
+            stop_reason="end_turn",
+        )
+
+    async with api_app(engine) as (client, _arq):
+        totals = (await client.get(f"/runs/{run_id}/detail", headers={"X-API-Key": KEY})).json()[
+            "totals"
+        ]
+
+    assert totals["input_tokens"] == 1000
+    assert totals["cache_read_tokens"] == 3000
+    # 3000 / (1000 + 3000). Against input + cache_read rather than every token, because
+    # output tokens were never candidates for a cache hit.
+    assert totals["cache_hit_rate"] == 0.75

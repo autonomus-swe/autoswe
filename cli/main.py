@@ -285,3 +285,63 @@ def artifacts(
         typer.echo(response.text)
     else:
         typer.echo(json.dumps(response.json(), indent=2))
+
+
+@app.command()
+def eval(
+    suite: Annotated[str, typer.Option(help="Which suite in evals/tasks/.")] = "private",
+    tags: Annotated[str, typer.Option(help="Comma-separated; runs only tasks with one.")] = "",
+    concurrency: Annotated[int, typer.Option(help="Tasks in flight at once.")] = 1,
+    provider: Annotated[str | None, typer.Option(help="Override the run provider.")] = None,
+    api: Annotated[str, typer.Option(help="Control-plane base URL.")] = DEFAULT_API,
+    key: Annotated[str | None, typer.Option(help="API key (or AUTOSWE_API_KEY).")] = None,
+    results: Annotated[str | None, typer.Option(help="Results file stem.")] = None,
+) -> None:
+    """Run an eval suite and print the table.
+
+    Exits non-zero when anything went unresolved, so this is usable in CI without a
+    wrapper that greps the output. A task with no verify command is unverifiable rather
+    than unresolved and does not fail the command — see `docs/evals.md`.
+    """
+    import asyncio
+    from dataclasses import asdict
+
+    from evals import report
+    from evals.run import run_suite
+    from evals.suite import load
+
+    token = key or os.environ.get("AUTOSWE_API_KEY", "")
+    if not token:
+        typer.echo("error: pass --key or set AUTOSWE_API_KEY", err=True)
+        raise typer.Exit(2)
+
+    chosen = load(suite).tagged(tuple(t for t in tags.split(",") if t))
+    if not chosen.tasks:
+        typer.echo(f"error: no tasks in suite {suite!r} matching {tags!r}", err=True)
+        raise typer.Exit(2)
+
+    rows = asyncio.run(
+        run_suite(
+            chosen,
+            api=api,
+            key=token,
+            concurrency=concurrency,
+            provider=provider,
+            results_name=results,
+        )
+    )
+    typer.echo(report.render([asdict(r) for r in rows], title=f"Suite: {chosen.name}"))
+    raise typer.Exit(0 if all(r.resolved is not False for r in rows) else 1)
+
+
+@app.command()
+def mcp() -> None:
+    """Serve the control plane over MCP on stdin and stdout.
+
+    The same thing the `autoswe-mcp` console script does. That one exists separately
+    because an editor's MCP configuration runs a single command and typer prints its own
+    diagnostics to stdout — which on this transport is the protocol.
+    """
+    from cli.mcp import main as serve
+
+    serve()

@@ -34,15 +34,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.envsubst import expand
 from core.errors import ConfigError
 
 DEFAULT_PATH = Path("mcp_servers.yaml")
 TIMEOUT_S = 60
-# Expanded in `env` values only. Not in `command`: an argument is not a place to put a
-# secret — it is visible in `ps` to every user on the box — and the one place the plan
-# wanted it (`${TARGET_DATABASE_URL}` as a Postgres server's argv) is exactly that
-# mistake. Such a server reads its DSN from the environment instead.
-VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+# `${VAR}` (see `core/envsubst.py`) is expanded in `env` values only. Not in `command`: an
+# argument is not a place to put a secret — it is visible in `ps` to every user on the box
+# — and the one place the plan wanted it (`${TARGET_DATABASE_URL}` as a Postgres server's
+# argv) is exactly that mistake. Such a server reads its DSN from the environment instead.
 NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 TRANSPORTS = ("stdio",)
 
@@ -173,22 +173,11 @@ def _env(raw: Any, where: str, environ: dict[str, str]) -> dict[str, str]:
     for key, value in raw.items():
         if not isinstance(key, str) or not isinstance(value, str):
             raise ConfigError(f"{where}: `env` keys and values must be strings")
-        out[key] = _expand(value, where, key, environ)
+        # A server started with an empty token comes up, answers `list_tools`, and fails
+        # on its first real call — somewhere that names neither this file nor the
+        # variable. `expand` refuses instead.
+        out[key] = expand(value, environ, where=f"{where}: `env.{key}`")
     return out
-
-
-def _expand(value: str, where: str, key: str, environ: dict[str, str]) -> str:
-    def replace(m: re.Match[str]) -> str:
-        var = m.group(1)
-        if var not in environ or not environ[var]:
-            raise ConfigError(
-                f"{where}: `env.{key}` references ${{{var}}}, which is not set. The server "
-                "would start unauthenticated and fail on its first call, somewhere that "
-                "does not mention this file."
-            )
-        return environ[var]
-
-    return VAR.sub(replace, value)
 
 
 def _str_list(raw: Any, where: str) -> list[str]:

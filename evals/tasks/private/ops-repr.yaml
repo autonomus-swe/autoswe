@@ -1,0 +1,14 @@
+# Small, unambiguous, and verifiable without reading the diff. The point of a task like
+# this in a suite is calibration: if the agent cannot do this one, a failure on a harder
+# task says nothing about the harder task.
+id: ops-repr
+repo: "${AUTOSWE_FIXTURE_REPO}"
+base: main
+goal: >-
+  Add a dataclass Point with x and y integer fields to fixture/ops.py, with a __repr__
+  that renders as Point(x=1, y=2), and a unit test for it in tests/test_ops.py.
+verify:
+  command: "uv run pytest -q"
+  expect_exit: 0
+tags: [feature, fixture]
+budget_usd: 3.0
