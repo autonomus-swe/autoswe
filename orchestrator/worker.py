@@ -81,6 +81,31 @@ def start_metrics_server(port: int) -> None:
         log.warning("metrics_server_failed", port=port, error=f"{type(e).__name__}: {e}")
 
 
+async def mount_mcp_servers(ctx: dict[str, Any], settings: Settings) -> None:
+    """Connect to the external MCP servers this deployment configures, and register their
+    tools.
+
+    Once per worker process rather than once per run: the sessions are subprocesses, and
+    starting `npx @modelcontextprotocol/server-github` for every run would add seconds to
+    each and leave a process behind whenever one was cancelled.
+
+    A bad *configuration* stops the worker — it is a file somebody wrote, and a worker that
+    starts anyway would be silently running without the tools that file asked for, or
+    worse, with a mutating tool routed somewhere it should not be. A server that will not
+    *connect* does not: that is the network, and the right response is to run without it.
+    """
+    from mcp_bridge import config as mcp_config
+    from mcp_bridge.client import MCPServers
+    from tools import registry
+
+    configs = mcp_config.load(settings.mcp_servers_file)
+    if not configs:
+        return
+    servers = MCPServers(configs)
+    ctx["mcp_servers"] = servers
+    registry.register(await servers.start())
+
+
 async def configure_worker(ctx: dict[str, Any]) -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -90,12 +115,20 @@ async def configure_worker(ctx: dict[str, Any]) -> None:
     apply_ca_bundle(settings)
     configure_tracing("autoswe-worker")
     start_metrics_server(settings.metrics_port)
+    await mount_mcp_servers(ctx, settings)
     log.info(
         "worker_started",
         provider=settings.llm_provider,
         model=settings.llm_model,
         sandbox_image=settings.sandbox_image,
     )
+
+
+async def shutdown_worker(ctx: dict[str, Any]) -> None:
+    """Close the MCP sessions, which are child processes this worker started."""
+    servers = ctx.get("mcp_servers")
+    if servers is not None:
+        await servers.aclose()
 
 
 class _RedisOnlySettings(BaseSettings):
@@ -127,3 +160,4 @@ class WorkerSettings:
     max_tries = 3  # a retry resumes from the last checkpoint
     retry_jobs = True
     on_startup = configure_worker
+    on_shutdown = shutdown_worker

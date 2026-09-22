@@ -20,3 +20,8 @@ evals/results/*.tmp
 dist/
 build/
 *.egg-info/
+
+# Which external MCP servers this deployment mounts. Per-deployment, and its `env`
+# block names the variables a mounted server is handed. `mcp_servers.yaml.example` is
+# the version that is committed.
+mcp_servers.yaml

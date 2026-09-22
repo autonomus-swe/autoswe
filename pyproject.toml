@@ -53,6 +53,8 @@ worker = [
     "PyGithub>=2.4",
     "anthropic>=0.116",
     "openai>=1.50",
+    "pyyaml>=6.0",
+    "types-pyyaml>=6.0",
 ]
 
 [dependency-groups]

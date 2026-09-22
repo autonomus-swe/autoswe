@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     # the system trust store but not in certifi's bundle, so git works and Python's
     # requests does not. Point this at the system bundle to make both agree.
     ca_bundle: Path | None = None
+    # External MCP servers to mount as tools. Absent file means none, which is the
+    # default: mounting somebody else's server into a run is opt-in.
+    mcp_servers_file: Path = Path("mcp_servers.yaml")
     worktrees_dir: Path = Path("/var/agent/worktrees")
     repos_dir: Path = Path("/var/agent/repos")
     # Which repo map the reading agents get. Phase 5 step 5.10 prescribes an ablation —
@@ -193,6 +196,7 @@ class Settings(BaseSettings):
             "anthropic_api_key": "set" if self.anthropic_api_key else "unset",
             "github_token": "set" if self.github_token else "unset",
             "ca_bundle": str(self.ca_bundle) if self.ca_bundle else "certifi default",
+            "mcp_servers_file": str(self.mcp_servers_file),
             "worktrees_dir": str(self.worktrees_dir),
             "repos_dir": str(self.repos_dir),
             "sandbox_image": self.sandbox_image,

@@ -1,0 +1,56 @@
+# External MCP servers mounted as agent tools.
+#
+# Copy to `mcp_servers.yaml` to enable. No file means no external servers, which is the
+# default — mounting somebody else's server into a run is opt-in.
+#
+# Every field is a policy the harness enforces, not a hint to the model:
+#
+#   allow     the only tools that are wrapped at all. Nothing else is reachable, whatever
+#             the server offers.
+#   roles     which agents get them. A read-only role (analyzer, planner, review,
+#             review_pre, security, pr_writer) may not be given a mutating tool; the
+#             worker refuses to start if one is.
+#   mutating  which of them change something. This drives approval: a mutating tool pauses
+#             the run and asks a human. It is read from here and never from the server's
+#             own annotations — a server that declared its write tool read-only would
+#             otherwise be disarming its own gate.
+#   env       everything the child gets beyond the MCP SDK's safe-list (HOME, LOGNAME,
+#             PATH, SHELL, TERM, USER). An MCP stdio server is a subprocess; started with
+#             the worker's environment it would inherit the model key and the database DSN
+#             whether it needed them or not. `${VAR}` is resolved from the worker's
+#             environment at mount time, and a missing one is an error, not an empty
+#             string.
+#
+# Tools are named `mcp_<server>_<tool>` locally, so a server exposing `read_file` cannot
+# shadow ours.
+
+servers:
+  github:
+    transport: stdio                # the only transport this build mounts
+    command: ["npx", "-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
+    roles: [coder, debugger]
+    allow:
+      - get_issue
+      - list_issues
+      - list_pull_requests
+      - get_pull_request
+      - add_issue_comment
+    mutating: [add_issue_comment]   # pauses the run for approval
+
+  # A reader for the target application's database, for an Analyzer working out what a
+  # schema actually looks like rather than what the migrations suggest.
+  #
+  # The DSN is in `env`, not in `command`. The plan put it in argv; an argument is visible
+  # in `ps` to every user on the box, which is not where a database password goes. Use a
+  # server that reads its connection string from the environment.
+  postgres:
+    transport: stdio
+    command: ["npx", "-y", "@modelcontextprotocol/server-postgres"]
+    env:
+      DATABASE_URI: "${TARGET_DATABASE_URL}"
+    roles: [analyzer]
+    allow: [query]
+    read_only: true
+    timeout_s: 30

@@ -34,7 +34,13 @@ is recorded as such rather than ticked from the code that would make it work.
       process serves MCP on its pipes, and nothing corrupts stdout. What remains is a
       person in Claude Code with a worker running and a GitHub token — `docs/mcp.md` §2 is
       the script. Ticking this from passing tests would be claiming a result nobody saw.
-- [ ] The Analyzer can call a mounted read-only Postgres MCP tool, and a mutating GitHub MCP tool pauses the run for approval (integration tests with a stub MCP server).
+- [x] The Analyzer can call a mounted read-only Postgres MCP tool, and a mutating GitHub MCP tool pauses the run for approval (integration tests with a stub MCP server).
+      Both halves in `tests/integration/test_mcp_client.py`, against a stub MCP server
+      running as a real subprocess. The approval half is asserted through
+      `OrchestratorHooks.before_tool` rather than by reading `requires_approval` off the
+      tool: a flag nothing consults is not a gate. The run parks, the event carries the
+      tool's name and its arguments, and an approval lets it through while a rejection
+      returns the reason and never reaches the server.
 - [ ] `POST /runs {provider: "openai_compat"}` completes the M1 fixture end to end on Qwen3-Coder via vLLM with no Anthropic call (`llm_calls.provider` all `openai_compat`).
 - [ ] `evals/run.py --suite private` runs the 20–30 task suite and writes per-task resolved/attempts/rounds/cost/cache-hit; `evals/report.py` renders the table.
 - [ ] `evals/swebench.py --limit 50` produces `predictions.jsonl` and the official harness score; the number is in README §14 and the X/Y in §15 are filled.
@@ -218,6 +224,33 @@ Then `mcp_bridge/server.py` (13 tools, one resource template), `cli/mcp.py` with
    async pytest fixture — anyio refuses to leave a cancel scope from a task that did not
    enter it. It broke *teardown only*, so all 26 existing tests passed and all 26 reported
    errors. `tests/integration/conftest.py::api_app` is the fix.
+
+---
+
+## 3.6 What step 6.2 actually built
+
+`mcp_bridge/config.py` (the file and its rejections), `mcp_bridge/client.py` (sessions,
+wrapping, reconnection), `tools/registry.register` (dynamic registration), and the mount
+in `orchestrator/worker.py`. `mcp_servers.yaml.example` is the shipped configuration, and
+a unit test loads it so the documentation cannot drift out of being valid.
+
+**A contradiction in this plan.** §3 step 6.2's own YAML gives the GitHub server
+`roles: [planner, analyzer, pr_writer]` alongside `mutating: [add_issue_comment]`. All
+three are read-only roles, so that configuration is refused by the rule the same section
+states two paragraphs later — "mounting a mutating MCP tool into `analyzer` fails at
+startup". The example here gives it to `coder` and `debugger`, the roles that may act.
+`tests/unit/test_mcp_config.py` pins the rejection.
+
+**Two smaller departures.** `${VAR}` expands in `env` values only, not in `command`: the
+plan put a database DSN in argv, and an argument is visible in `ps` to every user on the
+box. And only `stdio` is mounted — an unsupported `transport` is rejected by name rather
+than half-working.
+
+**Found by running it:** a connection whose session had died stayed registered with its
+`ready` future already resolved, so every later call found it, found no client, and failed
+identically. A worker would have needed restarting because a child process crashed once.
+`_Connection.dead` and the replacement in `_connect` are the fix, and the test that found
+it asserts the *next* call gets a new child rather than the corpse.
 
 ---
 
