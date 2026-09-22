@@ -26,6 +26,11 @@ class RunCreate(BaseModel):
     # until now only a seed script could set it, which made every unattended run a run
     # somebody had to start by hand.
     unattended: bool = False
+    # Which provider runs every role in this run. `None` takes the deployment's default.
+    # Validated here rather than left to the worker: a name this build cannot construct is
+    # a 422 the caller can act on, not a run that is accepted, queued, and fails thirty
+    # seconds later in a process they cannot see.
+    provider: str | None = None
 
     @field_validator("repo_url")
     @classmethod
@@ -38,6 +43,15 @@ class RunCreate(BaseModel):
         if len([p for p in parsed.path.split("/") if p]) < 2:
             raise ValueError("repo_url must include owner and repository")
         return v.strip()
+
+    @field_validator("provider")
+    @classmethod
+    def buildable(cls, v: str | None) -> str | None:
+        from gateway.providers import unavailable
+
+        if v is not None and (why := unavailable(v)) is not None:
+            raise ValueError(why)
+        return v
 
     @field_validator("base_branch")
     @classmethod

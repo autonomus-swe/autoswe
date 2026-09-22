@@ -105,11 +105,13 @@ class FakePlane:
         return self.artifact
 
 
-def server(plane: FakePlane, *, worktrees: Path | None = None) -> Any:
+def server(
+    plane: FakePlane, *, worktrees: Path | None = None, provider: str = "openai_compat"
+) -> Any:
     # A stand-in with the same methods rather than a real `ControlPlane`: what these tests
     # check is the conversion on either side of it, so the plane is the seam.
     return build_server(
-        lambda: cast(ControlPlane, plane), provider="openai_compat", worktrees_dir=worktrees
+        lambda: cast(ControlPlane, plane), provider=provider, worktrees_dir=worktrees
     )
 
 
@@ -175,9 +177,46 @@ async def test_create_run_passes_its_arguments_through() -> None:
     assert kwargs["base_branch"] == "develop"
     assert kwargs["unattended"] is True
     assert kwargs["budget"].max_usd == 3.0
-    # Not a tool argument: the worker builds its provider from process settings, so a
-    # per-run choice would be recorded and then ignored.
+    # The deployment's default, since this call named none.
     assert kwargs["provider"] == "openai_compat"
+
+
+async def test_create_run_can_name_a_provider() -> None:
+    """Step 6.3 taught the worker to build from the run's row, so this argument now
+    decides something. Before that it would have been recorded and ignored.
+
+    The server's own default is set to something else on purpose: with both the same, a
+    tool that ignored the argument would still record the right value, and a mutation that
+    did exactly that survived the first version of this.
+    """
+    plane = FakePlane()
+    async with Client(server(plane, provider="anthropic"), raise_exceptions=False) as client:
+        result = await client.call_tool(
+            "create_run",
+            {
+                "repo_url": "https://github.com/acme/demo",
+                "goal": "Implement subtract(a, b)",
+                "run_provider": "openai_compat",
+            },
+        )
+    assert not result.is_error, text_of(result)
+    assert plane.calls[0][2]["provider"] == "openai_compat"
+
+
+async def test_a_provider_this_build_cannot_make_is_refused_before_the_run_exists() -> None:
+    """Otherwise the run is created, queued, and fails in a worker the caller cannot see."""
+    plane = FakePlane()
+    async with Client(server(plane), raise_exceptions=False) as client:
+        result = await client.call_tool(
+            "create_run",
+            {
+                "repo_url": "https://github.com/acme/demo",
+                "goal": "Implement subtract(a, b)",
+                "run_provider": "anthropic",
+            },
+        )
+    assert result.is_error and "openai_compat" in text_of(result)
+    assert plane.calls == []
 
 
 async def test_a_refused_budget_is_reported_not_recorded() -> None:

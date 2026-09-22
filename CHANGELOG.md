@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased — Phase 6 step 6.3: a run chooses its provider
+
+Added
+- `gateway/providers.py`: which providers exist (`KNOWN`), which this build can construct
+  (`AVAILABLE`), and how to build one. Two lists because a run row outlives a deployment.
+- `RunCreate.provider` and `run_provider` on the MCP `create_run` tool, validated against
+  `AVAILABLE` — a 422 or a tool error rather than a run that is accepted and dies in a
+  worker the caller cannot see.
+- `agents/prompts/_open_model_preamble.md`, prepended to every role prompt in the same
+  cached block. Five rules about tool protocol and nothing about the work, because the
+  plan is explicit: do not tune role prompts to fix open-model behaviour.
+  `OPEN_MODEL_PREAMBLE=false` turns it off.
+- A `vllm` service behind the `gpu` compose profile, and `docs/open-source-model.md`.
+
+Fixed
+- The worker now builds its provider from the run's row. `runs.provider` had been written
+  and ignored since Phase 1, which made `llm_calls.provider` — the column the Phase 6
+  criterion asks you to inspect — evidence of the process's configuration rather than of
+  the run's.
+- A run whose row names a provider this build cannot make is failed with that message,
+  rather than burning three arq retries and staying `queued`.
+
+Notes
+- The Anthropic provider is deliberately absent and `anthropic` is a name that is
+  recognised and refused. `gateway/manual_loop.py` is absent too: the plan wants the tool
+  loop shared between two providers, and an abstraction with one implementation is a guess
+  about the second.
+
 ## Unreleased — Phase 6 step 6.2: external MCP servers as agent tools
 
 A GitHub server that can read issues, a Postgres server that can run a read-only query:

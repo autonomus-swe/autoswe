@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     llm_model_opus: str | None = None
     llm_model_sonnet: str | None = None
     llm_model_haiku: str | None = None
+    # Tool-discipline rules prepended to every role prompt
+    # (`agents/prompts/_open_model_preamble.md`). On by default because every model this
+    # build runs on is one it was written for; a deployment on a frontier model that
+    # follows tool schemas without being told can turn it off and save the tokens.
+    open_model_preamble: bool = True
     llm_max_tokens: int = Field(default=16_000, gt=0)
     # Ten minutes is generous for a hosted endpoint and nowhere near enough for a local
     # one. A 7B model on CPU generates at well under a token a second, so a single
@@ -191,6 +196,7 @@ class Settings(BaseSettings):
             "llm_provider": self.llm_provider,
             "llm_base_url": self.llm_base_url,
             "llm_model": self.llm_model,
+            "open_model_preamble": str(self.open_model_preamble),
             "llm_timeout_s": f"{self.llm_timeout_s:g}s",
             "llm_api_key": "set" if self.llm_api_key else "unset",
             "anthropic_api_key": "set" if self.anthropic_api_key else "unset",
