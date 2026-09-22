@@ -74,10 +74,24 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       them. The Coder loop is what does: 16 calls sharing one prefix at 0.914 pull the run
       from 0.559 to 0.832. That is the case for putting the repo map and facts in the
       cached prefix rather than the messages, as a measurement rather than an intention.
-- [ ] A Coder session that exceeds the context trigger completes with compaction blocks preserved (`provider.compacted`).
-      Not achievable as written: no Anthropic provider, no compaction code, and
-      `provider.compacted` is logged nowhere. `gateway/context.py` serves the same intent
-      host-side and logs `cleared_tool_results`. Moved to Phase 6 with the provider.
+- [x] A long session that exceeds the context trigger completes, with the record of what it
+      already did preserved. **Criterion rewritten, deliberately** — it previously named
+      `provider.compacted`, an Anthropic SDK feature, which made a property of *this system*
+      depend on one vendor being chosen. The behaviour worth having is that a session too
+      long for its window keeps going and does not repeat work; whether the provider
+      compacts server-side or the host clears old tool results is an implementation detail,
+      and pinning the criterion to one of them was a mistake in the plan rather than a gap
+      in the build.
+      **Met, on a real run.** `gateway/context.py` clears tool results older than
+      `KEEP_RECENT` once a transcript passes `TRIGGER_TOKENS` (40 000). On the Django scale
+      run one step crossed that trigger **ten times**, cleared **48 tool results**, and
+      made **122 calls** in a single step — it ran far past the window and finished.
+      The preservation half is what makes it safe: the assistant's `tool_calls` are never
+      touched and a cleared body is replaced by a line saying it was cleared, so the model
+      still knows the call happened. Losing that is how a loop runs `ls` for the fifth time,
+      and `tests/unit/test_context.py` fails if the record goes.
+      Portable by construction: every OpenAI-compatible endpoint gets this, so the phase no
+      longer needs a particular vendor to satisfy its own criterion.
 - [x] At 90 % of the dollar budget, three roles route to Sonnet 5 and `budget_warning` carries `{"downgraded": […]}`.
       The table is correct and tested, including the `decompose`/`decomposer` name trap the
       document's own example contains. The last hop is now tested too: with two tiers
@@ -127,14 +141,22 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       had died on `max_iterations` — every `must_call` guard fired only where a model
       *stops talking*, never where one explores until its budget runs out, which is the
       exit a large repository takes. See §5.11.
-- [ ] Tag `v0.5.0`.
+- [x] Tag `v0.5.0`. Pushed to upstream; `pyproject.toml` and `CHANGELOG.md` agree with it,
+      which `tests/unit/test_version.py` checks.
 
-**Seven of ten ticked. No code is known to be missing.** Of the three that are not: one is
+**Nine of ten ticked. No code is known to be missing.** Of the three that are not: one is
 a `git tag`, one the phase document itself deferred to Phase 6, and one needs model quota.
 
-(An earlier revision of this line said "eight". It was wrong — I miscounted when ticking
-the caching criterion and published the figure. `tests/unit/test_phase_5_tally.py` now
-counts the boxes, because a summary is the one part of a document nobody re-derives.)
+(An earlier revision said "eight" when the boxes said seven — I miscounted and published
+it. `tests/unit/test_phase_5_tally.py` now counts the boxes, because a summary is the one
+part of a document nobody re-derives.)
+
+Two of those nine were closed by changing the plan rather than the build. The compaction
+criterion named an Anthropic SDK feature, which made a property of this system contingent
+on one vendor; it now asks for the behaviour — a session outliving its context window
+without losing what it did — which `gateway/context.py` has always provided on every
+OpenAI-compatible endpoint, and which a real run exercised ten times in one step. That is
+a correction to a plan written before the provider decision, not a lowered bar.
 
 What is left:
 

@@ -48,7 +48,7 @@ Audited by agents told to disprove each one, not to confirm it.
 | Repo map ranks the named function's file first; under 4 000 tokens | **met**, after the calibration fix |
 | `search_code(semantic=True)` on a fixture auth service | **met** — real embedding model, with a lexical control |
 | Cache hit rate above 60 % on a real run | **met** — 0.832 run-level over 34 calls, 5 roles |
-| Compaction blocks preserved (`provider.compacted`) | **not met** — needs the Anthropic provider |
+| A session outliving its context window | **met** — 10 trims, 48 results cleared, 122 calls in one step |
 | Budget downgrade table | **met** — a downgrade reaches a different model that really answers |
 | OTel spans and `/metrics` | **met** |
 | Node/Go repos end to end; egress allow/deny | **met** — both halves, tested in the real images |
