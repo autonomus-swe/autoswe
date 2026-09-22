@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased — the private suite, run
+
+The eval harness was driven rather than left as machinery nobody had used, and it found
+things in both directions. `docs/numbers.md` has the table; both runs are in
+`evals/results/`.
+
+**3/3 resolved, three real pull requests, $0.00** — `gemini-3.1-flash-lite` via Gemini's
+free endpoint, 45.5 minutes, 206 of 206 `llm_calls` rows `openai_compat`. "Resolved" means
+the harness cloned the branch the agent pushed and ran the task's own command in it.
+
+**The first attempt was 0/3** and is kept. Same provider, same commit, an hour earlier:
+all three died on transient `503`s from the free tier, at three different phases, one of
+them 15 minutes in with the code written and the tests passing. A suite that only records
+its good afternoon will mislead somebody later.
+
+Fixed
+- The provider retries `500/502/503/504` with exponential backoff. It already retried
+  `429` and a `200` with no choices — the latter because "an agentic run dies on a blip
+  after minutes of real work" — and let a `503 UNAVAILABLE ... please try again later`
+  raise straight through. **The fix fired zero times in the 3/3 run**, so the improvement
+  is not evidence for it and is not presented as any.
+- Two shipped eval tasks were unresolvable by construction: they verified with a bare
+  `pytest -q`, and this fixture's baseline suite does not pass by design. The report would
+  have blamed the agent for something it was never asked to do. A bare `pytest -q`
+  measures the fixture rather than the task, and the loader now refuses a shipped task
+  whose verify names no path, or whose goal never mentions the file it verifies.
+
+Added
+- `evals/report.render` shows why a task failed, when one did. Not a new category — the
+  denominator is untouched, and a suite whose tasks all died on the same 503 still reads
+  0/3. That is where this could have become improving a number by redefining it.
+
 ## Unreleased — run from a base commit
 
 Added

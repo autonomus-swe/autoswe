@@ -114,3 +114,37 @@ def test_the_aggregate_reports_both_the_count_and_the_percentage() -> None:
     without the other is how "60 %" turns out to have been three tasks."""
     out = report.render([row(resolved=True), row(resolved=True), row(resolved=False)])
     assert "2/3 resolved" in out and "66.7%" in out
+
+
+def test_the_reason_column_appears_only_when_something_went_wrong() -> None:
+    """A column of empty cells on a clean suite is noise, and noise is what makes people
+    stop reading a table."""
+    assert "why" not in report.render([row(resolved=True)])
+    assert "why" in report.render([row(resolved=False, error="ProviderError: 503")])
+
+
+def test_the_reason_does_not_change_the_denominator() -> None:
+    """The point at which this could have become laundering.
+
+    A suite whose tasks all died on the same upstream 503 still reads 0/3. Surfacing the
+    reason is adding information; moving those rows into a category that excluded them
+    from the count would be improving a number by redefining it.
+    """
+    rows = [row(resolved=False, error="ProviderError: 503") for _ in range(3)]
+    s = report.summarise(rows)
+    assert s["resolved"] == 0 and s["verified"] == 3 and s["resolved_pct"] == 0.0
+    assert "0/3 resolved" in report.render(rows)
+
+
+def test_a_pipe_in_an_error_cannot_corrupt_the_table() -> None:
+    """An unescaped one ends the row early and silently shifts every later column left —
+    a table that still renders and is wrong, which is the worst kind."""
+    out = report.render([row(resolved=False, error="boom | 503 | high demand")])
+    body = next(line for line in out.splitlines() if line.startswith("| `t`"))
+    assert body.count("|") - body.count("\\|") == 12  # ten columns plus why, plus the ends
+
+
+def test_only_the_first_line_of_an_error_is_shown() -> None:
+    """A traceback in a table cell is a table nobody can read."""
+    out = report.render([row(resolved=False, error="the reason\nstack frame\nanother frame")])
+    assert "the reason" in out and "stack frame" not in out

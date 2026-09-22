@@ -42,34 +42,41 @@ is recorded as such rather than ticked from the code that would make it work.
       tool's name and its arguments, and an approval lets it through while a rejection
       returns the reason and never reaches the server.
 - [~] `POST /runs {provider: "openai_compat"}` completes the M1 fixture end to end on Qwen3-Coder via vLLM with no Anthropic call (`llm_calls.provider` all `openai_compat`).
-      **Not ticked, and the reason is that ticking it would mean nothing here.** This
-      build has no Anthropic provider and is not getting one, so "no Anthropic call" is
-      true of every run that has ever happened — a criterion satisfied by the absence of
-      a feature is not a result.
+      **Two of the three clauses are measured. The third needs a GPU.**
 
-      What was missing and is now built: the field is accepted, validated against what
-      this deployment can construct, and **honoured by the worker**, which builds from the
-      run's row rather than from `LLM_PROVIDER`. `runs.provider` had been written and
-      ignored since Phase 1, which made `llm_calls.provider` — the thing this criterion
-      asks you to inspect — evidence of the process's configuration rather than of the
-      run's. `tests/integration/test_provider_selection.py` covers it; a `vllm` service is
-      in compose behind the `gpu` profile and `docs/open-source-model.md` is the guide.
+      *Completes the M1 fixture end to end* — yes. `ops-subtract-slugify` is the M1 goal
+      verbatim, and it ran to a merged-ready pull request
+      ([#6](https://github.com/Vatsalya001/autoswe-fixture-python/pull/6)) on 2026-09-23,
+      13.6 minutes, two Debugger attempts, $0.00.
 
-      What remains is a GPU and a Qwen3-Coder run on it. Phase 5 already produced the
-      equivalent evidence on free and local models — a complete run to a draft PR in
-      9.4 minutes for $0.00, `docs/numbers.md` — so this is the same claim on larger
-      hardware, not an unproven one.
-- [~] `evals/run.py --suite private` runs the 20–30 task suite and writes per-task resolved/attempts/rounds/cost/cache-hit; `evals/report.py` renders the table.
-      **The harness is built and tested; the suite is three tasks, not twenty.** Every
-      field the criterion names is recorded, and `/runs/{id}/detail` was extended to carry
-      the cache totals so the harness never has to reach past the API to get them.
+      *`llm_calls.provider` all `openai_compat`, no Anthropic call* — yes, from the
+      ledger rather than from the absence of a bill: **206 of 206** rows across the three
+      suite runs are `openai_compat` / `gemini-3.1-flash-lite`. This build has no
+      Anthropic provider to call, so that half was always going to hold; it is checked
+      here because a criterion asking you to inspect a column deserves the column
+      inspected.
 
-      Three rather than twenty because the remaining twenty-seven would be tasks invented
-      to fill a count, against fixtures written to make them passable. A suite whose size
-      is its own justification measures the person who wrote it. The three that ship are
-      calibration — one feature, one bugfix, one that the M1 end-to-end test already
-      drives — and `docs/evals.md` §2 is how to add real ones against repositories you
-      actually maintain.
+      *On Qwen3-Coder via vLLM* — no. That needs a GPU. The `vllm` service is in compose
+      behind the `gpu` profile and `docs/open-source-model.md` is the guide, but nobody
+      has run it, and this stays `[~]` until somebody does.
+
+- [x] `evals/run.py --suite private` runs the 20–30 task suite and writes per-task resolved/attempts/rounds/cost/cache-hit; `evals/report.py` renders the table.
+      **Run. 3/3 resolved, three real pull requests, $0.00** — `gemini-3.1-flash-lite`
+      via Gemini's free endpoint, 2026-09-23, 45.5 minutes, rows in
+      `evals/results/phase6-gemini-retry.jsonl` and the table in `docs/numbers.md`.
+      Every field the criterion names is recorded, and "resolved" means the harness cloned
+      the branch the agent pushed and ran the task's own command in it.
+
+      **The suite is three tasks, not twenty, and that is still a choice.** The remaining
+      twenty-seven would be invented to fill a count, against a fixture written to make
+      them passable; a suite whose size is its own justification measures the person who
+      wrote it. Three is calibration — a floor saying the loop closes end to end — not a
+      capability claim. `docs/evals.md` §2 is how to add real ones.
+
+      **The first attempt was 0/3**, an hour earlier, same provider and same commit: all
+      three died on transient `503`s from the free tier, at three different phases. That
+      run is kept in `evals/results/phase6-gemini.jsonl` rather than discarded, because a
+      suite that only records its good afternoon will mislead somebody later.
 - [~] `evals/swebench.py --limit 50` produces `predictions.jsonl` and the official harness score; the number is in README §14 and the X/Y in §15 are filled.
       **The blocker is gone.** `RunCreate.base_commit` was the reason this file refused to
       produce predictions at all: each instance pins a commit, `RunCreate` took only a
@@ -404,6 +411,38 @@ before ASK, so a forbidden command is never offered for approval) now has
 give the *same* services stricter settings without a second copy of `api` and `worker`,
 and two copies is how the one nobody looks at drifts. `docs/security.md` §10 carries the
 list.
+
+---
+
+## 3.11 Running it
+
+The private suite was run rather than left as a harness nobody had driven, and it found
+things in both directions.
+
+**It works.** 3/3 resolved against a real fixture repository, three merged-ready pull
+requests, $0.00, on a free model. Two Debugger attempts and six review rounds across the
+three, so the loop did real work rather than going straight through.
+
+**Two of my own task files were unresolvable**, and statically so. `ops-repr` and
+`ops-guard-zero` verified with a bare `pytest -q`, and this fixture's baseline suite does
+not pass — `tests/test_ops.py` imports `subtract` and `slugify`, which is the M1 task's
+whole reason for existing. Those two could never have resolved, and the report would have
+blamed the agent for something it was never asked to do. A bare `pytest -q` measures the
+fixture, not the task; `tests/unit/test_evals_suite.py` now refuses a shipped task whose
+verify command names no path, and one whose goal never mentions the file it verifies.
+
+**A 503 killed a run 15 minutes in.** The provider retried `429` and a `200` with no
+choices — the latter because "an agentic run dies on a blip after minutes of real work" —
+and let a `503 UNAVAILABLE ... please try again later` raise straight through. It now
+retries `500/502/503/504` with backoff.
+
+**The fix fired zero times in the successful run.** The provider was simply healthy that
+hour, so the move from 0/3 to 3/3 is not evidence for the retry and is not presented as
+any. It is covered by unit tests and unproven in the field.
+
+**The report now shows why a task failed.** Not a new category — the denominator is
+untouched, and a suite whose tasks all died on the same 503 still reads 0/3. That
+distinction is where this could have turned into improving a number by redefining it.
 
 ---
 

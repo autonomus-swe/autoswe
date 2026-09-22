@@ -593,6 +593,22 @@ enormous, and the machine had 26 GB free with no OOM events. Sorting ten thousan
 does not segfault. Recorded as open rather than fixed, because the next step is a
 reproduction and not a third theory.
 
+> **Second occurrence, 2026-09-23 — and it is not in `tools/search.py`.** The full test
+> suite died with `SIGSEGV` (pytest exit 139) once, in `test_full_run.py`, with a topmost
+> frame of `pathlib._parse_path` reached through `posixpath.realpath` ←
+> `Path.resolve()` ← **`asyncpg._dot_postgresql_path`**, opening a Postgres connection
+> inside a SQLAlchemy greenlet. Main thread, no garbage collection involved.
+>
+> What the two share is `pathlib`, and nothing else: different module, different thread,
+> different call site. That **weakens** the Phase 5 attribution to the search tool rather
+> than confirming it, and it is the reproduction that entry asked for — a second data
+> point, not a third theory.
+>
+> Frequency: once in roughly 1 460 tests. It did not reproduce in 30 further executions of
+> the crashing file (three clean runs). The greenlet's small stack is an obvious thing to
+> suspect and is **not** being claimed — saying so would be the third theory, which is
+> exactly what the entry above refused. Still open.
+
 ## Running the remaining measurements
 
 Two numbers are still missing and both are one command away once there is model quota:
@@ -642,3 +658,73 @@ run itself is about a tenth of a cent.
 The metric, when there is one — not cost per run. A run that spent half as much and
 finished one task instead of three cost more per unit of work. It is in the PR footer as
 `$X.XX ($Y.YY/task)` and in `autoswe_tokens_per_solved_task`, divided by tasks **done**.
+
+---
+
+# Phase 6 — the private eval suite
+
+**2026-09-23 · `gemini-3.1-flash-lite` via Gemini's free OpenAI-compatible endpoint ·
+`openai_compat` · three tasks against `Vatsalya001/autoswe-fixture-python` ·
+concurrency 1.**
+
+## The result
+
+| task | resolved | tasks | debug | review | wall | input | output | cache | PR |
+|---|---|---|---|---|---|---|---|---|---|
+| `ops-guard-zero` | ✅ | 2 | 0 | 2 | 984 s | 181 289 | 3 050 | 0.0000 | [#4](https://github.com/Vatsalya001/autoswe-fixture-python/pull/4) |
+| `ops-repr` | ✅ | 2 | 0 | 2 | 928 s | 237 411 | 4 373 | 0.0163 | [#5](https://github.com/Vatsalya001/autoswe-fixture-python/pull/5) |
+| `ops-subtract-slugify` | ✅ | 2 | 2 | 2 | 817 s | 308 414 | 4 529 | 0.0370 | [#6](https://github.com/Vatsalya001/autoswe-fixture-python/pull/6) |
+
+**3/3 resolved. 45.5 minutes of wall clock, 727 114 input and 11 952 output tokens,
+$0.00.** Rows in `evals/results/phase6-gemini-retry.jsonl`.
+
+"Resolved" is not the run reporting success. For each task the harness cloned the branch
+the agent pushed and ran the task's own command in it — `ops-guard-zero`'s verify output
+ends `2 passed in 0.01s` against a fresh checkout of `agent/87031d27…`.
+
+## The first attempt was 0/3, and it is the more interesting number
+
+An hour earlier the same suite, same provider, same commit of the agent, resolved **none**
+of the three. Every failure was the same thing:
+
+```
+ProviderError: InternalServerError: Error code: 503 —
+'This model is currently experiencing high demand ... Please try again later.'
+```
+
+at three different phases — CODE, DECOMPOSE, and SECURITY. The third had already written
+the code and passed the tests; it died in the security scan, 15 minutes in. Rows in
+`evals/results/phase6-gemini.jsonl`.
+
+**That 0/3 was a measurement of a free tier's availability, not of the agent.** It is kept
+rather than discarded, because a suite that only records its good afternoon is a suite
+that will mislead somebody later.
+
+## What that found, and what it did not
+
+The provider retried `429` and a `200` with no choices — the latter because, in its own
+words, "an agentic run dies on a blip after minutes of real work". A `503` asking to be
+retried is the same blip wearing a status code, and it raised straight through.
+`SERVER_ERROR_STATUSES` now retries `500/502/503/504` with exponential backoff.
+
+**The fix fired zero times in the 3/3 run.** Gemini was simply healthy that hour. So the
+improvement from 0/3 to 3/3 is *not* evidence for the retry, and nothing here should be
+read as such — the retry is covered by unit tests and remains unproven in the field.
+
+## Two smaller things the run says
+
+**Gemini does not implement prompt caching.** 0.0000 on the first task and 0.0163–0.0370
+on the others, against 0.7745 on a local model in Phase 5. The cached prefix is built and
+sent; this endpoint charges for all of it. That matches the Phase 5 finding on a different
+free endpoint, measured the same way.
+
+**Both halves of the loop did real work.** `ops-subtract-slugify` took two Debugger
+attempts and every task took two review rounds, so this is not three trivial runs that
+happened to go straight through.
+
+## What this does not measure
+
+Three tasks against one fixture, on one model, in one hour. It is calibration — a floor
+that says the loop closes end to end — not a capability claim. A resolved rate worth
+quoting needs real repositories and enough tasks that one bad afternoon does not move it,
+which is the suite `docs/evals.md` §2 tells you how to write.

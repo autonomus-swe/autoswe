@@ -132,10 +132,50 @@ def test_malformed_yaml_names_the_file(tmp_path: Path) -> None:
         suite.load("private", directory=write(tmp_path, "bad", "id: [unclosed\n"), environ=ENV)
 
 
+def shipped() -> suite.Suite:
+    return suite.load(
+        "private", environ={"AUTOSWE_FIXTURE_REPO": "https://github.com/acme/fixture"}
+    )
+
+
 def test_the_shipped_private_suite_loads() -> None:
     """The tasks in this repository are documentation people copy. One the loader rejects
     is worse than none, and this is what rots the first time a rule is added."""
-    s = suite.load("private", environ={"AUTOSWE_FIXTURE_REPO": "https://github.com/acme/fixture"})
+    s = shipped()
     assert len(s.tasks) >= 3
     assert all(t.verify is not None for t in s.tasks), "a shipped task with no verify"
     assert all(t.budget_usd <= 5 for t in s.tasks), "a shipped task that could get expensive"
+
+
+def test_every_shipped_task_verifies_a_named_path() -> None:
+    """A bare `pytest -q` measures the fixture, not the task.
+
+    Two of these shipped with one, and the fixture they run against has a baseline suite
+    that does not pass — `tests/test_ops.py` imports `subtract` and `slugify`, which is
+    the M1 task's whole reason for existing. So those two could never have resolved, and
+    the report would have blamed the agent for something it was never asked to do.
+
+    Naming a path is not a style rule. It is the difference between "did the agent do what
+    the goal said" and "is this repository green", and only the first is a result.
+    """
+    for task in shipped().tasks:
+        assert task.verify is not None
+        command = task.verify.command
+        assert any(part.endswith(".py") for part in command.split()), (
+            f"{task.id}: `{command}` runs the whole suite, so it measures the fixture "
+            "rather than the task"
+        )
+
+
+def test_every_shipped_task_names_in_its_goal_the_file_it_verifies() -> None:
+    """The two halves of a task have to agree.
+
+    A goal that says "put the tests in tests/test_point.py" and a verify that runs
+    something else is a task whose result means nothing — and neither half is wrong on its
+    own, which is why nobody notices.
+    """
+    for task in shipped().tasks:
+        assert task.verify is not None
+        paths = [p for p in task.verify.command.split() if p.endswith(".py")]
+        for path in paths:
+            assert path in task.goal, f"{task.id}: verifies {path}, which its goal never mentions"
