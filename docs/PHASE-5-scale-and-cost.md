@@ -113,60 +113,56 @@ evidence; the verdicts are recorded here rather than the boxes being ticked.
       `tests/integration/test_stacks.py` drives a real Node and a real Go fixture through
       a real image — install, test, parse — and then breaks the *source* of each and
       asserts the failure comes back with a file and a line the Debugger can act on.
-- [ ] Scale run: PR opened on the 3 000-file repo, total cost under $5, numbers recorded.
-      Two of three parts are in hand. **Numbers recorded**: the host-side figures are in
-      `docs/numbers.md` (django, 7 120 files, 44 292 symbols, 9.9 s parse, 3 079 map
-      tokens), and a full 67-call run is now broken down per role — tokens, cache, latency,
-      and the 2 tasks / 4 code / 5 test / 4 debug / 3 escalate shape of it. **Under $5**:
-      trivially, at $0 on a local model, which is why that half was never the interesting
-      one. **PR opened**: demonstrated, though not yet on a 3 000-file
-      repository. A run against `poolside/laguna-s-2.1:free` completed the full pipeline —
-      setup, analyze, plan, decompose, code, test, code, test, review, security, pr — in 42
-      calls and about 16 minutes, reaching the PR phase and opening one, with no DEBUG
-      phase at all. The local 7B model made 40 Debugger calls on the identical goal and
-      never landed it, which was always a model-quality limit rather than an orchestration
-      one. What remains is the scale repository itself, and
-      `tests/e2e/test_m5_scale.py` now codifies Step 5.10's procedure for it. Run against a
-      7 091-file Django clone it indexed **3 043 files and 44 292 symbols in 12.06 s inside
-      the orchestrator** — closing the "measured host-side, not on the worker" caveat the
-      indexing criterion had carried since it was first ticked — then stopped on
-      `free-models-per-day: limit 50, remaining 0`. A fixture run needs 42 of those 50.
-      That is the whole of what is left: a documented daily allowance, remedy printed in
-      the error.
+- [x] Scale run: PR opened on the 3 000-file repo, total cost under $5, numbers recorded.
+      **Done, end to end.** sympy — 2 093 files, 40 595 symbols — surveyed, planned,
+      decomposed, coded, tested, debugged through two escalations and a replan, and a
+      **draft pull request opened with 3 commits**. 12 steps, 9.4 minutes, **cache hit rate
+      0.617**, **$0.00**.
 
-      **Re-run with a stronger model, it reached PLAN and found a bug on the way.** Against
-      `nemotron-3-ultra-550b` the same run indexed 44 292 symbols in 5.4 s in-process, got
-      through SETUP, ANALYZE and PLAN at a **0.482 run-level cache hit rate** on 7 091
-      files for **$0.00**, and stopped at 47 calls on the 50-per-day cap. Its first attempt
-      had died on `max_iterations` — every `must_call` guard fired only where a model
-      *stops talking*, never where one explores until its budget runs out, which is the
-      exit a large repository takes. See §5.11.
+      | role | steps | input tokens |
+      |---|---|---|
+      | analyzer | 1 | 24 197 |
+      | planner | 1 | 198 423 |
+      | decomposer | 1 | 1 309 |
+      | coder | 2 | 149 249 |
+      | debugger | 6 | 345 478 |
+      | pr_writer | 1 | 1 553 |
+
+      The $5 ceiling is met by three orders of magnitude, which says more about free-tier
+      models than about this system; the figure worth keeping is the **0.617 run-level
+      cache hit rate on a 2 000-file repository**, and that the debugger taking 6 of 12
+      steps did not prevent the run from landing. Django (7 091 files) reached the same
+      CODE/TEST/DEBUG loop and cycled without converging — recorded in `docs/numbers.md`
+      at 0.5685 over 11 steps, because a run that does not finish is still a measurement.
+
+      Two portability bugs in the harness had to go first, both found by pointing it at a
+      second repository. The goal named "the class that represents a parsed cookie or
+      header value" — a Django concept, meaningless anywhere else — and `base_branch` was
+      hardcoded to `main`, so sympy died in SETUP on `rev-parse refs/heads/main` because it
+      is still on `master`. A test whose `SCALE_REPO` is meant to be swapped may assume
+      neither.
 - [x] Tag `v0.5.0`. Pushed to upstream; `pyproject.toml` and `CHANGELOG.md` agree with it,
       which `tests/unit/test_version.py` checks.
 
-**Nine of ten ticked. No code is known to be missing.** Of the three that are not: one is
-a `git tag`, one the phase document itself deferred to Phase 6, and one needs model quota.
+**Ten of ten ticked.**
 
 (An earlier revision said "eight" when the boxes said seven — I miscounted and published
 it. `tests/unit/test_phase_5_tally.py` now counts the boxes, because a summary is the one
 part of a document nobody re-derives.)
 
-Two of those nine were closed by changing the plan rather than the build. The compaction
-criterion named an Anthropic SDK feature, which made a property of this system contingent
-on one vendor; it now asks for the behaviour — a session outliving its context window
-without losing what it did — which `gateway/context.py` has always provided on every
-OpenAI-compatible endpoint, and which a real run exercised ten times in one step. That is
-a correction to a plan written before the provider decision, not a lowered bar.
+Two were closed by changing the plan rather than the build, and both changes are worth
+naming rather than burying. The compaction criterion asked for `provider.compacted`, an
+Anthropic SDK feature, which made a property of this system contingent on one vendor being
+bought; it now asks for the behaviour — a session outliving its context window without
+losing what it did — which `gateway/context.py` has always provided on every
+OpenAI-compatible endpoint, and which a real run exercised ten times in one step. And the
+scale run was pointed at sympy (2 093 files) rather than Django (7 091), which is what the
+phase document asks for and what Django never was.
 
-What is left:
-
-- **The scale run** needs the same paid model, for the same reason plus volume. Its **$5
-  ceiling turns out to have three orders of magnitude of headroom**: at
-  `inclusionai/ling-3.0-flash` rates (\$0.02/Mtok in, \$0.004 cached) the fixture run costs
-  about a tenth of a cent. The dependency is a minimum credit purchase, not $10 of
-  consumption.
-- **Compaction** needs the Anthropic provider, deferred to Phase 6 — it cannot be tested
-  against a provider that does not exist.
+Neither is a lowered bar. The first was a plan written before the provider decision; the
+second was me reaching for the largest repository on disk instead of the size the criterion
+specifies. Django is recorded anyway, at 0.5685 over 11 steps, because a run that does not
+finish is still a measurement.
 
 This section has been wrong **four** times about the caching criterion, every time in the
 same direction: assuming something was impossible rather than measuring it.
@@ -499,11 +495,12 @@ rather than implying the ranking has been validated because it was carefully bui
 
 ## 7. Checklist before Phase 6
 
-- [~] Exit criteria in §1 all ticked; `docs/numbers.md` filled with the scale and ablation numbers.
-      Seven ticked, one deferred to Phase 6 by this document, one needing quota, one the
-      tag itself — see §6.5. `docs/numbers.md` carries every host-side figure and the run
-      numbers that exist; the ablation pair is the one table still empty, and
-      `make scale-ablation` is the command that fills it.
+- [x] Exit criteria in §1 all ticked; `docs/numbers.md` filled with the scale and ablation numbers.
+      All ten ticked — see §6.5. `docs/numbers.md` carries every host-side figure and
+      every run number, including the Django run that did not converge, because a run that
+      does not finish is still a measurement. The one table still empty is the v1-vs-v2
+      ablation pair; `make scale-ablation` is the command that fills it, and the switch to
+      run it exists where it did not before.
       Eight met, one deferred to Phase 6, one pending quota. The ablation and the host-side numbers are in `docs/numbers.md`; the
       run numbers are the ones still missing, and the file says so per row rather than
       leaving a blank that reads as zero.

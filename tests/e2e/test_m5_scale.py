@@ -40,6 +40,7 @@ from evals import record
 from orchestrator.deps import Deps
 from orchestrator.runner import run
 from orchestrator.state import Phase, RunState
+from repo.gitcmd import git
 from storage import repo as db
 from storage.db import session
 
@@ -48,10 +49,17 @@ pytestmark = pytest.mark.e2e
 # Two or three files and a test, as the phase document asks. Phrased so the repo map has
 # to do the work: it names a behaviour, not a path, so a run that edits the right file has
 # been pointed there by ranking rather than by being told.
+# Repository-agnostic on purpose. The first version named "the class that represents a
+# parsed cookie or header value", which is a Django concept — run against any other
+# repository it asks for something that does not exist, so the run fails on the goal
+# rather than on anything this phase measures. `SCALE_REPO` is meant to be swapped.
+#
+# Still phrased so the repo map has to do the work: it names a property a class should
+# have, not a path, so a run that edits a sensible file was pointed there by ranking.
 GOAL = (
-    "Add a `__repr__` to the class that represents a parsed cookie or header value, "
-    "showing its public fields, and add a unit test for it next to the existing tests "
-    "for that module. Do not change unrelated files."
+    "Pick one small public class in this repository that has no `__repr__`, add one "
+    "showing its public fields, and add a unit test for it beside the existing tests for "
+    "that module. Change as few files as possible and do not touch unrelated code."
 )
 
 MAX_COST_USD = 5.0
@@ -63,12 +71,18 @@ async def test_a_run_on_a_large_repository_stays_inside_its_budget(
 ) -> None:
     deps, repo = e2e_deps, scale_repo
     files = sum(1 for _ in repo.rglob("*") if _.is_file() and ".git" not in _.parts)
+    # Whatever the clone calls its default branch. Hardcoding "main" made this test work
+    # on exactly the repositories that had migrated: sympy is still on `master`, and the
+    # run died in SETUP on `rev-parse refs/heads/main` before reaching anything this
+    # phase measures. `SCALE_REPO` is meant to be swapped, so nothing here may assume a
+    # name the repository chose.
+    branch = (await git("rev-parse", "--abbrev-ref", "HEAD", cwd=repo)).strip()
 
     async with session(deps.engine) as s:
         run_id = await db.create_run(
             s,
             repo_url=str(repo),
-            base_branch="main",
+            base_branch=branch,
             goal=GOAL,
             budget=Budget(max_usd=MAX_COST_USD),
             provider=deps.settings.llm_provider,
@@ -77,7 +91,7 @@ async def test_a_run_on_a_large_repository_stays_inside_its_budget(
         run_id=run_id,
         goal=GOAL,
         repo_url=str(repo),
-        base_branch="main",
+        base_branch=branch,
         work_branch=f"agent/{run_id}",
         budget=Budget(max_usd=MAX_COST_USD),
         unattended=True,
