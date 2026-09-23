@@ -151,6 +151,29 @@ def _repair_once(data: Any, errors: Sequence[Any]) -> bool:
         except (KeyError, IndexError, TypeError):
             continue
         fixed: Any = None
+        if err.get("type") == "extra_forbidden":
+            # A field the contract never declared. Measured on qwen2.5:7b, which killed a
+            # real DECOMPOSE step by inventing `test_command` and `toolbench_root` on a
+            # `TaskGraphSpec` — twice, with the validation error fed back to it in between.
+            # Same lesson as the scalar case below: the prompt that produced the extra key
+            # is the prompt that produces it again, so the retry is spent for nothing.
+            #
+            # Dropping it invents nothing. An undeclared key has no meaning in the contract
+            # by construction — the schema is the code's decision, not the model's — so
+            # there is no reading under which keeping it is right. Logged rather than
+            # silent, because a model that keeps reaching for the same field is usually
+            # telling you the contract is missing something.
+            #
+            # No `isinstance(container, dict)` guard, unlike the null case below, and that
+            # is deliberate rather than an oversight: `extra_forbidden` is raised only for
+            # an undeclared key on a model, so the container is always a mapping. A guard
+            # here would be a branch no input can take, which is why one was written and
+            # then removed — a mutation deleting it survived the suite, because there is no
+            # behaviour on the other side of it to observe.
+            log.info("structured_output_extra_field_dropped", field=str(key))
+            del container[key]
+            changed = True
+            continue
         if err.get("type") == "list_type" and isinstance(value, dict) and len(value) == 1:
             inner = value.get("items")
             if isinstance(inner, list):

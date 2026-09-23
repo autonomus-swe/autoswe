@@ -79,6 +79,14 @@ is recorded as such rather than ticked from the code that would make it work.
       kind — and went through `analyze` and `plan` on the `openai_compat` provider the
       criterion names. The vendor-free half of this claim is settled.
 
+      **It also found a real bug, and the bug was ours.** The run died in DECOMPOSE, not
+      on the clock: `qwen2.5:7b` returned a valid `TaskGraphSpec` plus two fields it
+      invented, and `extra="forbid"` refused the whole object. The retry was not the gap —
+      the validation error is fed back and the second attempt produced the same two fields.
+      `_repair_once` now drops keys the schema never declared, which is the fifth repair of
+      exactly the kind the four beside it already handle. So "a small local model cannot
+      finish a run" was, in part, a statement about this code rather than about the model.
+
       **The hardware is the blocker, with numbers.** This box is an i7-1355U with Intel
       integrated graphics and no CUDA device, so vLLM is out. On CPU the local model runs
       at **1.40 tok/s against 9.88 for the hosted model** on the same fixture in the same

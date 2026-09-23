@@ -774,6 +774,61 @@ def test_repair_wraps_the_one_item_answer_a_model_wrote_as_the_item() -> None:
     ], "the semicolon is inside a code snippet; splitting on it invents a second criterion"
 
 
+def test_repair_drops_the_fields_the_contract_never_declared() -> None:
+    """The payload below killed a real DECOMPOSE step, twice in a row.
+
+    Run `7c18e262` on a local `qwen2.5:7b`: asked for a `TaskGraphSpec`, it invented
+    `test_command` and `toolbench_root` and `extra="forbid"` refused both. The validation
+    error was fed back to it and the second attempt produced the same two fields — same
+    lesson as the one-item answer above, because the prompt that reaches for a field is
+    the prompt that reaches for it again.
+
+    Dropping them invents nothing: an undeclared key has no meaning in the contract by
+    construction, since the schema is the code's decision rather than the model's.
+    """
+    raw = json.dumps(
+        {
+            "tasks": [VALID_TASK],
+            "test_command": "uv run --no-sync pytest -q",
+            "toolbench_root": "/path/to/repo",
+        }
+    )
+
+    graph = repair_structured(raw, TaskGraphSpec)
+
+    assert graph is not None, "the declared fields were all valid; only the extras were not"
+    assert graph.tasks[0].id == VALID_TASK["id"]
+    assert not hasattr(graph, "test_command")
+
+
+def test_dropping_an_extra_field_leaves_its_siblings_alone() -> None:
+    """The failure this could have introduced.
+
+    An extra key nested beside real ones must not take them with it, and must not shift
+    anything — which is why the repair only deletes from a dict, never from a list.
+    """
+    raw = json.dumps({"tasks": [{**VALID_TASK, "estimated_minutes": 30}]})
+
+    graph = repair_structured(raw, TaskGraphSpec)
+
+    assert graph is not None
+    task = graph.tasks[0]
+    assert task.id == VALID_TASK["id"]
+    assert task.acceptance_criteria == VALID_TASK["acceptance_criteria"]
+    assert task.test_selector == VALID_TASK["test_selector"]
+
+
+def test_an_extra_field_does_not_excuse_a_missing_required_one() -> None:
+    """Dropping the undeclared key must not be a way to pass with the declared ones absent.
+
+    Otherwise the repair would turn "the model answered the wrong question entirely" into
+    a silently valid object, which is the one outcome worse than failing.
+    """
+    raw = json.dumps({"toolbench_root": "/path/to/repo"})
+
+    assert repair_structured(raw, TaskGraphSpec) is None
+
+
 def test_repair_will_not_turn_a_null_into_a_list_holding_nothing() -> None:
     """`None` means the model had nothing to say. `[None]` is a list with one empty
     criterion in it, which reads downstream as a requirement nobody can satisfy.
