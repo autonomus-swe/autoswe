@@ -582,10 +582,36 @@ lives — or that it does not exist.
       — sandbox, network, commands, paths, injection, approvals, secrets, API, budgets —
       and every row names its test. `tests/unit/test_security_doc.py` asserts the
       citations resolve, which is what stops the document rotting quietly.
-- [~] A clean clone plus `docs/local-dev.md` reaches a green PR on the fixture in under 30 minutes of setup.
-      `docs/local-dev.md` does not exist. `TESTING.md` and `scripts/bringup.sh` are what
-      this project has instead and the README points at them. Nobody has timed a clean
-      clone, so this is **unmeasured**, not met.
+- [x] A clean clone plus `docs/local-dev.md` reaches a green PR on the fixture in under 30 minutes of setup.
+      `docs/local-dev.md` does not exist and never has. `TESTING.md` and
+      `scripts/bringup.sh` are what this project has instead, and the README points at
+      them. **Now measured**: clone 3 s, configure 9 s, `./scripts/bringup.sh` to a fully
+      healthy stack 33 s — **45 seconds** against a 30-minute budget, exit 0, with the
+      script printing the evidence for each step rather than its own opinion.
+
+      **Warm caches**, and `docs/numbers.md` says so: uv cache populated, postgres image
+      pulled, the three sandbox images built three days earlier and reported present
+      rather than rebuilt. A first-ever run on a machine pays for all three and the
+      sandbox image alone is 1.21 GB. 45 s is the re-clone figure.
+
+      **And the green PR, from that clone**: run `a605d5fa`, 8 min 07 s,
+      `analyze → plan → code → review → security → pr → done`, $0.00, pull request
+      [#11](https://github.com/Vatsalya001/autoswe-fixture-python/pull/11). Verified by
+      checking the branch out and running its tests — **4 passed, exit 0** — rather than
+      by the run reporting `done`.
+
+      **Doing it found three things one checkout cannot.** Cloning into `/tmp` fails under
+      snap-packaged Docker, and the script diagnoses that exactly rather than failing
+      obscurely. `bringup.sh` hardcoded `:8000` in seven places while
+      `docker-compose.yml` already honoured `API_PORT`, so a second checkout would be told
+      *"the API never became healthy"* about an API that was up — fixed and verified on
+      8001. And the first run reached `pr` before failing on `CA_BUNDLE`, which
+      `.env.example` documents correctly but nothing checks until you have spent ten
+      minutes and the run: `bringup.sh` now verifies GitHub's certificate at configuration
+      time with the bundle a run will actually use.
+
+      One checkout on the default port is correct by coincidence, which is the argument
+      for running this as a real test rather than reasoning about it.
 - [ ] The demo recording exists.
       Not made. A screen recording is not something a test can produce; §5's demo script
       is what it would follow.

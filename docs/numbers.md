@@ -841,3 +841,93 @@ that ran long enough to reuse anything.
 detail endpoint while the run was still going; summing the columns afterwards gives
 0.4667. It never left the working tree, but the trap is worth naming — a cache rate quoted
 mid-run is a rate over the calls made so far, and it moves.
+
+---
+
+# Phase 6 — a clean clone, timed
+
+**2026-09-23 · this machine** (Docker 29.8.0 snap, uv 0.11.17, Python 3.12.12). The
+release checklist asks whether "a clean clone plus the setup docs reaches a green PR on
+the fixture in under 30 minutes of setup". Nobody had ever timed it, so the entry said
+**unmeasured** rather than met. This is the measurement.
+
+| Step | |
+|---|---|
+| `git clone` | 3 s |
+| `cp .env.example .env`, set ports and the two secrets | 9 s |
+| `./scripts/bringup.sh` to a fully healthy stack, exit 0 | **33 s** |
+| **Setup total** | **45 s** |
+
+Against a 30-minute budget. What `bringup.sh` proved on its way through: postgres and
+redis published and accepting connections, migrations at head (0007), three sandbox
+images present, `/healthz` green on both database and redis, the console serving HTTP 200,
+`/runs` returning 401 without a key, and the worker started and listening.
+
+**These are warm caches and the number would be larger on a fresh machine.** The uv cache
+was populated, the postgres image was pulled, and the three sandbox images had been built
+three days earlier — `bringup.sh` reported them as present rather than building them. A
+first-ever run on this machine pays for all three, and the sandbox image alone is 1.21 GB.
+45 seconds is the re-clone figure, not the cold figure, and the checklist entry says so.
+
+## Two things a clean clone found that the original checkout could not
+
+**Snap Docker cannot read a checkout outside `$HOME`.** The first attempt cloned into
+`/tmp` and infrastructure failed immediately. The script diagnosed it exactly — named snap
+confinement as the cause, said to move the checkout under `$HOME`, and stopped rather than
+continuing past a broken step. That is the failure working as designed, and the four
+seconds it took to say so are in the table above as a false start that is not counted in
+the 45.
+
+**`bringup.sh` hardcoded `:8000` for the API while compose already honoured `API_PORT`.**
+Seven places: where it starts uvicorn, where it waits for health, both console checks, the
+Ready banner and two lines of `status`. A developer who set `API_PORT=8001` got compose
+publishing on 8001 and this script probing 8000, so it would report *"the API never became
+healthy"* about an API that was up. Fixed by reading the port the same way postgres and
+redis are read; verified by bringing this clone up on 8001 and watching every line follow
+it.
+
+Only a second checkout could surface this, because one checkout on the default port is
+correct by coincidence. That is the argument for the clean-clone test being a real test
+rather than a formality.
+
+## And the other half: a green PR from that clone
+
+| | |
+|---|---|
+| Run | `a605d5fa-7ca5-4397-be82-daa88f198c22`, created from the clean clone |
+| Wall clock | **8 min 07 s** — `analyze → plan → code → review → security → pr → done` |
+| Cost | $0.00 (`gemini-3.1-flash-lite`, free endpoint) |
+| Pull request | [autoswe-fixture-python#11](https://github.com/Vatsalya001/autoswe-fixture-python/pull/11) |
+| Verified | branch checked out, `pytest -q` → **4 passed, exit 0** |
+
+Green means the tests were run on a checkout of the branch the agent pushed, not that the
+model said it was finished.
+
+**The first attempt got to `pr` and failed there**, on `CA_BUNDLE`: this network runs a
+TLS-inspecting proxy, git trusts its root CA and Python's bundled certifi does not. The
+error named the cause and the fix exactly. `.env.example` documents the setting correctly,
+commented out — so this is not a documentation gap, it is a *timing* gap: you learned it
+after ten minutes of planning, coding, testing, reviewing and scanning. `bringup.sh` now
+checks GitHub's certificate at configuration time, with the same bundle a run will use,
+and says so before you spend anything.
+
+**The check had to be written twice.** The first version called
+`ssl.create_default_context()` with no `cafile`, which reads the OS trust store — trusts
+the proxy CA, prints "ok", and a run still fails. PyGithub goes through `requests`, which
+trusts **certifi**. A check that is green where the real thing is red is worse than no
+check; it now uses `certifi.where()` when `CA_BUNDLE` is unset, and both outcomes were
+verified by removing the setting and putting it back.
+
+## What the agent did that it was not asked to do, correctly
+
+The goal asked for `multiply` alone. The diff also adds `subtract` and `slugify`.
+
+That is not scope creep — **the fixture's `main` does not collect**. Its `tests/test_ops.py`
+imports `slugify` and `subtract`, neither of which exists in `fixture/ops.py`; `pytest` on
+`main` exits 2 with a collection error. The task's verification is the whole suite, so the
+only way to a green suite was to implement the two missing functions.
+
+The interesting part is what it did **not** do: delete the failing imports, or narrow the
+test run to one file. Both would have been faster and both are the failure mode
+`docs/evals.md` §2 warns about. It wrote the implementations and left every existing test
+in place.
