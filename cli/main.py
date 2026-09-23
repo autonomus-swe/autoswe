@@ -391,6 +391,9 @@ def eval(
     tags: Annotated[str, typer.Option(help="Comma-separated; runs only tasks with one.")] = "",
     concurrency: Annotated[int, typer.Option(help="Tasks in flight at once.")] = 1,
     provider: Annotated[str | None, typer.Option(help="Override the run provider.")] = None,
+    ablate: Annotated[
+        str | None, typer.Option(help="Run one ablation arm; recorded on every row.")
+    ] = None,
     api: Annotated[str | None, typer.Option(help=API_HELP)] = None,
     key: Annotated[str | None, typer.Option(help=KEY_HELP)] = None,
     results: Annotated[str | None, typer.Option(help="Results file stem.")] = None,
@@ -405,8 +408,17 @@ def eval(
     from dataclasses import asdict
 
     from evals import report
-    from evals.run import run_suite
+    from evals.run import ABLATIONS, run_suite
     from evals.suite import load
+
+    if ablate is not None and ablate not in ABLATIONS:
+        typer.echo(
+            f"error: unknown arm {ablate!r}; this build has {', '.join(sorted(ABLATIONS))}. "
+            "An arm that is a worker setting rather than a run field — the repo map — is "
+            "run by restarting the worker, not by a flag. See docs/evals.md.",
+            err=True,
+        )
+        raise typer.Exit(2)
 
     resolved = cli_config.load(api=api, key=key)
     if not resolved.key:
@@ -425,6 +437,7 @@ def eval(
             key=resolved.key,
             concurrency=concurrency,
             provider=provider,
+            ablation=ablate,
             results_name=results,
         )
     )

@@ -722,9 +722,35 @@ free endpoint, measured the same way.
 attempts and every task took two review rounds, so this is not three trivial runs that
 happened to go straight through.
 
+## The budget column was decoration, and an ablation found it
+
+`--ablate no-debugger` sets `Budget.max_debug_attempts = 0`, which should send the first
+failing test straight to ESCALATE. A Debugger step ran anyway. The row said `0`; the run
+behaved as though it said `3`.
+
+`runs.budget` had been **written by the API since Phase 1 and never read**.
+`orchestrator/resume.initial_state` built a fresh `Budget()` from defaults and never
+looked at the column, so every `--budget`, every `budget_usd` over MCP and every eval
+task's ceiling was recorded and ignored. **A caller asking for a $3 ceiling got $10.**
+
+The eval rows above say `budget_usd: 3.0`; those runs actually had $10. It cost nothing
+here because the provider was free, and it would have cost real money on one that is not.
+
+This is the fourth instance of the same defect class in this phase — `runs.provider`
+before 6.3, `unattended` before 6.1, `Budget.max_debug_attempts` before the base-commit
+work, and now the budget wholesale. In every case a column was written, read back by the
+API, displayed in the console, and consulted by nothing.
+
 ## What this does not measure
 
 Three tasks against one fixture, on one model, in one hour. It is calibration — a floor
 that says the loop closes end to end — not a capability claim. A resolved rate worth
 quoting needs real repositories and enough tasks that one bad afternoon does not move it,
 which is the suite `docs/evals.md` §2 tells you how to write.
+
+**The `no-debugger` arm is not measured end to end.** The budget fix is covered by unit
+and integration tests — the transition escalates at a zero ceiling, and a budget POSTed to
+the API reaches the state the worker builds — but no complete run has been observed taking
+that path, because both free tiers were exhausted by the day's runs: Gemini returned `429`
+after the suite above, and Groq returned `429` eighteen minutes into the arm. What remains
+is quota, not code.

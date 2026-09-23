@@ -11,6 +11,9 @@ import contextlib
 from typing import Any
 from uuid import UUID
 
+from pydantic import ValidationError
+
+from contracts import Budget
 from core.errors import AutosweError, SandboxError
 from gateway.pricing import priced
 from gateway.routing import ROUTES
@@ -43,9 +46,31 @@ async def initial_state(engine: Any, run_id: UUID) -> RunState:
         unattended=bool(row.unattended),
         upstream=row.upstream,
         base_commit=row.base_commit,
+        budget=budget_from(row),
         phase=Phase.SETUP,
         test_command=DEFAULT_TEST_COMMAND,
     )
+
+
+def budget_from(row: Any) -> Budget:
+    """The budget the caller asked for.
+
+    `runs.budget` has been written by the API since Phase 1 and **never read**: this
+    function built a fresh `Budget()` and the column was decoration. A caller asking for
+    $3 got $10, and every `--budget`, every `budget_usd` over MCP and every eval task's
+    ceiling was recorded and ignored. It was found by an ablation arm that sets
+    `max_debug_attempts=0` and watching a Debugger step run anyway.
+
+    A row whose JSON no longer validates — a field removed since it was written, and
+    `Budget` forbids extras — falls back to the defaults rather than refusing to start:
+    a resumed run dying over a budget key is worse than one running on the default
+    ceiling. Logged at error, because silence is exactly what let the original bug sit.
+    """
+    try:
+        return Budget.model_validate(row.budget or {})
+    except ValidationError as e:
+        log.error("run_budget_unreadable", run_id=str(row.id), error=str(e)[:300])
+        return Budget()
 
 
 async def load_state(deps: Deps, run_id: UUID) -> tuple[RunState, bool]:

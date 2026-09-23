@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased — the budget a run asked for is the budget it gets
+
+Fixed
+- **`runs.budget` was written by the API and never read.** `initial_state` built a fresh
+  `Budget()` from defaults, so a caller asking for a $3 ceiling got $10, and every
+  `--budget`, every `budget_usd` over MCP and every eval task's ceiling was recorded and
+  ignored. It cost nothing on a free provider and would have cost money on one that is
+  not. Fourth instance of this defect class in the phase — `runs.provider`, `unattended`,
+  `Budget.max_debug_attempts`, and now the budget wholesale.
+- `--ablate` existed on `evals/run.py` and not on `autoswe eval`, so the command
+  `docs/evals.md` documents exited 2 with "No such option". A test now asserts the two
+  surfaces agree, and that the arm reaches the driver rather than only parsing — a
+  mutation setting `ablation=None` at the call site survived the first version.
+
+Added
+- Criterion 1 is met: `uv run autoswe-mcp` driven as a real MCP client over stdio —
+  13 tools, `create_run`, `wait_for_run` to terminal, pull-request URL reported. Verified
+  from the ledger rather than a terminal, which earned its keep when the machine rebooted
+  and took `/tmp` with it.
+
+Notes
+- The budget bug was found by running the `no-debugger` ablation and watching a Debugger
+  step happen anyway. The arm itself is still **not** measured end to end: both free tiers
+  were spent on the day's runs. The fix has tests from the POST body to the worker's state;
+  what is missing is a complete run, which is quota rather than code.
+
 ## Unreleased — the private suite, run
 
 The eval harness was driven rather than left as machinery nobody had used, and it found

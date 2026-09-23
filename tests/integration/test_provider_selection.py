@@ -191,3 +191,44 @@ async def test_fail_run_records_what_the_api_will_show(engine: AsyncEngine) -> N
     async with session(engine) as s:
         row = await db.get_run(s, run_id)
     assert row is not None and row.status == "failed" and row.finished_at is not None
+
+
+# ---- the budget --------------------------------------------------------------------------
+
+
+async def test_the_budget_a_caller_posts_reaches_the_state_the_worker_builds(
+    engine: AsyncEngine,
+) -> None:
+    """The whole wire, because each half was individually fine and the join was not.
+
+    The API wrote `runs.budget` and `initial_state` built a fresh `Budget()`, so the
+    column was decoration for five phases: a caller asking for $3 got $10. Both halves
+    read correctly on their own, which is why nothing caught it — and why this test spans
+    them rather than checking either.
+    """
+    from orchestrator.resume import initial_state
+
+    body = {
+        "repo_url": "https://github.com/acme/demo",
+        "goal": "Implement subtract(a, b)",
+        "budget": {"max_usd": 3.0, "max_debug_attempts": 0},
+    }
+    async with api_app(engine) as (client, _arq):
+        res = await client.post("/runs", json=body, headers={"X-API-Key": KEY})
+    assert res.status_code == 202
+    run_id = uuid.UUID(res.json()["run_id"])
+
+    state = await initial_state(engine, run_id)
+    assert state.budget.max_usd == 3.0, "a $3 run must not start with a $10 ceiling"
+    assert state.budget.max_debug_attempts == 0, "the no-debugger ablation arm"
+
+
+async def test_a_run_that_named_no_budget_starts_on_the_defaults(engine: AsyncEngine) -> None:
+    from contracts import Budget as BudgetContract
+    from orchestrator.resume import initial_state
+
+    body = {"repo_url": "https://github.com/acme/demo", "goal": "Implement subtract(a, b)"}
+    async with api_app(engine) as (client, _arq):
+        res = await client.post("/runs", json=body, headers={"X-API-Key": KEY})
+    state = await initial_state(engine, uuid.UUID(res.json()["run_id"]))
+    assert state.budget == BudgetContract()
