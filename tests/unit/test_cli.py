@@ -324,3 +324,63 @@ def test_emit_prints_json_or_lines_but_not_both() -> None:
 
     as_lines = runner.invoke(app, ["probe-lines"]).output
     assert "human line" in as_lines and '"a"' not in as_lines
+
+
+def test_every_ablation_arm_the_driver_offers_is_reachable_from_the_cli() -> None:
+    """`--ablate` existed on `evals/run.py` and not on `autoswe eval`, so the command
+    `docs/evals.md` tells you to run exited 2 with "No such option".
+
+    A flag on the library and not on the command is the same class of gap as a documented
+    endpoint that was never routed: everything reads correctly and nothing works. This
+    asserts the two surfaces agree rather than that one of them has a particular flag.
+    """
+    from typer.main import get_command
+
+    from evals.run import ABLATIONS
+
+    assert ABLATIONS, "the driver offers no arms, so there is nothing to reach"
+    params = {p.name for p in get_command(app).commands["eval"].params}  # type: ignore[attr-defined]
+    assert "ablate" in params
+
+    runner = CliRunner()
+    for arm in ABLATIONS:
+        result = runner.invoke(app, ["eval", "--ablate", arm, "--key", "k", "--suite", "nope"])
+        # It gets past option parsing and fails on the suite, which is the next thing.
+        assert "No such option" not in result.output, arm
+
+
+def test_the_arm_reaches_the_driver_rather_than_only_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Parsing is not wiring.
+
+    A first version of the test above only checked that `--ablate` was a known option, and
+    a mutation setting `ablation=None` at the call site survived it — which is exactly the
+    bug that would accept the flag, print a table, and compare an arm against itself.
+    """
+    import evals.run as evals_run
+
+    seen: dict[str, object] = {}
+
+    async def fake_run_suite(chosen: object, **kwargs: object) -> list[object]:
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(evals_run, "run_suite", fake_run_suite)
+    # The shipped tasks name `${AUTOSWE_FIXTURE_REPO}`, and refusing to load without it is
+    # the loader doing its job — see `test_an_unset_repository_variable_stops_the_suite`.
+    monkeypatch.setenv("AUTOSWE_FIXTURE_REPO", "https://github.com/acme/fixture")
+    result = CliRunner().invoke(app, ["eval", "--ablate", "no-debugger", "--key", "k"])
+
+    assert result.exit_code == 0, result.output
+    assert seen.get("ablation") == "no-debugger"
+
+
+def test_an_unknown_arm_names_the_ones_that_exist() -> None:
+    """Including the one that is deliberately not a flag. Someone who reads the plan will
+    try `--ablate no-repomap`, and "unknown arm" without the reason sends them looking for
+    a typo in a word they copied correctly."""
+    result = CliRunner().invoke(app, ["eval", "--ablate", "no-repomap", "--key", "k"])
+    assert result.exit_code == 2
+    assert "no-debugger" in result.output
+    assert "restarting the worker" in result.output

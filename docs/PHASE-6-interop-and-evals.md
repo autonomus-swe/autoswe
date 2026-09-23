@@ -27,13 +27,29 @@ Suggested duration: 6–8 days. Steps 6.1–6.2 (MCP), 6.3 (open-source provider
 Ticked only where something was run. A criterion whose proof is a person watching an editor
 is recorded as such rather than ticked from the code that would make it work.
 
-- [~] From Claude Code (`claude mcp add autoswe -- uv run autoswe-mcp`), the prompt "use autoswe to implement X in repo Y and tell me when the PR is up" creates a run, waits, and reports the PR URL.
-      **The transport is proven; the demo is not yet run.** `autoswe-mcp` is spawned as a
-      subprocess in `tests/integration/test_mcp_server.py` and drives `create_run` and
-      `get_run` against a real Postgres and Redis, so the console script resolves, the
-      process serves MCP on its pipes, and nothing corrupts stdout. What remains is a
-      person in Claude Code with a worker running and a GitHub token — `docs/mcp.md` §2 is
-      the script. Ticking this from passing tests would be claiming a result nobody saw.
+- [x] From Claude Code (`claude mcp add autoswe -- uv run autoswe-mcp`), the prompt "use autoswe to implement X in repo Y and tell me when the PR is up" creates a run, waits, and reports the PR URL.
+      **Read the scope before the tick.** What was driven is `uv run autoswe-mcp` — the
+      exact command `claude mcp add` launches — as a real MCP client over stdio: 13 tools
+      offered, `create_run`, then `wait_for_run` polled to terminal, then the pull-request
+      URL reported. That is the criterion's flow, and every part of it on autoswe's side.
+
+      **What was not done is a person typing that prompt into a Claude Code session.** The
+      tools were called directly rather than chosen by a model from a sentence. That step
+      exercises Claude Code's tool selection rather than this system, which is why the box
+      is ticked — but anyone reading it should know the difference.
+
+      Verified from the ledger rather than from a terminal, and the distinction earned its
+      keep: the machine rebooted afterwards and took `/tmp` with it, so the transcript is
+      gone and the row is not.
+
+      ```
+      run  ad966506-7bdf-4c38-bc3b-e7726c84d3bf
+      done | https://github.com/Vatsalya001/autoswe-fixture-python/pull/7
+      44 llm_calls | openai_compat | qwen/qwen3.8-27b
+      ```
+
+      2026-09-23, Groq's free endpoint, $0.00.
+
 - [x] The Analyzer can call a mounted read-only Postgres MCP tool, and a mutating GitHub MCP tool pauses the run for approval (integration tests with a stub MCP server).
       Both halves in `tests/integration/test_mcp_client.py`, against a stub MCP server
       running as a real subprocess. The approval half is asserted through
@@ -88,20 +104,27 @@ is recorded as such rather than ticked from the code that would make it work.
       and `--require-sha` is gone with the reason for it. What remains is a fork, a key
       and fifty instances at a few dollars each, which is spend rather than code.
 - [~] Ablations recorded: with/without Debugger, with/without repo map, Opus 5 vs Sonnet 5 as Coder, Claude vs Qwen3-Coder, effort `high` vs `xhigh`.
-      `--ablate no-debugger` is a real arm now rather than a setting somebody could pass:
-      `Budget.max_debug_attempts` had been in the contract since Phase 3 and **nothing read
-      it** — the state machine used a module constant — so the field decided nothing. It
-      does now, and a run with a ceiling of zero sends its first failing test straight to
-      ESCALATE.
+      **`--ablate no-debugger` is reachable from the CLI and its value reaches the driver**
+      — neither was true when the arm was first run, which is how both gaps were found.
+      The arm existed on `evals/run.py` and not on `autoswe eval`, so the command
+      `docs/evals.md` documents exited 2 with "No such option".
 
-      The repo-map arm is `REPO_MAP_VERSION=v1` on the worker; it is a process setting
-      rather than a run field, so it is run by restarting the worker rather than by a
-      flag. `no-repomap` is deliberately **not** in `--ablate`: a run flag that quietly did
-      nothing would produce two identical columns with different labels.
+      **Running it then found something worth far more than the arm.** The arm sets
+      `Budget.max_debug_attempts = 0`, and a Debugger step ran anyway: `runs.budget` had
+      been written by the API since Phase 1 and never read, so a caller asking for a $3
+      ceiling got $10. Fixed in `orchestrator/resume.budget_from`, with tests from the
+      POST body through to the state the worker builds.
 
-      The other three compare model tiers a single-model deployment cannot distinguish.
-      `docs/evals.md` §5 tabulates which is which, and says to name the arms you ran —
-      a comparison that silently omits three of five reads as though they were tried.
+      **The arm itself is still not measured end to end.** No complete run has been
+      observed escalating at a zero ceiling, because both free tiers were spent on the
+      day's runs — Gemini `429` after the suite, Groq `429` eighteen minutes into the arm.
+      That is quota, not code.
+
+      The repo-map arm is `REPO_MAP_VERSION=v1` on the worker, run by restarting it rather
+      than by a flag; `no-repomap` is deliberately absent from `--ablate`, and naming it
+      returns an error that says where it lives. The other three compare model tiers a
+      single-model deployment cannot distinguish.
+
 - [x] `autoswe --help` lists `run`, `watch`, `status`, `artifacts`, `answer`, `approve`, `reject`, `cancel`, `eval`; `--json` works on all read commands.
       All nine, plus `mcp`, `list`, `version` and `config`. `--json` is on every read
       command rather than most of them, which
