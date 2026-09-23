@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased — a local open model, and the context window nobody mentioned
+
+Fixed
+- `docs/open-source-model.md` told you a 4 096-token window will not finish a Coder loop
+  without telling you that **4 096 is what Ollama gives you by default**, whatever the
+  model advertises. Measured on Ollama 0.34.0: `qwen2.5:7b` reports
+  `qwen2.context_length: 32768` and loads at `context_length: 4096`. The
+  OpenAI-compatible endpoint has no way to ask for more — `num_ctx` is an Ollama option
+  and `/v1/chat/completions` does not carry it — so the fix is a two-line Modelfile, which
+  the guide now gives, along with how to confirm it took.
+- That Modelfile has to live under `$HOME` when Ollama came from snap, or
+  `ollama create -f` fails with *"no Modelfile or safetensors files found"*, which names
+  neither the cause nor the fix. Third time snap confinement has bitten this project.
+
+Notes
+- **A run on a local open model, with no key, no network and no vendor**, through the same
+  `openai_compat` provider criterion 3 names. It runs; on this hardware it is not
+  practical. From the ledger, same fixture and same database: **1.40 tok/s local against
+  9.88 hosted**, and the completed hosted run needed 67 calls. One planner call took 677
+  seconds for 262 tokens on a fully cached prompt — the lever is generation, not caching.
+  A statement about twelve CPU cores, not about the model.
+- Criterion 3 stays `[~]`, with a measured reason rather than an asserted one. vLLM needs
+  a CUDA device this box does not have. Qwen3-Coder could not be fetched either:
+  `qwen3-coder:30b` downloads 18.6 GB and hangs without committing it, twice, and
+  `qwen2.5-coder:7b` fails on a digest mismatch. Three bad pulls of two models points at
+  the transfer — plausibly the TLS-inspecting proxy that also broke the clean clone's
+  GitHub certificate check — recorded as an observation, not a diagnosis.
+
 ## Unreleased — a clean clone, timed, and the bug only a second checkout could find
 
 Fixed

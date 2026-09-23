@@ -33,6 +33,40 @@ LLM_MODEL=qwen2.5-coder:7b
 
 This is what `tests/integration` and the `live` marker use. No key, no quota, no network.
 
+#### Raise the context window first, or the Coder loop will not finish
+
+**Ollama serves 4 096 tokens regardless of what the model supports.** Measured on Ollama
+0.34.0: `qwen2.5:7b` advertises `qwen2.context_length: 32768` and is loaded at
+`context_length: 4096`. §6 already says a 4 096-token window will not finish a Coder loop;
+what it did not say is that 4 096 is what you get by default.
+
+The OpenAI-compatible endpoint gives you no way to ask for more — `num_ctx` is an Ollama
+option and `/v1/chat/completions` does not carry it. Bake it into a derived model instead:
+
+```bash
+mkdir -p ~/ollama-ctx && cd ~/ollama-ctx
+printf 'FROM qwen2.5-coder:7b\nPARAMETER num_ctx 32768\n' > Modelfile
+ollama create qwen2.5-coder-32k -f ~/ollama-ctx/Modelfile
+```
+
+then set `LLM_MODEL=qwen2.5-coder-32k`. No root, no service restart. Confirm it took:
+
+```bash
+curl -s localhost:11434/api/ps | jq '.models[] | {name, context_length}'
+# { "name": "qwen2.5-coder-32k:latest", "context_length": 32768 }
+```
+
+`/api/ps` reports nothing until a model is loaded, so send one request first.
+
+**Keep the Modelfile under `$HOME` if Ollama came from snap.** A snap-confined `ollama`
+cannot read `/tmp`, and `ollama create -f /tmp/Modelfile` fails with *"no Modelfile or
+safetensors files found"* — which names neither the real cause nor the fix. The same
+confinement applies to Docker; see `scripts/bringup.sh`, which diagnoses that case.
+
+**The KV cache is not free.** 32 768 tokens costs real memory on top of the weights, and
+on a CPU-only box that is the difference between a model that fits and one that swaps.
+Raise it as far as you need and no further.
+
 ### vLLM
 
 ```bash

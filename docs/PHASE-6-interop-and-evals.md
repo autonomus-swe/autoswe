@@ -72,9 +72,29 @@ is recorded as such rather than ticked from the code that would make it work.
       here because a criterion asking you to inspect a column deserves the column
       inspected.
 
-      *On Qwen3-Coder via vLLM* — no. That needs a GPU. The `vllm` service is in compose
-      behind the `gpu` profile and `docs/open-source-model.md` is the guide, but nobody
-      has run it, and this stays `[~]` until somebody does.
+      *On Qwen3-Coder via vLLM* — no, and the reason is now measured rather than asserted.
+
+      **A local open model does run through this exact path.** Run `7c18e262` was created
+      against Ollama serving `qwen2.5-7b-32k` — no API key, no network, no vendor of any
+      kind — and went through `analyze` and `plan` on the `openai_compat` provider the
+      criterion names. The vendor-free half of this claim is settled.
+
+      **The hardware is the blocker, with numbers.** This box is an i7-1355U with Intel
+      integrated graphics and no CUDA device, so vLLM is out. On CPU the local model runs
+      at **1.40 tok/s against 9.88 for the hosted model** on the same fixture in the same
+      database, and the completed comparison run needed **67 calls** — one planner call
+      alone took 677 seconds for 262 tokens, on a fully cached prompt. That is a fact
+      about twelve CPU cores, not about the model or the code.
+
+      **Qwen3-Coder specifically could not be fetched.** `qwen3-coder:30b` downloads all
+      18.6 GB and then hangs without committing it, twice; `qwen2.5-coder:7b` fails with a
+      digest mismatch. Three stalled or corrupted pulls of two models points at the
+      transfer — this network runs the same TLS-inspecting proxy that broke the clean
+      clone's GitHub certificate check — but that is a plausible cause, not a demonstrated
+      one, and `docs/numbers.md` records it as an observation.
+
+      Stays `[~]`. The `vllm` service is in compose behind the `gpu` profile and
+      `docs/open-source-model.md` is the guide; somebody with a CUDA device closes this.
 
 - [x] `evals/run.py --suite private` runs the 20–30 task suite and writes per-task resolved/attempts/rounds/cost/cache-hit; `evals/report.py` renders the table.
       **Run. 3/3 resolved, three real pull requests, $0.00** — `gemini-3.1-flash-lite`
