@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — a field the contract never declared no longer kills a run
+
+Fixed
+- `_repair_once` now drops keys the schema does not declare. Measured: run `7c18e262` on a
+  local `qwen2.5:7b` died in DECOMPOSE after 40 minutes because it returned a valid
+  `TaskGraphSpec` **plus** two fields it invented — `test_command` and `toolbench_root` —
+  and `extra="forbid"` refused the object.
+
+  **The retry was not the gap.** `parse()` already feeds the validation error back as a
+  tool result and asks again; the second attempt produced the same two fields. That is the
+  lesson the one-item-list repair beside it already carries: the prompt that reaches for a
+  field is the prompt that reaches for it again, so the retry is spent for nothing.
+
+  So this is the fifth repair of the same kind, next to the four already there — a list
+  written as an `{"items": …}` wrapper, a one-element list written as the element, an
+  explicit `null` where the schema has a default, a string written as a single-key object.
+  Dropping an undeclared key invents nothing: the schema is the code's decision, not the
+  model's. Logged rather than silent, because a model that keeps reaching for the same
+  field is usually telling you the contract is missing something.
+
+Notes
+- A guard for a non-mapping container was written and then removed. `extra_forbidden` is
+  raised only for an undeclared key on a model, so the container is always a mapping — a
+  mutation deleting the guard survived the suite, because there was no behaviour on the
+  other side of it to observe. The comment says so rather than leaving an unreachable
+  branch for the next reader to wonder about.
+- The local-model result is therefore **not** simply "too slow to finish". It was slow
+  *and* it hit a robustness gap, and the gap was in this project's code rather than in the
+  model.
+
 ## Unreleased — a local open model, and the context window nobody mentioned
 
 Fixed

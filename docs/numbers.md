@@ -988,3 +988,37 @@ and not a demonstrated one. It is recorded as an observation, not a diagnosis.
 So the criterion stays `[~]`, and the reason is sharper than it was: vLLM needs a CUDA
 device this machine does not have, and the Ollama fallback cannot fetch a coder model on
 this network. What *is* settled is that the provider path itself is vendor-free and works.
+
+## What actually stopped the local run: the contract, not the clock
+
+The run above did not run out of time. It **failed in DECOMPOSE**, 40 minutes in:
+
+```
+ProviderError: structured output failed validation twice: 2 validation errors for TaskGraphSpec
+test_command    Extra inputs are not permitted  [input: 'uv run --no-sync pytest -q']
+toolbench_root  Extra inputs are not permitted  [input: '/path/to/repo']
+```
+
+Asked for a `TaskGraphSpec`, `qwen2.5:7b` returned every declared field correctly and
+added two it invented. `extra="forbid"` refused the object, and the whole run died.
+
+**The retry was not the problem.** `parse()` feeds the validation error back as a tool
+result and asks again; the second attempt produced the same two fields. That is the same
+lesson the one-item-list repair already carries in its comment: *the prompt that reaches
+for a field is the prompt that reaches for it again.*
+
+**So this is a repair, and it is the one that was missing.** `_repair_once` already
+handles four shapes a small model gets wrong — a list written as a `{"items": …}` wrapper,
+a one-element list written as the element, an explicit `null` where the schema has a
+default, a string written as a single-key object. `extra_forbidden` was the fifth of the
+same kind and was not there.
+
+Dropping an undeclared key invents nothing. The schema is the code's decision, not the
+model's, so there is no reading under which keeping the field is right. It is logged
+rather than silent — a model that keeps reaching for the same field is usually telling you
+the contract is missing something.
+
+**What this changes about the criterion.** The local-model result is no longer "too slow to
+finish". It was too slow *and* it hit a real robustness gap, and the gap was in this
+project's code rather than in the model. The throughput numbers above stand; the failure
+they were attached to has a different cause than the clock.
