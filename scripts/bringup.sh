@@ -12,9 +12,11 @@
 # green line that checked nothing is worse than a red one. Safe to re-run: each step is
 # skipped when it is already true.
 #
-# Ports come from .env (POSTGRES_PORT, REDIS_PORT), never from an assumption — this
-# machine publishes redis on 6380 and a script hardcoding 6379 would report a healthy
-# stack it never touched.
+# Ports come from .env (POSTGRES_PORT, REDIS_PORT, API_PORT), never from an assumption —
+# this machine publishes redis on 6380 and a script hardcoding 6379 would report a healthy
+# stack it never touched. API_PORT was the exception until a second clone was brought up
+# beside the first: compose already honoured it and this script did not, so the two
+# disagreed about where the API was.
 #
 # Secrets are reported as "set" or "missing". No value from .env is ever printed.
 
@@ -102,6 +104,52 @@ preflight() {
   [[ $FAILED -eq 0 ]] || { printf '\n%sPreflight failed. Fix the above and re-run.%s\n' "$RED" "$OFF"; exit 1; }
 }
 
+# Can Python reach the GitHub API, with the same trust store a run will use?
+#
+# Asked here because the alternative is finding out in the PR phase: a clean clone behind
+# a TLS-inspecting proxy plans, codes, tests, reviews and scans — ten minutes and the
+# model budget — and only then fails, because git trusts the proxy's root CA and Python's
+# bundled certifi does not. `.env.example` documents CA_BUNDLE correctly; what was missing
+# was being told before spending the run rather than after.
+#
+# A warning, never a failure. No network at all is a normal state for bringing the stack
+# up, and this script's job is to say what is true, not to refuse.
+check_github_tls() {
+  local out
+  out="$(CA_BUNDLE="$(env_get CA_BUNDLE)" uv run python - <<'PY' 2>/dev/null || true
+import os, ssl, socket
+import certifi
+
+# certifi, not the system store, when CA_BUNDLE is unset — because PyGithub goes through
+# `requests`, and that is what `requests` trusts. The first version of this check called
+# `create_default_context()` with no cafile, which reads the OS store, trusted the proxy
+# CA and printed "ok" in exactly the situation a run then failed in. A check that is green
+# where the real thing is red is worse than no check.
+bundle = os.environ.get("CA_BUNDLE") or certifi.where()
+try:
+    ctx = ssl.create_default_context(cafile=bundle)
+    with socket.create_connection(("api.github.com", 443), timeout=5) as sock:
+        with ctx.wrap_socket(sock, server_hostname="api.github.com"):
+            print("ok")
+except ssl.SSLCertVerificationError:
+    print("tls")
+except Exception:
+    print("net")
+PY
+)"
+  case "$out" in
+    ok)  ok "GitHub API reachable and its certificate verifies" ;;
+    tls) warn "GitHub's certificate does not verify — a run will fail in the PR phase"
+         note "a TLS-inspecting proxy is signing this connection with a root CA that Python"
+         note "does not trust. git already trusts it; Python needs telling:"
+         note "  CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt   in .env" ;;
+    net) warn "cannot reach api.github.com — a run cannot open a pull request"
+         note "everything else still comes up; this is only checked so you learn it now"
+         note "rather than ten minutes into a run, in the PR phase, having spent the budget" ;;
+    *)   warn "could not check GitHub reachability" ;;
+  esac
+}
+
 check_env() {
   step "Configuration — which settings are present"
 
@@ -125,6 +173,7 @@ check_env() {
   fi
   if env_is_set GITHUB_TOKEN; then
     ok "GITHUB_TOKEN set — a run can push a branch and open a pull request"
+    check_github_tls
   else
     warn "GITHUB_TOKEN missing — the worker exits at startup naming it"
     worker_ready=0
@@ -307,30 +356,38 @@ pid_alive() { [[ -f "$1" ]] && kill -0 "$(cat "$1")" 2>/dev/null; }
 start_api() {
   step "API and console"
   mkdir -p "$RUNDIR"
+  # Same rule as postgres and redis. `docker-compose.yml` already publishes the API on
+  # `${API_PORT:-8000}`, so hardcoding 8000 here meant a developer who set API_PORT got
+  # compose listening on one port and this script probing another — reporting "the API
+  # never became healthy" about an API that was up. Found by bringing up a second clone.
+  local api_port; api_port="$(env_get API_PORT 8000)"
+  local base="http://127.0.0.1:${api_port}"
+
   if pid_alive "$API_PID"; then
     ok "already running (pid $(cat "$API_PID")) — started by this checkout"
-  elif curl -sf --max-time 2 http://127.0.0.1:8000/healthz >/dev/null 2>&1; then
-    warn "something is already serving :8000 and this checkout did not start it"
+  elif curl -sf --max-time 2 "$base/healthz" >/dev/null 2>&1; then
+    warn "something is already serving :${api_port} and this checkout did not start it"
     note "probably another working tree. Its /healthz is reported below, but it is not ours;"
     note "stop it first if you meant to run this one: scripts/bringup.sh down (in that tree)"
+    note "or give this checkout its own port: API_PORT=8001 in .env"
   else
-    nohup uv run uvicorn api.main:app --host 127.0.0.1 --port 8000 >"$API_LOG" 2>&1 &
+    nohup uv run uvicorn api.main:app --host 127.0.0.1 --port "$api_port" >"$API_LOG" 2>&1 &
     echo $! >"$API_PID"
     sleep 1
   fi
 
   local body="" waited=0
   until [[ -n "$body" ]] || [[ $waited -ge 40 ]]; do
-    body="$(curl -sf --max-time 2 http://127.0.0.1:8000/healthz 2>/dev/null || true)"
+    body="$(curl -sf --max-time 2 "$base/healthz" 2>/dev/null || true)"
     [[ -n "$body" ]] || { sleep 2; waited=$((waited + 2)); }
   done
 
   if [[ -n "$body" ]]; then
     ok "GET /healthz -> $body"
     local code
-    code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/ || true)"
-    ok "console at http://127.0.0.1:8000/ -> HTTP $code"
-    code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/runs || true)"
+    code="$(curl -s -o /dev/null -w '%{http_code}' "$base/" || true)"
+    ok "console at ${base}/ -> HTTP $code"
+    code="$(curl -s -o /dev/null -w '%{http_code}' "$base/runs" || true)"
     ok "GET /runs with no key -> HTTP $code (auth is enforced)"
   else
     bad "the API never became healthy"
@@ -365,11 +422,12 @@ start_worker() {
 # ---------------------------------------------------------------- commands
 
 summary() {
-  local key
+  local key api_port
   key="$(env_get API_KEYS | cut -d, -f1)"
+  api_port="$(env_get API_PORT 8000)"
   printf '\n%s== Ready%s\n' "$BOLD" "$OFF"
-  printf '  console   http://127.0.0.1:8000/   (paste the API key from .env into the field)\n'
-  printf '  health    curl -s http://127.0.0.1:8000/healthz\n'
+  printf '  console   http://127.0.0.1:%s/   (paste the API key from .env into the field)\n' "$api_port"
+  printf '  health    curl -s http://127.0.0.1:%s/healthz\n' "$api_port"
   printf '  api key   %s chars, first of %s in API_KEYS\n' "${#key}" "$(env_get API_KEYS | tr ',' '\n' | grep -c . || echo 1)"
   printf '  logs      scripts/bringup.sh logs\n'
   printf '  a run     export AUTOSWE_API_KEY=$(grep -m1 ^API_KEYS= .env | cut -d= -f2- | cut -d, -f1)\n'
@@ -396,17 +454,18 @@ cmd_status() {
   fi
 
   step "Health"
-  local body
-  body="$(curl -sf --max-time 3 http://127.0.0.1:8000/healthz 2>/dev/null || true)"
+  local body api_port
+  api_port="$(env_get API_PORT 8000)"
+  body="$(curl -sf --max-time 3 "http://127.0.0.1:${api_port}/healthz" 2>/dev/null || true)"
   if [[ -z "$body" ]]; then
-    warn "the API is not answering on :8000"
+    warn "the API is not answering on :${api_port}"
   elif pid_alive "$API_PID"; then
     ok "$body"
   else
     # Reported as a warning, not a tick. A green health line for a process this checkout
     # did not start describes somebody else's stack, and the whole point of this script
     # is not to do that.
-    warn "someone is serving :8000, but it is not this checkout — $body"
+    warn "someone is serving :${api_port}, but it is not this checkout — $body"
     note "probably another working tree; run 'scripts/bringup.sh down' there first"
   fi
 

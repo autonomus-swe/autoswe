@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased — a clean clone, timed, and the bug only a second checkout could find
+
+Fixed
+- `scripts/bringup.sh` hardcoded `:8000` for the API in seven places — starting uvicorn,
+  waiting for health, both console checks, the Ready banner and two lines of `status` —
+  while `docker-compose.yml` already published it on `${API_PORT:-8000}`. A developer who
+  set `API_PORT` got compose listening on one port and this script probing another, so it
+  reported **"the API never became healthy"** about an API that was up. Now read with
+  `env_get` like `POSTGRES_PORT` and `REDIS_PORT`, which is what the script's own docstring
+  already claimed it did.
+- `.env.example` gains `API_PORT`, beside the other two, with a note that changing all
+  three is how you run a second checkout beside a first.
+
+Added
+- `bringup.sh` checks that Python can verify GitHub's certificate, at configuration time.
+  A clean clone behind a TLS-inspecting proxy planned, coded, tested, reviewed and scanned
+  — ten minutes and a whole run — and only then failed in the PR phase, because git trusts
+  the proxy's root CA and Python's certifi does not. `.env.example` documents `CA_BUNDLE`
+  correctly, so this was never a documentation gap; it was a timing one. A warning, never
+  a failure: no network is a normal state for bringing the stack up.
+
+  **Written twice.** The first version used `ssl.create_default_context()` with no
+  `cafile`, which reads the OS trust store — trusts the proxy CA, prints "ok", and the run
+  fails anyway. PyGithub goes through `requests`, which trusts certifi. A check that is
+  green where the real thing is red is worse than no check. Now uses `certifi.where()`
+  when `CA_BUNDLE` is unset, and both outcomes were verified.
+
+Notes
+- **The clean-clone criterion is measured rather than asserted.** Clone 3 s, configure 9 s,
+  `bringup.sh` to a healthy stack 33 s — 45 seconds against a 30-minute budget, exit 0.
+  Warm caches, and `docs/numbers.md` says so: a first-ever run on a machine also builds a
+  1.21 GB sandbox image. The port bug above is what the exercise found, and only a second
+  checkout could have found it — one checkout on the default port is correct by
+  coincidence.
+- Cloning into `/tmp` fails under snap-packaged Docker, and `bringup.sh` diagnoses that
+  precisely — names the confinement, says to move the checkout under `$HOME`, and stops
+  rather than continuing past a broken step.
+- **A green PR from that clone**: 8 min 07 s, $0.00, fixture PR #11, verified by checking
+  the branch out and running its tests (4 passed, exit 0) rather than by the run saying
+  `done`. Asked only for `multiply`, the agent also implemented `subtract` and `slugify` —
+  the fixture's `main` does not collect without them — and notably did *not* delete the
+  failing imports or narrow the test run, which are the two shortcuts `docs/evals.md` §2
+  warns about.
+
 ## Unreleased — the first real SWE-bench instance, and two things it corrected
 
 Fixed
