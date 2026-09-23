@@ -36,6 +36,7 @@ import argparse
 import asyncio
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -115,11 +116,24 @@ def load_instances(limit: int, *, split: str = "test") -> list[Instance]:
 async def patch_for(client: Client, run_id: str) -> str:
     """The run's `diff` artifact, or an empty patch.
 
-    Asked for **whatever the run's final status is**, and that is the whole point. The
-    `diff` artifact is written in TEST, before REVIEW, SECURITY and PR — so a run that
-    died in the security scan, or at the push, still holds the patch it produced. Measured
-    rather than assumed: a `failed` run in this project's own database has a 596-character
-    `diff` against a `security` phase.
+    Asked for **whatever the run's final status is**, and that is the point — within a
+    boundary that is worth stating exactly, because the first version of this docstring
+    stated it too broadly.
+
+    `_store_diff` runs in TEST, and only when the final task's tests **pass**. So:
+
+    - a run that passed its tests and then died in REVIEW, SECURITY or at the push **does**
+      hold its patch, and gating on `status == "done"` threw it away. Measured: a `failed`
+      run in this project's own database carries a 596-character `diff` against a
+      `security` phase.
+    - a run that never got its tests passing holds **nothing**, and an empty patch is the
+      honest prediction. The first real SWE-bench instance this project attempted ended
+      that way: `astropy__astropy-12907`, seven Debugger steps, no diff artifact at all,
+      because ESCALATE rewinds a task before replanning it.
+
+    The second case is not a gap to close by storing a diff unconditionally. After a
+    rewind the worktree is back at the base commit, so there would be nothing in it — and
+    a patch salvaged mid-debugging is a patch the run itself had already rejected.
 
     Gating on `status == "done"` threw those away, and for this benchmark that is simply
     wrong: the official harness scores the patch and nothing else. It also made SWE-bench
@@ -160,6 +174,7 @@ async def predict(
     async def one(instance: Instance) -> dict[str, Any]:
         async with limit:
             task = instance.task(fork_owner, budget_usd, timeout_s)
+            started = time.monotonic()
             log.info("swebench_instance_started", instance=instance.instance_id)
             try:
                 run_id = await client.create(task, provider)
@@ -170,7 +185,14 @@ async def predict(
                 patch = await patch_for(client, run_id)
             except Exception as e:
                 log.error("swebench_instance_failed", instance=instance.instance_id, error=str(e))
-                return _prediction(instance, "", {"error": f"{type(e).__name__}: {e}"})
+                return _prediction(
+                    instance,
+                    "",
+                    {
+                        "error": f"{type(e).__name__}: {e}",
+                        "wall_clock_s": round(time.monotonic() - started, 1),
+                    },
+                )
             return _prediction(
                 instance,
                 patch,
@@ -178,7 +200,11 @@ async def predict(
                     "run_id": run_id,
                     "status": status,
                     "cost_usd": row.cost_usd,
-                    "wall_clock_s": row.wall_clock_s,
+                    # Measured here rather than taken from `measure`, which never sets it
+                    # — `run_task` does, and this path does not go through it. Every
+                    # prediction said `0.0` while an instance that really took 52 minutes
+                    # was reported as instant.
+                    "wall_clock_s": round(time.monotonic() - started, 1),
                     "debug_attempts": row.debug_attempts,
                 },
             )

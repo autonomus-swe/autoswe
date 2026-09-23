@@ -188,11 +188,17 @@ instance to provide them. Making this project's sandbox images solve that would 
 reimplementing SWE-bench in order to run SWE-bench, and the score would be against our
 reconstruction of the environment rather than against the benchmark.
 
-**No fork is needed.** The `diff` artifact is written in TEST, before REVIEW, SECURITY and
-PR — so a run against `django/django` produces its patch, then fails at the push because
-you do not own the repository, and the patch is already saved. The producer takes it
-whatever the run's final status is. `--fork-owner` exists for when you *do* want the runs
-to push somewhere, and changes only where the clone comes from.
+**No fork is needed.** The `diff` artifact is written in TEST — so a run against
+`django/django` produces its patch, then fails at the push because you do not own the
+repository, and the patch is already saved. The producer takes it whatever the run's final
+status is. `--fork-owner` exists for when you *do* want the runs to push somewhere, and
+changes only where the clone comes from.
+
+**The boundary, stated exactly:** the diff is stored when the final task's tests *pass*.
+A run that never gets there holds no diff, and an empty patch is the honest prediction —
+ESCALATE rewinds a task before replanning it, so by the end there is nothing in the
+worktree to salvage. That is the ordinary outcome on a hard instance with a small model,
+and `docs/numbers.md` has one measured end to end.
 
 That means a `failed` status in `predictions.jsonl` is not "unsolved": the `model_patch`
 field is what says so. Both travel, so a reader can tell "solved it and could not push"

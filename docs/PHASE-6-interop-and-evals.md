@@ -106,9 +106,26 @@ is recorded as such rather than ticked from the code that would make it work.
       fixed: `predictions.jsonl` now carries the patch and the status, so a reader can
       tell "solved it and could not push" from "produced nothing".
 
+      **The boundary was still stated too broadly, and one real instance found it.**
+      `_store_diff` runs only when the final task's tests *pass*, so "a failed run still
+      holds its patch" is true of the case it was drawn from and false in general. A run
+      that never gets its tests green holds nothing, and after an ESCALATE rewind there is
+      nothing in the worktree to salvage anyway.
+
+      **One instance run end to end**, `astropy__astropy-12907`: 22 steps, 7 of them
+      Debugger, 52 minutes, $0.00, no patch. The pipeline held on a 2 000-file scientific
+      Python project cloned at the pinned commit; the free flash-lite model could not solve
+      the bug. That is the honest outcome and `docs/numbers.md` has it. One instance is not
+      a score and is not offered as one.
+
+      Running it also showed every prediction recording `wall_clock_s: 0.0` — `measure()`
+      never sets that field and this path does not go through `run_task`. An instance that
+      took 3 151 seconds was reported as instant. Now timed where it is run.
+
       What remains is spend and a large optional dependency — `uv pip install datasets
       swebench`, then fifty instances at a few dollars each. Run five first. Nothing here
-      is blocked on code.- [x] Ablations recorded: with/without Debugger, with/without repo map, Opus 5 vs Sonnet 5 as Coder, Claude vs Qwen3-Coder, effort `high` vs `xhigh`.
+      is blocked on code.
+- [x] Ablations recorded: with/without Debugger, with/without repo map, Opus 5 vs Sonnet 5 as Coder, Claude vs Qwen3-Coder, effort `high` vs `xhigh`.
       **One arm run and recorded**, on the same three tasks and the same model as the
       baseline: `--ablate no-debugger`, 3/3 resolved, **zero Debugger steps** against two
       in the baseline, three pull requests. `docs/numbers.md` has the table and the caveat

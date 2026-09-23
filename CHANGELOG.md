@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased — the first real SWE-bench instance, and two things it corrected
+
+Fixed
+- Every SWE-bench prediction recorded `wall_clock_s: 0.0`. `measure()` never sets that
+  field — `run_task` does, and the SWE-bench path does not go through it. An instance that
+  really took 3 151 seconds was written down as instant, which is the one number you need
+  to decide whether fifty instances are affordable. Now timed per instance in `predict`,
+  on the exception path as well: the minutes were spent whether or not the run finished.
+
+Notes
+- **The entry below overstated the boundary and this corrects it.** "A failed run still
+  holds the patch it produced" is true of the case it was drawn from — tests passed, the
+  run died later — and false in general. `_store_diff` runs only when the final task's
+  tests *pass*, so a run that never gets there holds nothing. `patch_for` is unchanged and
+  still right to ask whatever the status is; only the claim about what it will find was
+  too broad. `docs/evals.md` §7 and the docstring now state it exactly.
+- **First SWE-bench Lite instance run end to end**: `astropy__astropy-12907`, 22 steps, 7
+  of them Debugger, 52 minutes, $0.00, **no patch**. The pipeline held on a 2 000-file
+  scientific project cloned at the pinned commit; the free flash-lite model could not
+  solve the bug, and an empty `model_patch` is the honest prediction because ESCALATE
+  rewinds before replanning. One instance is not a score. `docs/numbers.md` has it,
+  including a cache hit rate of 0.4667 against 0.0000–0.2472 on the fixture suite.
+
 ## Unreleased — SWE-bench keeps the patch
 
 Fixed

@@ -777,3 +777,67 @@ themselves.
 **This is also the end-to-end proof of the budget fix**, which is how the arm was worth
 running twice: before it, `max_debug_attempts=0` was recorded and ignored, and a Debugger
 step ran anyway.
+
+---
+
+# Phase 6 — the first SWE-bench instance
+
+**2026-09-23 · `astropy__astropy-12907` from SWE-bench Lite · `gemini-3.1-flash-lite` via
+Gemini's free endpoint.** Prediction in `evals/results/swebench-astropy-12907.jsonl`.
+
+| | |
+|---|---|
+| Instance | `astropy__astropy-12907` — `separability_matrix` on nested `CompoundModel`s |
+| Repository | `astropy/astropy`, cloned at the instance's pinned `base_commit` |
+| Run | `e7f1b227-694c-4816-b296-af88f99c67e9` |
+| Outcome | **no patch.** 22 steps, 7 of them Debugger, 3 151 s, $0.00, 118 LLM calls |
+| Ended | `task t1.1 failed 3 times after a replan` |
+
+**That prediction row was rebuilt from the ledger.** `--out` had written it under `/tmp`,
+and a reboot cleared `/tmp` before it was copied into the repository. Every field in it is
+a column of the run's own rows — `wall_clock_s` is `finished_at - started_at` — and the
+row says `"reconstructed_from": "ledger"` so nobody later reads it as the file the
+producer emitted. The run itself is untouched and still in the database; nothing here was
+re-run to produce a better number.
+
+**The pipeline holds on a real repository.** A 2 000-file scientific Python project was
+cloned at a pinned commit, profiled, indexed, planned, decomposed and coded against, and
+the tests were run repeatedly inside the sandbox. Nothing about SWE-bench needs a fork or
+a special path; `--limit 1` produced a well-formed `predictions.jsonl`.
+
+**The model could not solve it.** That is the result, and it is unsurprising: a free
+flash-lite model against an astropy bug about separability of nested compound models is
+not a fair fight. One instance is not a score, and this is not offered as one.
+
+**The empty patch is correct, not a loss.** ESCALATE rewinds a task before replanning it,
+so after seven Debugger steps and a replan the worktree was back at the base commit —
+there was no patch to keep. An empty `model_patch` is the honest prediction.
+
+## Two things this measured that reasoning had got wrong
+
+**The diff-artifact boundary.** It had been claimed that a failed run "still holds the
+patch it produced". True when the run's final tests passed and it died later — that is a
+real 596-character diff in this database. Not true in general: `_store_diff` runs only on
+a passing final TEST, so a run that never got there holds nothing. The claim was right
+about the case it was drawn from and too broad beyond it.
+
+**Every prediction said `wall_clock_s: 0.0`.** `measure()` never sets that field —
+`run_task` does, and the SWE-bench path does not go through it. An instance that really
+took fifty-two minutes was recorded as instant. Fixed by timing the instance where it is
+run.
+
+## Cache behaviour, incidentally
+
+**0.4667 across the run** — 679 359 cached of 1 455 753 read, by the
+`cached / (input + cached)` definition in `contracts/budget.py` — against 0.0000–0.2472
+per task on the three-task fixture suite with the same model and endpoint.
+
+The difference is the size of the stable prefix. Astropy's repo map, facts and profile are
+large and unchanging, which is exactly what the cached prefix was built for; the fixture
+repository has almost nothing to cache, and its highest figure (0.2472) is the one task
+that ran long enough to reuse anything.
+
+**Read it at the end, not during.** The draft of this section said 0.498, taken from the
+detail endpoint while the run was still going; summing the columns afterwards gives
+0.4667. It never left the working tree, but the trap is worth naming — a cache rate quoted
+mid-run is a rate over the calls made so far, and it moves.

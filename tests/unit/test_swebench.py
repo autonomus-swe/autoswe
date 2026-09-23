@@ -254,3 +254,58 @@ async def test_an_instance_whose_run_crashes_is_still_a_row(
     )
     assert prediction["model_patch"] == ""
     assert "refused" in prediction["autoswe"]["error"]
+
+
+class FakeClock:
+    """Readings handed out in order, so a duration is an exact number rather than a range.
+
+    Substituted for the module's `time` — not for `time.monotonic` globally, which is the
+    clock asyncio schedules on.
+    """
+
+    def __init__(self, *readings: float) -> None:
+        self._readings = list(readings)
+        self.calls = 0
+
+    def monotonic(self) -> float:
+        reading = self._readings[min(self.calls, len(self._readings) - 1)]
+        self.calls += 1
+        return reading
+
+
+async def test_a_prediction_records_how_long_the_instance_took(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`measure` never sets `wall_clock_s` — `run_task` does, and this path does not go
+    through it. Every prediction said `0.0` while the first real instance attempted took
+    fifty-two minutes, which is the number you need to decide whether fifty is affordable.
+
+    Asserted as an exact duration. The first version of this test asserted `>= 0.0`, which
+    is true of `0.0` — it passed against the bug it was written for, and the mutation that
+    restored the bug survived it.
+    """
+    monkeypatch.setattr(swebench, "time", FakeClock(1000.0, 4151.0))
+    monkeypatch.setattr(swebench, "Client", lambda *a, **k: FakePlane(status="done"))
+    [prediction] = await swebench.predict(
+        [INSTANCE], api="http://x", key="k", fork_owner=None, timeout_s=1.0
+    )
+    assert prediction["autoswe"]["wall_clock_s"] == 3151.0
+
+
+async def test_an_instance_that_crashed_still_records_its_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The minutes were spent whether or not the run finished, and a batch's cost is the
+    sum of what it spent rather than of what it produced."""
+
+    class Broken(FakePlane):
+        async def create(self, task: Any, provider: str | None, ablation: str | None = None) -> str:
+            raise RuntimeError("refused")
+
+    monkeypatch.setattr(swebench, "time", FakeClock(1000.0, 1042.5))
+    monkeypatch.setattr(swebench, "Client", lambda *a, **k: Broken())
+    [prediction] = await swebench.predict(
+        [INSTANCE], api="http://x", key="k", fork_owner=None, timeout_s=1.0
+    )
+    assert prediction["autoswe"]["wall_clock_s"] == 42.5
+    assert "refused" in prediction["autoswe"]["error"]
