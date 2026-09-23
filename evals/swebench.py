@@ -40,7 +40,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from evals.run import Client, measure, wait
+from evals.run import Client as Client  # re-exported: the tests build one
+from evals.run import measure, wait
 from evals.suite import Task
 from observability.logging import get_logger
 
@@ -114,9 +115,21 @@ def load_instances(limit: int, *, split: str = "test") -> list[Instance]:
 async def patch_for(client: Client, run_id: str) -> str:
     """The run's `diff` artifact, or an empty patch.
 
-    An empty `model_patch` is a legitimate prediction meaning "this instance was not
-    solved". Omitting the row instead would shrink the denominator, which is a way of
-    improving a score by not reporting the attempts that failed.
+    Asked for **whatever the run's final status is**, and that is the whole point. The
+    `diff` artifact is written in TEST, before REVIEW, SECURITY and PR — so a run that
+    died in the security scan, or at the push, still holds the patch it produced. Measured
+    rather than assumed: a `failed` run in this project's own database has a 596-character
+    `diff` against a `security` phase.
+
+    Gating on `status == "done"` threw those away, and for this benchmark that is simply
+    wrong: the official harness scores the patch and nothing else. It also made SWE-bench
+    look as though it needed a writable fork of every upstream repository, because a run
+    against `django/django` inevitably fails at the push — which is a fact about who owns
+    the repository, not about whether the agent solved the instance.
+
+    An empty `model_patch` is a legitimate prediction meaning "no patch was produced".
+    Omitting the row instead would shrink the denominator, which is a way of improving a
+    score by not reporting the attempts that failed.
     """
     import httpx
 
@@ -152,7 +165,9 @@ async def predict(
                 run_id = await client.create(task, provider)
                 status = await wait(client, run_id, task.timeout_s)
                 row = measure(await client.detail(run_id))
-                patch = await patch_for(client, run_id) if status == "done" else ""
+                # Not gated on `done`: see `patch_for`. The status travels with the row so
+                # a reader can tell "solved it and failed to push" from "produced nothing".
+                patch = await patch_for(client, run_id)
             except Exception as e:
                 log.error("swebench_instance_failed", instance=instance.instance_id, error=str(e))
                 return _prediction(instance, "", {"error": f"{type(e).__name__}: {e}"})

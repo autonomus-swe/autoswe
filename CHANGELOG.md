@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — SWE-bench keeps the patch
+
+Fixed
+- `evals/swebench.py` gated `model_patch` on `status == "done"` and threw away every patch
+  from a run that died after TEST. The `diff` artifact is written in TEST, before REVIEW,
+  SECURITY and PR, so a run against a repository you do not own produces its patch and
+  *then* fails at the push. For a benchmark that scores the patch and nothing else, the
+  gate was simply wrong.
+
+Notes
+- **The fork requirement was wrong.** `docs/evals.md` and the phase document said
+  SWE-bench needed a writable fork of every upstream repository; it does not, and a
+  `failed` run in this project's own database carries a 596-character diff to prove it.
+  `--fork-owner` remains, for when you do want the runs to push somewhere.
+- A `failed` status in `predictions.jsonl` is not "unsolved" — `model_patch` says that.
+  Both travel, so "solved it and could not push" and "produced nothing" stay distinct.
+
 ## Unreleased — the defect class, closed
 
 Added

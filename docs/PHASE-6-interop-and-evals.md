@@ -94,16 +94,21 @@ is recorded as such rather than ticked from the code that would make it work.
       run is kept in `evals/results/phase6-gemini.jsonl` rather than discarded, because a
       suite that only records its good afternoon will mislead somebody later.
 - [~] `evals/swebench.py --limit 50` produces `predictions.jsonl` and the official harness score; the number is in README §14 and the X/Y in §15 are filled.
-      **The blocker is gone.** `RunCreate.base_commit` was the reason this file refused to
-      produce predictions at all: each instance pins a commit, `RunCreate` took only a
-      branch, and a patch produced against a branch head does not apply to the instance's
-      base — so the harness would have reported failures caused by the wrong starting
-      point and the number would have been unattributable.
+      **The fork requirement was mine and it was wrong.** This entry used to say the
+      blocker was a writable fork of every upstream repository. It is not: the `diff`
+      artifact is written in TEST, before REVIEW, SECURITY and PR, so a run against
+      `django/django` produces its patch and *then* fails at the push. Measured rather
+      than reasoned — a `failed` run in this project's own database carries a
+      596-character diff against a `security` phase.
 
-      Runs now start at the pinned commit (`tests/integration/test_setup_base_commit.py`),
-      and `--require-sha` is gone with the reason for it. What remains is a fork, a key
-      and fifty instances at a few dollars each, which is spend rather than code.
-- [x] Ablations recorded: with/without Debugger, with/without repo map, Opus 5 vs Sonnet 5 as Coder, Claude vs Qwen3-Coder, effort `high` vs `xhigh`.
+      The producer was throwing those away, gating the patch on `status == "done"`. For a
+      benchmark that scores the patch and nothing else that is simply wrong, and it is
+      fixed: `predictions.jsonl` now carries the patch and the status, so a reader can
+      tell "solved it and could not push" from "produced nothing".
+
+      What remains is spend and a large optional dependency — `uv pip install datasets
+      swebench`, then fifty instances at a few dollars each. Run five first. Nothing here
+      is blocked on code.- [x] Ablations recorded: with/without Debugger, with/without repo map, Opus 5 vs Sonnet 5 as Coder, Claude vs Qwen3-Coder, effort `high` vs `xhigh`.
       **One arm run and recorded**, on the same three tasks and the same model as the
       baseline: `--ablate no-debugger`, 3/3 resolved, **zero Debugger steps** against two
       in the baseline, three pull requests. `docs/numbers.md` has the table and the caveat
