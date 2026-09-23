@@ -931,3 +931,60 @@ The interesting part is what it did **not** do: delete the failing imports, or n
 test run to one file. Both would have been faster and both are the failure mode
 `docs/evals.md` §2 warns about. It wrote the implementations and left every existing test
 in place.
+
+---
+
+# Phase 6 — a local open model, measured
+
+**2026-09-23 · this machine**: 13th Gen Intel i7-1355U, 12 cores, 38 GB RAM,
+**Intel integrated graphics — no CUDA device**. Ollama 0.34.0 (snap).
+
+Criterion 3 asks for the M1 fixture end to end "on Qwen3-Coder via vLLM, with
+`llm_calls.provider` all `openai_compat`". It had been `[~]` with *"that needs a GPU"* as
+an assertion. This is the same conclusion with numbers behind it, and one part of it is
+now measured rather than reasoned.
+
+## Local inference works through the same code path
+
+A run was created against Ollama serving `qwen2.5-7b-32k` — **no API key, no network, no
+vendor of any kind** — and it ran, through exactly the `openai_compat` provider the
+criterion names. `analyze` and `plan` completed. That half of the claim is not in doubt.
+
+## What the throughput says, from the ledger
+
+Same database, same fixture repository, same shape of task:
+
+| Run | Model | Calls | Output tokens | Model time | **tok/s** | Status |
+|---|---|---|---|---|---|---|
+| `a605d5fa` | `gemini-3.1-flash-lite` (hosted, free) | 67 | 4 200 | 7.1 min | **9.88** | done |
+| `574bffb9` | `gemini-3.1-flash-lite` | 67 | 3 400 | 8.5 min | 6.67 | failed at PR |
+| `7c18e262` | `qwen2.5-7b-32k` (local, CPU) | 10 | 1 874 | 22.4 min | **1.40** | still running |
+
+**7× slower**, and the completed run needed **67 calls**. Ten calls cost 22.4 minutes of
+model time, so sixty-seven is upward of two and a half hours of pure generation before
+counting the context growth that makes later calls slower. One planner call took **677
+seconds** to produce 262 tokens — 0.39 tok/s — on a prompt that was fully cached
+(`cache_hit_rate: 1.0`), so prompt caching is not the lever here. Generation is.
+
+**This is a statement about the hardware, not the model or the code.** A 7B on twelve CPU
+cores is the whole explanation. The same binary against a GPU is what the criterion asks
+for and what this box cannot supply.
+
+## Why not Qwen3-Coder, specifically
+
+Two attempts, neither a code problem:
+
+- **`qwen3-coder:30b` (18.6 GB)** downloads all twenty chunks and then hangs without
+  committing them — the process sits in a futex wait at 0.7 % CPU with the partials never
+  renamed. Two runs, fifteen minutes each, same result.
+- **`qwen2.5-coder:7b` (4.7 GB)** fails with `digest mismatch, file must be downloaded
+  again`.
+
+Three corrupted or stalled pulls of two different models points at the transfer rather
+than the models. This network runs a TLS-inspecting proxy — the same one that made the
+first clean-clone run fail its GitHub certificate check — which is a **plausible** cause
+and not a demonstrated one. It is recorded as an observation, not a diagnosis.
+
+So the criterion stays `[~]`, and the reason is sharper than it was: vLLM needs a CUDA
+device this machine does not have, and the Ollama fallback cannot fetch a coder model on
+this network. What *is* settled is that the provider path itself is vendor-free and works.
