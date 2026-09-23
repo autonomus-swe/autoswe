@@ -1,0 +1,1 @@
+{"instance_id": "astropy__astropy-12907", "model_name_or_path": "autoswe", "model_patch": "", "autoswe": {"run_id": "e7f1b227-694c-4816-b296-af88f99c67e9", "status": "failed", "cost_usd": 0.0, "wall_clock_s": 3151.0, "debug_attempts": 7, "error": "task t1.1 failed 3 times after a replan", "reconstructed_from": "ledger"}}
