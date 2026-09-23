@@ -61,6 +61,7 @@ def render(rows: Sequence[Row], *, title: str = "Results") -> str:
     if not rows:
         return f"## {title}\n\n_no rows_\n"
     why = any(r.get("error") for r in rows)
+    repeated = _repeated(rows)
     head = "| task | resolved | status | tasks | debug | review | wall s | cost $ | cache | PR |"
     rule = "|---|---|---|---|---|---|---|---|---|---|"
     if why:
@@ -78,7 +79,38 @@ def render(rows: Sequence[Row], *, title: str = "Results") -> str:
         if why:
             line += f" {_why(r)} |"
         lines.append(line)
-    return "\n".join([*lines, "", _aggregate(summarise(rows)), ""])
+    body = [*lines, "", _aggregate(summarise(rows))]
+    if repeated:
+        body += ["", _mixed(repeated)]
+    return "\n".join([*body, ""])
+
+
+def _repeated(rows: Sequence[Row]) -> list[str]:
+    """Task ids appearing more than once, which means more than one attempt is in here."""
+    seen: dict[str, int] = {}
+    for r in rows:
+        seen[str(r.get("task_id") or "")] = seen.get(str(r.get("task_id") or ""), 0) + 1
+    return sorted(task for task, n in seen.items() if n > 1)
+
+
+def _mixed(repeated: Sequence[str]) -> str:
+    """Say so, loudly, rather than aggregating two attempts into one percentage.
+
+    Results files are append-only on purpose — "the history of how the agent did on a
+    scenario is more useful than its most recent attempt". The cost is that re-running a
+    suite into the same `--results` name silently mixes attempts, and the aggregate above
+    then describes neither of them. It happened the first time anybody re-ran an arm: one
+    file, four rows, three tasks, and a percentage that was a blend.
+
+    A warning rather than a filter, because which attempt you want is your decision. The
+    `at` field on every row is how you separate them.
+    """
+    return (
+        f"> ⚠️ **{len(repeated)} task(s) appear more than once**: "
+        f"{', '.join(f'`{t}`' for t in repeated)}. This file holds more than one attempt, "
+        "so the totals above are a blend of them rather than a result. Results files are "
+        "append-only; use a fresh `--results` name per attempt, or split on the `at` field."
+    )
 
 
 def _why(row: Row) -> str:

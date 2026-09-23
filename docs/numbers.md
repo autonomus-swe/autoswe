@@ -748,9 +748,32 @@ that says the loop closes end to end — not a capability claim. A resolved rate
 quoting needs real repositories and enough tasks that one bad afternoon does not move it,
 which is the suite `docs/evals.md` §2 tells you how to write.
 
-**The `no-debugger` arm is not measured end to end.** The budget fix is covered by unit
-and integration tests — the transition escalates at a zero ceiling, and a budget POSTed to
-the API reaches the state the worker builds — but no complete run has been observed taking
-that path, because both free tiers were exhausted by the day's runs: Gemini returned `429`
-after the suite above, and Groq returned `429` eighteen minutes into the arm. What remains
-is quota, not code.
+## The ablation: with and without the Debugger
+
+**2026-09-23, `gemini-3.1-flash-lite`, the same three tasks.** Rows in
+`evals/results/phase6-no-debugger.jsonl`.
+
+| arm | resolved | Debugger steps | wall clock (median) | PRs |
+|---|---|---|---|---|
+| baseline | 3/3 | 2 | 928 s | #4 #5 #6 |
+| `--ablate no-debugger` | 3/3 | **0** | 310 s | #8 #9 #10 |
+
+The arm sets `Budget.max_debug_attempts = 0`, so a failing test goes straight to ESCALATE.
+Zero Debugger steps ran, including on `ops-subtract-slugify`, which needed two in the
+baseline. The step sequence shows what replaced them: `code, test, code, test` — ESCALATE
+rewound the task, replanned it, and resumed at CODE.
+
+**All three still resolved.** On this suite, on this model, the replan path did the
+Debugger's job. That is a fact about three small tasks and not a case for removing the
+Debugger: each of these is one function, and a replan is cheap when there is little to
+replan. The Phase 5 sympy run, where the Debugger took six of twelve steps, is the shape
+this suite cannot speak to.
+
+**Do not read the wall clock as a speed-up.** The baseline ran while the free tier was
+slower — the same suite's first attempt that day lost three tasks to `503`s. Two arms an
+hour apart on a shared free endpoint are not a controlled comparison of anything but
+themselves.
+
+**This is also the end-to-end proof of the budget fix**, which is how the arm was worth
+running twice: before it, `max_debug_attempts=0` was recorded and ignored, and a Debugger
+step ran anyway.
