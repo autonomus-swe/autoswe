@@ -148,3 +148,30 @@ def test_only_the_first_line_of_an_error_is_shown() -> None:
     """A traceback in a table cell is a table nobody can read."""
     out = report.render([row(resolved=False, error="the reason\nstack frame\nanother frame")])
     assert "the reason" in out and "stack frame" not in out
+
+
+def test_a_file_holding_two_attempts_says_so() -> None:
+    """Results files are append-only, so re-running a suite into the same `--results` name
+    mixes attempts and the aggregate describes neither.
+
+    It happened the first time anybody re-ran an arm: one file, four rows, three tasks,
+    and a percentage that was a blend. The report now says so rather than presenting the
+    blend as a number.
+    """
+    rows = [row(task_id="a", resolved=False), row(task_id="a", resolved=True), row(task_id="b")]
+    out = report.render(rows)
+    assert "appear more than once" in out and "`a`" in out
+    assert "`b`" not in out.split("appear more than once")[1]
+
+
+def test_a_clean_file_gets_no_warning() -> None:
+    """A banner on every table is a banner nobody reads."""
+    assert "appear more than once" not in report.render([row(task_id="a"), row(task_id="b")])
+
+
+def test_the_warning_does_not_change_the_totals() -> None:
+    """Saying the number is a blend is not the same as silently filtering it — which
+    attempt you want is the reader's decision, and `at` is how they choose."""
+    rows = [row(task_id="a", resolved=False), row(task_id="a", resolved=True)]
+    assert report.summarise(rows)["resolved"] == 1
+    assert "1/2 resolved" in report.render(rows)

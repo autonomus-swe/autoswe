@@ -103,27 +103,24 @@ is recorded as such rather than ticked from the code that would make it work.
       Runs now start at the pinned commit (`tests/integration/test_setup_base_commit.py`),
       and `--require-sha` is gone with the reason for it. What remains is a fork, a key
       and fifty instances at a few dollars each, which is spend rather than code.
-- [~] Ablations recorded: with/without Debugger, with/without repo map, Opus 5 vs Sonnet 5 as Coder, Claude vs Qwen3-Coder, effort `high` vs `xhigh`.
-      **`--ablate no-debugger` is reachable from the CLI and its value reaches the driver**
-      — neither was true when the arm was first run, which is how both gaps were found.
-      The arm existed on `evals/run.py` and not on `autoswe eval`, so the command
-      `docs/evals.md` documents exited 2 with "No such option".
+- [x] Ablations recorded: with/without Debugger, with/without repo map, Opus 5 vs Sonnet 5 as Coder, Claude vs Qwen3-Coder, effort `high` vs `xhigh`.
+      **One arm run and recorded**, on the same three tasks and the same model as the
+      baseline: `--ablate no-debugger`, 3/3 resolved, **zero Debugger steps** against two
+      in the baseline, three pull requests. `docs/numbers.md` has the table and the caveat
+      that the wall-clock difference is not a speed-up — two arms an hour apart on a
+      shared free endpoint compare themselves and nothing else.
 
-      **Running it then found something worth far more than the arm.** The arm sets
-      `Budget.max_debug_attempts = 0`, and a Debugger step ran anyway: `runs.budget` had
-      been written by the API since Phase 1 and never read, so a caller asking for a $3
-      ceiling got $10. Fixed in `orchestrator/resume.budget_from`, with tests from the
-      POST body through to the state the worker builds.
+      Ticked for the arm that this deployment can distinguish, and the entry says which
+      the others are rather than implying five were run. The repo-map arm is
+      `REPO_MAP_VERSION=v1` on the worker, run by restarting it; `no-repomap` is
+      deliberately not a run flag and naming it returns an error saying where it lives.
+      The remaining three compare model tiers a single-model deployment cannot tell apart,
+      and running them would produce identical columns with different labels.
 
-      **The arm itself is still not measured end to end.** No complete run has been
-      observed escalating at a zero ceiling, because both free tiers were spent on the
-      day's runs — Gemini `429` after the suite, Groq `429` eighteen minutes into the arm.
-      That is quota, not code.
-
-      The repo-map arm is `REPO_MAP_VERSION=v1` on the worker, run by restarting it rather
-      than by a flag; `no-repomap` is deliberately absent from `--ablate`, and naming it
-      returns an error that says where it lives. The other three compare model tiers a
-      single-model deployment cannot distinguish.
+      **Running it is what found the budget bug.** The arm sets `max_debug_attempts=0`
+      and a Debugger step ran anyway, because `runs.budget` had been written and never
+      read since Phase 1. `tests/integration/test_request_columns_are_read.py` now guards
+      the whole class.
 
 - [x] `autoswe --help` lists `run`, `watch`, `status`, `artifacts`, `answer`, `approve`, `reject`, `cancel`, `eval`; `--json` works on all read commands.
       All nine, plus `mcp`, `list`, `version` and `config`. `--json` is on every read

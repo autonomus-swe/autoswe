@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — the defect class, closed
+
+Added
+- `tests/integration/test_request_columns_are_read.py`. Four times this phase a `runs`
+  column was written by the API, read back by the API, shown in the console, and consulted
+  by nothing — `unattended`, `provider`, `budget`, `Budget.max_debug_attempts`. Every one
+  looked correct from both ends; only the join was missing. This classifies every column
+  as a request or an output, refuses to let a new one be neither, and asserts each request
+  reaches the run. **All four shipped bugs were re-introduced against it and all four were
+  caught**, along with an unclassified new column.
+- `evals/report` says when a results file holds more than one attempt at a task. Results
+  files are append-only on purpose, so re-running a suite into the same `--results` name
+  silently mixes attempts and the aggregate describes neither. It happened the first time
+  anybody re-ran an arm. A warning rather than a filter: which attempt you want is the
+  reader's decision.
+
+Notes
+- The `no-debugger` arm ran: 3/3 resolved, **zero Debugger steps** against two in the
+  baseline, on the same three tasks and the same model. `docs/numbers.md` has the table,
+  and says plainly that the wall-clock difference is not a speed-up — two arms an hour
+  apart on a shared free endpoint compare themselves and nothing else.
+
 ## Unreleased — the budget a run asked for is the budget it gets
 
 Fixed
