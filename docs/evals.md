@@ -177,7 +177,7 @@ have one, and say which model judged beside the scores.
 
 ```bash
 uv pip install datasets swebench          # deliberately not dependencies of this project
-uv run python -m evals.swebench --limit 5 --fork-owner <you>
+uv run python -m evals.swebench --limit 5            # no fork needed; see below
 python -m swebench.harness.run_evaluation \
     --predictions_path evals/results/predictions.jsonl --run_id <id>
 ```
@@ -187,6 +187,16 @@ version and pinned dependencies, and the official harness has an environment ima
 instance to provide them. Making this project's sandbox images solve that would be
 reimplementing SWE-bench in order to run SWE-bench, and the score would be against our
 reconstruction of the environment rather than against the benchmark.
+
+**No fork is needed.** The `diff` artifact is written in TEST, before REVIEW, SECURITY and
+PR — so a run against `django/django` produces its patch, then fails at the push because
+you do not own the repository, and the patch is already saved. The producer takes it
+whatever the run's final status is. `--fork-owner` exists for when you *do* want the runs
+to push somewhere, and changes only where the clone comes from.
+
+That means a `failed` status in `predictions.jsonl` is not "unsolved": the `model_patch`
+field is what says so. Both travel, so a reader can tell "solved it and could not push"
+from "produced nothing".
 
 **Each run starts at the instance's pinned commit.** `RunCreate.base_commit` is what makes
 a score meaningful: without it every run started from a branch head, a patch produced there
@@ -212,7 +222,7 @@ attempts that failed.
 | Private suite, resolved / cost / attempts | yes, needs a fork and a key |
 | Cache hit rate per run | yes, from `/runs/{id}/detail` |
 | PR-description quality | yes, with the caveat in §6 |
-| SWE-bench Lite patches | yes, each at the instance's pinned commit |
+| SWE-bench Lite patches | yes, at the pinned commit, no fork needed |
 | SWE-bench Lite *score* | yes, with the official harness |
 | Ablation: without the Debugger | yes, `--ablate no-debugger` |
 | Ablation: without the repo map | yes, by restarting the worker with `REPO_MAP_VERSION=v1` |
