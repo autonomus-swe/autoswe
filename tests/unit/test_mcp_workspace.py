@@ -8,6 +8,7 @@ file-read primitive exposed to whatever the model on the other end decides to as
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -102,3 +103,63 @@ async def test_the_sandbox_stand_in_refuses_rather_than_pretending() -> None:
         await sandbox.exec("ls")
     with pytest.raises(RuntimeError, match="no sandbox"):
         await sandbox.start()
+
+
+async def test_every_member_of_the_stand_in_refuses_not_just_the_two_above() -> None:
+    """The class docstring says *every* member raises. Two of eight were asserted.
+
+    `has_network` is why this matters rather than being tidiness: it is declared
+    `-> bool`, so a member that stopped refusing would return `None` — falsy, and read by
+    a caller as "no network". That is precisely the "result computed from a no-op" the
+    class exists to prevent, and it is the one failure here that is silent instead of loud.
+    Replacing its body with `return False` survived the whole suite.
+
+    Discovered by introspection rather than listed, so a member added later is covered the
+    day it is added instead of the day somebody remembers this file.
+    """
+    sandbox = workspace.NoSandbox()
+    members = sorted(
+        name
+        for name in dir(sandbox)
+        if not name.startswith("_") and inspect.iscoroutinefunction(getattr(sandbox, name))
+    )
+    assert len(members) >= 8, f"expected the full sandbox protocol, found {members}"
+
+    for name in members:
+        with pytest.raises(RuntimeError, match="no sandbox"):
+            await _call_with_defaults(getattr(sandbox, name))
+
+
+async def _call_with_defaults(method: Any) -> Any:
+    """Call a bound coroutine method, supplying a placeholder for each required argument.
+
+    So that adding a member with a new signature does not silently drop out of the sweep
+    above with a TypeError that reads like a test bug.
+    """
+    sig = inspect.signature(method)
+    args = [
+        "x" if p.annotation is str else 1.0
+        for p in sig.parameters.values()
+        if p.default is inspect.Parameter.empty
+        and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    ]
+    return await method(*args)
+
+
+def test_the_worktree_path_expands_a_home_relative_directory(tmp_path: Path) -> None:
+    """`WORKTREES_DIR=~/agent/worktrees` is a normal way to configure this, and the worker
+    expands it. If the MCP side does not, every workspace call looks up a directory named
+    literally `~` — which does not exist, so the caller is told the run "was collected"
+    when the checkout is sitting there under their home directory.
+
+    A wrong answer dressed as a legitimate one, which is the failure this whole file is
+    about. Dropping the `expanduser` survived the suite.
+    """
+    expanded = workspace.worktree_for(Path("~/agent/worktrees"), RUN_ID)
+    assert "~" not in str(expanded), "an unexpanded ~ resolves to nothing and blames the run"
+    assert expanded.is_absolute()
+    assert expanded == Path.home() / "agent/worktrees" / str(RUN_ID)
+
+    # An already-absolute directory must pass through untouched, so the fix cannot become
+    # "always rewrite the path".
+    assert workspace.worktree_for(tmp_path, RUN_ID) == tmp_path / str(RUN_ID)

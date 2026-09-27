@@ -31,6 +31,7 @@
 | | |
 |---|---|
 | [`numbers.md`](numbers.md) | every measured figure, with the run that produced it |
+| [`test-gaps.md`](test-gaps.md) | test gaps proved by mutation, with the ones still open |
 | [`design-notes.md`](design-notes.md) | decisions taken along the way |
 | [`review-rubric.md`](review-rubric.md) | what the Reviewer is asked to look for |
 | [`../CHANGELOG.md`](../CHANGELOG.md) | what each phase added |
