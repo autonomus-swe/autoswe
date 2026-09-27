@@ -79,13 +79,20 @@ is recorded as such rather than ticked from the code that would make it work.
       kind — and went through `analyze` and `plan` on the `openai_compat` provider the
       criterion names. The vendor-free half of this claim is settled.
 
-      **It also found a real bug, and the bug was ours.** The run died in DECOMPOSE, not
-      on the clock: `qwen2.5:7b` returned a valid `TaskGraphSpec` plus two fields it
+      **It also found a real bug, and the bug was ours.** Run `7c18e262` died in DECOMPOSE,
+      not on the clock: `qwen2.5:7b` returned a valid `TaskGraphSpec` plus two fields it
       invented, and `extra="forbid"` refused the whole object. The retry was not the gap —
       the validation error is fed back and the second attempt produced the same two fields.
       `_repair_once` now drops keys the schema never declared, which is the fifth repair of
-      exactly the kind the four beside it already handle. So "a small local model cannot
-      finish a run" was, in part, a statement about this code rather than about the model.
+      exactly the kind the four beside it already handle.
+
+      **Two walls, not one, and the second is the model.** The re-run with the repair in
+      place — `bdb8a3d9` — got through DECOMPOSE *without the repair firing at all*, and
+      then failed in the Coder after three attempts and a replan, on a `divide`-with-a-zero-
+      guard task the hosted model finished in eight minutes. So the re-run is not evidence
+      for the fix (the tests and three mutations are), and "a small local model cannot
+      finish a run" was only *partly* a statement about this code. The rest is a general 7B
+      being a general 7B, which needs a better model rather than a better repair.
 
       **The hardware is the blocker, with numbers.** This box is an i7-1355U with Intel
       integrated graphics and no CUDA device, so vLLM is out. On CPU the local model runs
