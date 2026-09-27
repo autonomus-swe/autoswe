@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased — the control plane's own guarantees, and the mounted-tool call site
+
+Added
+- `tests/unit/test_api_service.py` — a **first** test file for `api/service.py`, the module
+  that exists for one stated reason: the approval replay guard "lives here rather than in a
+  transport so that every way of approving goes through it". It reached 97 % coverage
+  incidentally, through HTTP and MCP tests that pass through it, and the lines neither route
+  takes are exactly where the guarantees live. Four mutations survived:
+
+  **`_pending`'s `raise Conflict` → `pass`** is the one the module was written for. It is the
+  guard that stops an approval being replayed against a different tool call — "how a human
+  ends up authorising something they never saw" — and disarming it left the suite green.
+
+  Also: an answer's `tool_call_id` could be `None`'d and still delivered, so the answer
+  attaches to no question; the `list_runs` upper clamp could be dropped, asserted until now
+  only by a 200 status code, which an unbounded query returns perfectly well; and the
+  documented arq-unavailable degraded path could be turned into an error, which is the
+  difference between an outage that delays runs and one that rejects them.
+- `tests/unit/test_mounted_tool_call_site.py` — `MountedTool` appeared in **no test file**.
+  Criterion 2 is about approval and is genuinely tested through `before_tool`; what nothing
+  tested is the ordinary path. `call(..., kwargs)` → `call(..., {})` drops every argument the
+  model chose while the tool stays correctly advertised, the call succeeds and the server
+  returns a good result — for a query nobody asked for.
+
+  Plus: a transport failure not dropping the session, so one blip ends the run's access to
+  that server; the result truncation made unreachable, so a 2 MB reply enters the context
+  window whole and `gateway/context.py` then clears *other* results to fit it; and the
+  `structured_content` fallback, without which a structural-only answer reads as
+  "(no content)" and the model retries a tool that worked.
+
+Notes
+- **31 of the 43 verified gaps are now closed**, in three passes, each re-run through the
+  mutation harness after its test was written. `docs/test-gaps.md` tracks the 16 still open:
+  `evals/report.py`, `evals/swebench.py`, `mcp_bridge/config.py`, `orchestrator/resume.py`.
+
 ## Unreleased — the numbers this project publishes are now tested
 
 Added

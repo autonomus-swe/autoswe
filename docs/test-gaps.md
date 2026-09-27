@@ -10,13 +10,14 @@ module reading the uncovered lines and proposing an exact mutation for each thin
 defect could hide behind, then every proposal executed. 47 proposed, **43 survived**, 4
 could not be judged because the module has no test file at all.
 
-**22 are now closed**, in two passes, and each was re-run through the harness after its
+**31 are now closed**, in three passes, and each was re-run through the harness after its
 test was written:
 
 | pass | tests | closed |
 |---|---|---|
 | the MCP and eval surfaces | `test_mcp_tool_bodies_are_reached.py`, `test_task_fields_reach_the_run.py`, two additions to `test_mcp_workspace.py` | 14 |
-| the published numbers | `test_evals_scale.py` (new file), `test_evals_verifier.py` (new file) | 8 |
+| the published numbers | `test_evals_scale.py`, `test_evals_verifier.py` | 8 |
+| the control plane and mounted tools | `test_api_service.py`, `test_mounted_tool_call_site.py` | 9 |
 
 The rest are recorded here rather than fixed, because one reviewable change cannot hold 43
 tests and a list that lives in a chat log is a list that is gone.
@@ -36,14 +37,6 @@ agents that can write to the same tree.
 
 ## Still open
 
-### `api/service.py` — 5 open
-
-- answer()'s tool_call_id never reaches the inbox in any test
-- _pending()'s awaiting_input guard is never exercised (stale-pending approval)
-- list_runs upper clamp is asserted only by a 200 status code
-- The arq-unavailable degraded path is never taken by any test
-- An answer's `tool_call_id` is put in the inbox message by nothing that is tested
-
 ### `evals/report.py` — 4 open
 
 - _why's empty-error guard is never exercised: a mixed suite (some rows errored, some clean) is untested
@@ -57,13 +50,6 @@ agents that can write to the same tree.
 - main() never reaches predict in any test: --provider can be dropped
 - The problem-statement truncation length is asserted by nothing
 - write() is only ever tested into an existing directory
-
-### `mcp_bridge/client.py` — 4 open
-
-- MountedTool.run is never invoked — the mounted-tool call site is untested
-- Session is not dropped on a transport failure — the reconnection path is untested
-- MAX_RESULT_CHARS truncation never fires in any test
-- structured_content fallback is computed and never checked
 
 ### `mcp_bridge/config.py` — 4 open
 
