@@ -29,6 +29,13 @@ Notes
 - The local-model result is therefore **not** simply "too slow to finish". It was slow
   *and* it hit a robustness gap, and the gap was in this project's code rather than in the
   model.
+- **The re-run did not exercise the fix, and is not offered as evidence for it.** Run
+  `bdb8a3d9`, same goal and same model with the repair in place, got through DECOMPOSE
+  without the repair firing once — the model simply did not invent a field that time — and
+  then failed in the Coder after three attempts and a replan, on a task the hosted model
+  finished in eight minutes. The repair is verified by unit tests and three mutations, not
+  by that run. So a local 7B on this hardware hits two independent walls: one that was this
+  project's bug and is now fixed, and one that is the model, which no repair addresses.
 
 ## Unreleased — a local open model, and the context window nobody mentioned
 

@@ -1022,3 +1022,33 @@ the contract is missing something.
 finish". It was too slow *and* it hit a real robustness gap, and the gap was in this
 project's code rather than in the model. The throughput numbers above stand; the failure
 they were attached to has a different cause than the clock.
+
+### The re-run, and what it did not prove
+
+The same goal was run again on the same local model with the repair in place — run
+`bdb8a3d9`. It is worth being exact about what happened, because it is not what the fix was
+written to demonstrate.
+
+| | |
+|---|---|
+| Outcome | **failed** after 39.6 minutes, `task t1 failed 3 times after a replan` |
+| Steps | analyzer 1, planner 1, decomposer 2, **coder 3** |
+| Calls | 29, 2 657 output tokens, 35.6 min of model time, 1.25 tok/s |
+| `structured_output_extra_field_dropped` events | **0** |
+
+**The repair never fired.** DECOMPOSE succeeded on its own this time — the model simply did
+not invent an extra field on this attempt. So this run is *not* evidence that the repair
+works; that rests on the unit tests and on three mutations, each verified to have applied
+against a green baseline. Saying otherwise would be crediting a fix for an outcome it had
+no part in.
+
+**And the schema issue was not the only thing in the way.** With DECOMPOSE past, the run
+got to the Coder and failed there: three attempts and a replan, on a task
+(`divide` with a zero guard) that the hosted model completed in eight minutes. That is a
+capability limit, and no repair addresses it.
+
+So the corrected reading of both runs together: a local 7B on this hardware hits **two**
+independent walls — one that was this project's bug and is fixed, and one that is the model
+being a general 7B rather than a coder model, which is not. The open-model criterion needs
+better hardware *and* a better model, and the first run's failure had made only the first
+of those visible.
