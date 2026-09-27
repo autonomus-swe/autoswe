@@ -28,6 +28,17 @@ tokenizer, not estimated — see the calibration note below. Two sympy runs are 
 because the rate moves a lot with load; django was measured at load 9.5 and is still the
 fastest of the three, because its Python files are smaller on average.
 
+**"Files in the checkout" is files on disk, `.git` included.** It comes from
+`rglob("*")`, which does not skip the object store, so it is not the same quantity as
+"files in the project" and a reader comparing it against their own `find . -type f | wc -l`
+should expect that to match while `git ls-files | wc -l` will not. The row below it —
+*files with symbols* — is the one the map actually ranks.
+
+Stated rather than changed: the measurement is what produced every figure in this table, and
+silently redefining it would invalidate them all while the numbers kept looking comparable.
+`tests/unit/test_evals_scale.py` pins it, so the meaning cannot drift from this paragraph
+without a test failing.
+
 ### One caveat closed, one still open
 
 - **It is parse only.** `index_repo` also writes the rows, and `evals/scale.py` does not

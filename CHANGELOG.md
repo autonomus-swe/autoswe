@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased — the numbers this project publishes are now tested
+
+Added
+- `tests/unit/test_evals_scale.py` — a **first** test file for `evals/scale.py`, which had
+  none while producing every figure in the table at the top of `docs/numbers.md`. 0 % of 67
+  statements, so all four mutations in it survived trivially. Two are worth naming:
+
+  **`_tokens` is the inverse of the map's own budget arithmetic** and only stays so if the
+  two move together, so the test changes `repomap.CHARS_PER_TOKEN` and requires `_tokens` to
+  follow. Asserting the current value would pass on a `_tokens` that had frozen its own
+  copy — and a divisor wrong in the generous direction reports an over-budget map as under
+  it, which `docs/numbers.md` opens by admitting happened once already.
+
+  **`index_s` can be made to read ~0** by moving the stopwatch after the parse, with every
+  field still populated and every shape assertion still passing. Now asserted by making the
+  parse take a known real time and requiring the reported figure to be at least that.
+- `tests/unit/test_evals_verifier.py` — `checkout_and_verify` is what every "resolved" in
+  `docs/numbers.md` actually means, and nothing ran it. Every existing test of the eval
+  driver supplies a *scripted* verifier, so they assert the driver's arithmetic and never the
+  thing being asserted about. The gap was not a missing assertion, it was a missing subject.
+
+  Four mutations survived. The worst is `return proc.returncode or 0` → `return 0`, which
+  makes **everything resolve**, including tasks whose tests failed — and a suite reporting
+  3/3 looks identical either way. Also: dropping `--branch` scores the task against the
+  default branch, so the agent's work is never measured.
+
+  Tested against a real local git repository whose `main` exits 7 and whose agent branch
+  exits 0. That asymmetry is the point: with both branches passing, dropping `--branch`
+  still produces a green verify and the test measures nothing.
+
+Fixed
+- `docs/numbers.md` now says what *"files in the checkout"* counts: files on disk, `.git`
+  included, which is not the same quantity as files in the project. Stated rather than
+  changed — silently redefining the measurement would invalidate every figure already in
+  that table while the numbers kept looking comparable. A test pins it so the meaning cannot
+  drift from the paragraph.
+
+Notes
+- **22 of the 43 verified gaps are now closed**, in two passes, each re-run through the
+  mutation harness after its test was written. `docs/test-gaps.md` tracks the 25 still open.
+- **One fix attempted and reverted.** The first test ever to reach the verify-timeout branch
+  surfaced a warning: `proc.kill()` never reaps the process, so the transport is finalised
+  after the loop closes. Adding `await proc.wait()` broke the test — `wait_for` has already
+  cancelled `communicate()`, so awaiting in the handler re-raises `CancelledError`. Reverted
+  rather than patched further: the symptom is a warning on a timed-out task, not a leak, and
+  a correct fix is a deliberate change to that error path rather than something bolted onto
+  a testing change. Recorded in `docs/test-gaps.md` so it is located rather than mysterious.
+
 ## Unreleased — the call-site defect class, measured and half closed
 
 Added
