@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased — the call-site defect class, measured and half closed
+
+Added
+- `tests/unit/test_mcp_tool_bodies_are_reached.py`. `test_mcp_server` asserted the MCP tool
+  *table* — every advertised name exists and does not crash — which reads as a test of the
+  tools and is a test of their names. The bodies of `create_run`, `list_runs`, `search_code`
+  and `read_file` were never executed with a value anyone checked, so **nine mutations
+  survived the whole suite**: `goal`, `limit`, `start_line`/`end_line`, `pattern`/`query`/
+  `glob`/`max_results`, and `engine` could each be dropped at the call site in silence.
+
+  `engine` is the one worth naming. `_workspace_ctx` puts `plane.engine` on the context
+  because semantic search looks the embedding index up by `base_sha`; with no engine the
+  query still answers, from text search, and the caller never learns the index was there.
+  A wrong answer dressed as a legitimate one.
+
+  Structured like `test_request_columns_are_read.py` rather than as nine one-off tests:
+  every advertised tool must appear in `REACHES` or `TABLE_ONLY`, so adding a tool forces
+  the decision. The failure mode was never a wrong decision — it was an absent one.
+- `tests/unit/test_task_fields_reach_the_run.py`. The same class on the eval surface, over
+  the whole chain `YAML -> Task -> POST body`. Five mutations survived, including
+  `base_commit`, which is the field that makes a SWE-bench score mean anything — dropped,
+  the agent works from a branch head and the patch does not apply to the instance's base.
+
+  The first version of this file guarded the second hop only, and four of the five
+  mutations went straight through it: they live in the loader. Guarding one link while the
+  next is open is the same mistake one layer up.
+- Two additions to `tests/unit/test_mcp_workspace.py`. `NoSandbox`'s docstring promises
+  every member raises; two of eight were asserted. `has_network` is declared `-> bool`, so
+  a member that stopped refusing returns `None` — falsy, read as "no network". Now swept by
+  introspection, so a member added later is covered the day it is added. And
+  `worktree_for`'s `expanduser`: without it a `~`-configured worktrees dir makes every
+  workspace call look up a directory named literally `~`, and the caller is told the run
+  "was collected" while the checkout sits under their home directory.
+
+Notes
+- **`docs/test-gaps.md` records the 29 that are still open**, plus `evals/scale.py`, which
+  has no test file at all while `docs/numbers.md` quotes its output. Proved, not guessed:
+  47 mutations proposed from a coverage sweep, 43 survived, and the 14 these tests close
+  were each re-run afterwards and are now caught.
+- **A method warning worth more than the tests.** The first verification pass ran the
+  mutation harness while the analysis agents were still working in the same checkout, and
+  three of them edited source files. Re-run on a quiet tree, 7 verdicts changed — all
+  `INAPPLICABLE` -> `SURVIVED`, and none ever flipped between `SURVIVED` and `caught`. The
+  contamination only failed conservatively, which was luck rather than design.
+
 ## Unreleased — a field the contract never declared no longer kills a run
 
 Fixed
