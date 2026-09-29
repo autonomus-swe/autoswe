@@ -237,6 +237,13 @@ async def checkout_and_verify(task: Task, summary: dict[str, Any]) -> tuple[int,
             out, _ = await asyncio.wait_for(proc.communicate(), VERIFY_TIMEOUT_S)
         except TimeoutError:
             proc.kill()
+            # Reaped, not just signalled. `kill` sends SIGKILL and returns; without the
+            # wait the child is left unreaped and its transport is finalised after the
+            # event loop has closed, which raises "Event loop is closed" out of
+            # `__del__` — a warning per timed-out task, from a place that has nothing to
+            # do with the task. Measured: killing alone reproduces it, `kill` plus this
+            # wait does not.
+            await proc.wait()
             return 124, f"verify timed out after {VERIFY_TIMEOUT_S}s"
         return proc.returncode or 0, out.decode(errors="replace")[-4000:]
     except Exception as e:  # a clone that fails is a task that did not resolve

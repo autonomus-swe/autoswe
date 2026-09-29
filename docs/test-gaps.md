@@ -1,8 +1,8 @@
 # Verified test gaps
 
-**All 43 are closed.** This file is kept as the record of how they were found and what each
-one was, because the method is reusable and the list is the evidence that the closing tests
-are about something.
+**All 43 are closed, and so is the one fix that was deferred.** This file is kept as the
+record of how they were found and what each one was, because the method is reusable and the
+list is the evidence that the closing tests are about something.
 
 Not a wish list, and never was. Every entry was **proved** by mutating the source and
 watching the suite stay green, with the mutation confirmed to have applied against a green
@@ -81,21 +81,39 @@ them `INAPPLICABLE` → `SURVIVED`**, and **no verdict ever flipped between `SUR
 mutation — but that was luck, not design. Do not run a mutation harness concurrently with
 agents that can write to the same tree.
 
-## One fix attempted and reverted
+## The one fix that was reverted, now made properly
 
 Writing `test_a_verify_command_that_hangs_is_killed_rather_than_waited_on` — the first test
-ever to reach that branch — surfaced a `PytestUnraisableExceptionWarning`: `proc.kill()`
-sends the signal and never reaps the process, so the transport is finalised after the event
-loop has closed and raises "Event loop is closed" out of `__del__`.
+ever to reach that branch — surfaced a warning: `proc.kill()` sends the signal and returns,
+so the child is left unreaped and its transport is finalised after the event loop has
+closed, raising "Event loop is closed" out of `__del__`. Once per timed-out task, from a
+place with nothing to do with the task.
 
-Adding `await proc.wait()` after the kill **broke the test**: `asyncio.wait_for` has already
-cancelled `communicate()`, and awaiting in the handler re-raises `CancelledError`. Reverted
-rather than patched further — the symptom is a warning on a timed-out task, not a leak (the
-process is killed either way), and a correct fix is a deliberate change to that error path
-rather than something to bolt onto a testing change.
+The first attempt at `await proc.wait()` **broke the test**, and it was reverted rather than
+patched further. That was the right call on the evidence available and the wrong diagnosis.
+Probing the three shapes in isolation settled it:
 
-**This is the one thing in this document still open.** It is located and understood rather
-than mysterious, which is the most a warning of this size deserves.
+| shape | result |
+|---|---|
+| `kill()` alone | leaks the transport — reproduces the warning |
+| `kill()` + `await wait()` | clean |
+| `kill()` + `await communicate()` | clean |
+
+So the fix was correct all along. What broke was **the test's own outer
+`asyncio.wait_for`**: an inner `wait_for` that times out cancels the current task, and
+awaiting anything in the resulting `except` block while an outer `wait_for` is still active
+lets that cancellation be caught by the outer scope and re-raised as its `TimeoutError`.
+Production never nests — `run_task` awaits the verifier directly and `run_suite` uses
+`gather` — so the nesting existed only in the test, as belt-and-braces that turned a correct
+fix into a red test.
+
+**And the first assertion written for it did not work.** Marking the test
+`filterwarnings("error::pytest.PytestUnraisableExceptionWarning")` looked like it pinned the
+fix and does not: the unraisable is reported at collection time, usually after the test that
+caused it, so removing the reap **still passed**. Measured, not assumed — the mutation
+survived. The test now asserts the process's `returncode` directly, which is the same fact
+available synchronously: `None` until reaped, and negative when death was by signal. Both
+mutations — dropping the reap, and dropping the kill — are caught.
 
 ## Repeating this
 
