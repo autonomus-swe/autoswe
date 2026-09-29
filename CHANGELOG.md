@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased — all 43 verified test gaps are closed
+
+Added
+- The last twelve, across four modules, plus `tests/unit/test_resume_reattach.py` for the
+  resume path — which no unit test drove at all.
+
+  **`evals/report.py`**: a mixed suite (one row errored, one clean) was untested, and
+  without `_why`'s guard that is an `IndexError` — so one failure in a suite of thirty loses
+  the report including the twenty-nine results that are fine. Also the cost denominator
+  (spend on a crashed task is still spend), `main`'s `--by` grouping (collapsing it blends
+  every arm into one row labelled `default`, a comparison that compares nothing), and
+  `conditions(note=…)`, which is where "not a capability claim" lives.
+- **`evals/swebench.py`**: `--limit` ignored turns `--limit 1` into all 300 instances of the
+  split; the goal truncation is now asserted against `RunCreate`'s own `max_length` rather
+  than a repeated literal; `write()` into a directory that does not exist yet, which is a
+  fresh clone and fails *after* fifty instances have been spent; and `--provider` reaching
+  `predict`, without which the operator benchmarks a model they did not name.
+- **`mcp_bridge/config.py`**: only `command[0]` was ever asserted, so
+  `["npx", "-y", "@…/server-github"]` could reduce to `["npx"]` — which launches npx's
+  interactive prompt on a subprocess nobody is watching, so the mount hangs rather than
+  failing. Plus the configured `timeout_s`, and both halves of the `env` key/value check.
+- **`orchestrator/resume.py`**: `base_sha or base_branch` → `base_branch` is the silent one.
+  A pinned run — every SWE-bench instance — resumes against the *head of the branch*,
+  produces a patch against a tree the instance never named, and nothing errors. Also the
+  post-resume network guard, the lock conflict that must refuse, and the install CPU
+  allowance being restored even when the install raises.
+
+Notes
+- **43 of 43 closed**, in four passes, every test re-run through the mutation harness after
+  it was written. `docs/test-gaps.md` is rewritten as the record of the method and of what
+  the 43 were, because the method is reusable and the list is the evidence the tests are
+  about something.
+- **What they had in common**: almost all were one shape — a value is produced and the place
+  that *consumes* it is not tested. Two sub-shapes defeat a test that looks correct: a value
+  equal to its own default proves nothing (`base="main"` against a default of `"main"`), and
+  a fixture whose branches agree measures nothing (which is how dropping `--branch` from the
+  eval verifier's clone survived).
+- None of the 43 crash. Every one produces a plausible, well-formed, wrong result — the
+  category a green suite is supposed to be evidence against.
+
 ## Unreleased — the control plane's own guarantees, and the mounted-tool call site
 
 Added

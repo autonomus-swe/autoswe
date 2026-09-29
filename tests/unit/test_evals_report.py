@@ -7,6 +7,8 @@ a README, which is worse than a bug in a feature: nobody re-derives a number the
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from evals import report
@@ -175,3 +177,143 @@ def test_the_warning_does_not_change_the_totals() -> None:
     rows = [row(task_id="a", resolved=False), row(task_id="a", resolved=True)]
     assert report.summarise(rows)["resolved"] == 1
     assert "1/2 resolved" in report.render(rows)
+
+
+# ---- the four gaps a mutation sweep found in this module -----------------------------------
+#
+# Each of these survived the whole suite. The tests above are thorough about `summarise` and
+# `render`'s arithmetic and never touch the seams below: a mixed suite, the denominator of the
+# cost total, `main`'s grouping, and the one optional argument `conditions` takes.
+
+
+def test_a_clean_row_beside_a_failed_one_does_not_break_the_table() -> None:
+    """A mixed suite is the ordinary case and it was untested.
+
+    `render` adds the `why` column as soon as *any* row has an error, and then asks every
+    row for one — including the rows that succeeded, whose `error` is empty. Without the
+    guard in `_why` that is an `IndexError` on `text[0]`, so one failure in a suite of
+    thirty loses the entire report, including the twenty-nine results that are fine.
+
+    The existing tests only ever rendered all-clean or all-failed sets, so the guard was
+    never reached.
+    """
+    out = report.render(
+        [
+            row(task_id="passed", resolved=True),
+            row(task_id="broke", resolved=False, error="ProviderError: 503"),
+        ]
+    )
+    assert "`passed`" in out and "`broke`" in out
+    assert "503" in out, "the failure's reason is shown"
+    assert "2/2 resolved" not in out, "and the clean row did not absorb the failure"
+
+
+def test_an_error_that_is_only_whitespace_is_treated_as_no_error() -> None:
+    """The boundary the guard actually defends: `error: "   "` splits to an empty list just
+    as `error: None` does, and a cell reading `""` is better than a traceback."""
+    assert report._why(row(error="   ")) == ""
+    assert report._why(row(error=None)) == ""
+    assert report._why(row(error="real reason")) == "real reason"
+
+
+def test_the_cost_total_includes_tasks_that_could_not_be_verified() -> None:
+    """Spend is spend. A task that crashed still called the model on its way down, and a
+    total that counted only verifiable rows would under-report the bill — quietly, and in
+    the direction that flatters.
+
+    Narrowing `costs` to verified rows survived the suite because every existing cost test
+    uses rows that are all verifiable.
+    """
+    rows = [
+        row(resolved=True, cost_usd=1.0),
+        row(resolved=None, cost_usd=2.0, error="crashed before it could be verified"),
+    ]
+    s = report.summarise(rows)
+    assert s["cost_usd_total"] == 3.0, "the crashed task's spend is part of the bill"
+    assert s["verified"] == 1 and s["unverifiable"] == 1
+    assert s["cost_usd_per_resolved"] == 3.0, "everything spent, over what it resolved"
+
+
+def test_the_cost_mean_is_over_every_task_attempted() -> None:
+    """The same denominator question one field along, asserted so the two cannot drift."""
+    rows = [row(resolved=True, cost_usd=1.0), row(resolved=None, cost_usd=3.0)]
+    assert report.summarise(rows)["cost_usd_mean"] == 2.0
+
+
+def test_a_note_passed_to_conditions_is_printed() -> None:
+    """`conditions` is the line that has to sit next to every percentage, and `note` is
+    where its caveat goes — "first attempt", "free tier under load", "one instance is not a
+    score". Dropped, the number keeps its model and date and loses the sentence that stops
+    it being read as more than it is.
+    """
+    line = report.conditions(
+        model="gemini-3.1-flash-lite",
+        provider="openai_compat",
+        date="2026-09-23",
+        note="three fixture tasks, not a capability claim",
+    )
+    assert "three fixture tasks, not a capability claim" in line
+    assert "gemini-3.1-flash-lite" in line and "2026-09-23" in line
+
+
+def test_conditions_without_a_note_has_no_trailing_separator() -> None:
+    """So the fix cannot become "always append", which would leave a dangling ` · ` on
+    every line that has nothing to add."""
+    line = report.conditions(model="m", provider="p", date="d")
+    assert not line.rstrip().endswith("·")
+    assert line.count("·") == 2
+
+
+def test_the_by_flag_groups_by_the_field_it_names(tmp_path: Any, capsys: Any) -> None:
+    """The documented ablation comparison, from the command line.
+
+    `docs/evals.md` §5 tells you to run `report.py <file> --by ablation`. Nothing tested the
+    line that does the grouping, and collapsing it to a single key survived the suite — the
+    table still renders, with every arm blended into one row labelled `default`. A
+    comparison that silently compares nothing.
+    """
+    import json as _json
+    import sys
+
+    path = tmp_path / "arms.jsonl"
+    path.write_text(
+        "\n".join(
+            _json.dumps(r)
+            for r in [
+                row(task_id="a", ablation="no-debugger", resolved=True),
+                row(task_id="b", ablation="baseline", resolved=False),
+            ]
+        )
+    )
+
+    argv = sys.argv
+    sys.argv = ["report.py", str(path), "--by", "ablation"]
+    try:
+        assert report.main() == 0
+    finally:
+        sys.argv = argv
+
+    out = capsys.readouterr().out
+    assert "no-debugger" in out and "baseline" in out, "each arm is its own row"
+    assert "default" not in out, "nothing fell through to the catch-all label"
+
+
+def test_a_row_missing_the_grouping_field_falls_back_rather_than_crashing(
+    tmp_path: Any, capsys: Any
+) -> None:
+    """Results files are appended to over time, so an older row may predate the field being
+    grouped by. It belongs in the table under a name that says so, not in a traceback."""
+    import json as _json
+    import sys
+
+    path = tmp_path / "mixed.jsonl"
+    path.write_text(_json.dumps(row(task_id="old")) + "\n")
+
+    argv = sys.argv
+    sys.argv = ["report.py", str(path), "--by", "ablation"]
+    try:
+        assert report.main() == 0
+    finally:
+        sys.argv = argv
+
+    assert "default" in capsys.readouterr().out

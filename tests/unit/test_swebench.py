@@ -309,3 +309,174 @@ async def test_an_instance_that_crashed_still_records_its_time(
     )
     assert prediction["autoswe"]["wall_clock_s"] == 42.5
     assert "refused" in prediction["autoswe"]["error"]
+
+
+# ---- the four gaps a mutation sweep found in this module -----------------------------------
+
+
+def test_only_the_first_limit_instances_are_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`--limit` is the difference between five instances and the whole split.
+
+    `docs/evals.md` §7 says "run five before you run fifty" because fifty is real money and
+    hours. Ignoring the limit turns `--limit 1` into all 300 of SWE-bench Lite, and nothing
+    stops it until the budget does.
+    """
+
+    class FakeRows:
+        def __init__(self, n: int) -> None:
+            self._rows = [
+                {
+                    "instance_id": f"repo__repo-{i}",
+                    "repo": "acme/repo",
+                    "base_commit": "a" * 40,
+                    "problem_statement": f"problem {i}",
+                }
+                for i in range(n)
+            ]
+
+        def __len__(self) -> int:
+            return len(self._rows)
+
+        def select(self, indices: Any) -> list[dict[str, Any]]:
+            return [self._rows[i] for i in indices]
+
+    import sys
+    import types
+
+    module = types.ModuleType("datasets")
+    module.load_dataset = lambda name, split: FakeRows(300)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "datasets", module)
+
+    assert len(swebench.load_instances(3)) == 3
+    assert len(swebench.load_instances(1)) == 1
+
+
+def test_a_limit_larger_than_the_split_takes_the_whole_split(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """So the clamp cannot become "always take `limit`", which would index past the end."""
+
+    class FakeRows:
+        def __init__(self, n: int) -> None:
+            self._rows = [
+                {
+                    "instance_id": f"repo__repo-{i}",
+                    "repo": "acme/repo",
+                    "base_commit": "a" * 40,
+                    "problem_statement": f"problem {i}",
+                }
+                for i in range(n)
+            ]
+
+        def __len__(self) -> int:
+            return len(self._rows)
+
+        def select(self, indices: Any) -> list[dict[str, Any]]:
+            return [self._rows[i] for i in indices]
+
+    import sys
+    import types
+
+    module = types.ModuleType("datasets")
+    module.load_dataset = lambda name, split: FakeRows(2)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "datasets", module)
+
+    assert len(swebench.load_instances(50)) == 2
+
+
+def test_a_long_problem_statement_is_truncated_to_the_goal_limit() -> None:
+    """4 000 characters is `RunCreate.goal`'s ceiling, and SWE-bench problem statements run
+    well past it — astropy's is thousands of words.
+
+    Truncated too generously the API refuses the run with a 422 and the instance is recorded
+    as a crash rather than as an attempt; too meanly and the agent is solving a different,
+    shorter problem. The number is the contract's, so it is asserted against the contract
+    rather than against a literal repeated here.
+    """
+    from api.schemas import RunCreate
+
+    ceiling = next(
+        m.max_length
+        for m in RunCreate.model_fields["goal"].metadata
+        if getattr(m, "max_length", None) is not None
+    )
+    instance = swebench.Instance(
+        instance_id="x__y-1",
+        repo="x/y",
+        base_commit="a" * 40,
+        problem_statement="p" * (ceiling * 3),
+    )
+    task = instance.task(None, 3.0, 900.0)
+    assert len(task.goal) == ceiling, "the goal is cut to exactly what the API accepts"
+
+
+def test_predictions_can_be_written_into_a_directory_that_does_not_exist_yet(
+    tmp_path: Path,
+) -> None:
+    """`--out evals/results/predictions.jsonl` on a fresh clone has no `results/` directory.
+
+    Fifty instances are hours and real money, and the write happens at the very end — so a
+    missing directory does not fail fast, it fails after everything has been spent. Every
+    existing test wrote into `tmp_path`, which pytest had already created.
+    """
+    target = tmp_path / "does" / "not" / "exist" / "predictions.jsonl"
+    written = swebench.write([swebench._prediction(INSTANCE, "PATCH", {})], target)
+
+    assert written.exists()
+    assert json.loads(written.read_text().splitlines()[0])["model_patch"] == "PATCH"
+
+
+async def test_the_provider_reaches_predict_from_the_command_line(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The call-site gap again, on the flag that decides which model runs the benchmark.
+
+    Dropped, every instance runs on the deployment default while the operator believes they
+    are benchmarking the provider they named — and `predictions.jsonl` carries no record of
+    which model actually produced the patches.
+    """
+    seen: dict[str, Any] = {}
+
+    async def fake_predict(instances: list[Any], **kwargs: Any) -> list[dict[str, Any]]:
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(swebench, "predict", fake_predict)
+    monkeypatch.setattr(swebench, "load_instances", lambda limit: [INSTANCE])
+    monkeypatch.setenv("AUTOSWE_API_KEY", "k")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "swebench.py",
+            "--limit",
+            "1",
+            "--provider",
+            "openai_compat",
+            "--out",
+            str(tmp_path / "p.jsonl"),
+        ],
+    )
+
+    assert await swebench.main() == 0
+    assert seen.get("provider") == "openai_compat", "the provider never reached predict"
+
+
+async def test_no_provider_reaches_predict_as_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The other direction, so the test above cannot pass on a hard-coded provider."""
+    seen: dict[str, Any] = {}
+
+    async def fake_predict(instances: list[Any], **kwargs: Any) -> list[dict[str, Any]]:
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(swebench, "predict", fake_predict)
+    monkeypatch.setattr(swebench, "load_instances", lambda limit: [INSTANCE])
+    monkeypatch.setenv("AUTOSWE_API_KEY", "k")
+    monkeypatch.setattr(
+        "sys.argv", ["swebench.py", "--limit", "1", "--out", str(tmp_path / "p.jsonl")]
+    )
+
+    assert await swebench.main() == 0
+    assert seen.get("provider") is None
