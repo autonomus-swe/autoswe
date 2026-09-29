@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased — a scanner that cannot run is not a clean scan
+
+Found by the suite going red on `main` for a reason that was not a code change: the
+`semgrep` vendored into this machine's Python sandbox image had **corrupt bytecode** —
+`ValueError: bad marshal data` on import, from a `pip install` that fetched a damaged wheel.
+Every SECURITY phase on that image ran two scanners of three and said nothing about the
+third.
+
+`tests/integration/test_scanners.py` is what caught it, by asserting the scanner *runs*
+rather than that the scan returned. Rebuilding the image fixed it. Two gaps were real.
+
+Added
+- `run_bandit` and `run_semgrep` turn a crashed scanner into a `scan-failed` finding, and
+  **neither call site was tested**. `failure()` is asserted directly and `run_all` is
+  asserted in `test_security_agent`, but replacing either call with `return []` survived all
+  three files — a broken scanner reported as a clean one, which is the exact failure that
+  had just happened for real. Now covered at unit level, so the guard runs on every commit
+  rather than only where Docker and a built image are available.
+
+  Includes the quiet version — exit 0 with no output, which a check on the exit code alone
+  would miss — and a counterweight, because an unconditional `failure()` would satisfy every
+  other assertion while reporting each clean scan as broken, which trains people to ignore
+  the one message that matters.
+
+Fixed
+- `docs/security.md` §10 now says that **a scanner which cannot run does not stop the run**.
+  A `scan-failed` finding is `info`, and `info` cannot gate, so the run proceeds having
+  checked less than it appears to have. That is the right trade — refusing every push on a
+  broken scanner makes a tooling outage into a system outage — but §10 exists to list what
+  this build does not guarantee, and it was silent on it.
+
+  The entry names the real occurrence rather than describing a hypothetical, and says what
+  to do about it: read the `by_severity` block, and treat an `info` finding named
+  `scan-failed` as a failed build rather than a clean one.
+
 ## Unreleased — reap the killed verify process
 
 Fixed

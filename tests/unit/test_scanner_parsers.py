@@ -16,7 +16,9 @@ expecting the gate to fire proves nothing. The fixture uses a key gitleaks actua
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -374,3 +376,76 @@ def test_every_bandit_rule_that_quotes_a_value_is_in_the_withheld_set() -> None:
         "B105 string, B106 funcarg, B107 default — the hardcoded-password family, all of "
         "which interpolate the literal into issue_text"
     )
+
+
+# ---- the call sites that turn a broken scanner into a finding --------------------------------
+#
+# `failure()` is asserted directly above, and `run_all` is asserted in `test_security_agent`.
+# Neither reaches the line in `run_bandit` and `run_semgrep` that *calls* it, so replacing
+# either with `return []` survived all three files — a broken scanner reported as a clean one.
+#
+# Not hypothetical, and this is why the tests exist. The `semgrep` vendored into this
+# machine's Python sandbox image had corrupt bytecode (`ValueError: bad marshal data`, from
+# a pip install that fetched a damaged wheel). Every SECURITY phase on that image ran two
+# scanners of three and said nothing about the third. What caught it was
+# `tests/integration/test_scanners.py`, which needs Docker and a built image — so the cheap
+# unit-level guard below is the one that runs on every commit.
+
+
+@dataclass
+class BrokenExec:
+    """A sandbox whose scanner exits non-zero and prints no JSON — a crashed tool."""
+
+    exit_code: int = 1
+    stdout: str = ""
+    stderr: str = "ValueError: bad marshal data (unknown type code)"
+
+
+class BrokenSandbox:
+    def __init__(self, result: Any = None) -> None:
+        self.result = result or BrokenExec()
+
+    async def exec(self, cmd: str, *, timeout_s: int = 120, **kwargs: Any) -> Any:
+        return self.result
+
+
+async def test_a_bandit_that_crashed_is_reported_rather_than_read_as_clean() -> None:
+    """`return []` here is indistinguishable from "scanned, found nothing"."""
+    findings = await scanners.run_bandit(BrokenSandbox())  # type: ignore[arg-type]
+
+    assert findings, "a crashed scanner must not come back as an empty, clean result"
+    assert findings[0].rule == "scan-failed" and findings[0].tool == "bandit"
+    assert "bad marshal" in findings[0].message, "and it carries what the tool said"
+
+
+async def test_a_semgrep_that_crashed_is_reported_rather_than_read_as_clean() -> None:
+    """The one that actually happened, on the real image."""
+    findings = await scanners.run_semgrep(BrokenSandbox())  # type: ignore[arg-type]
+
+    assert findings, "a crashed scanner must not come back as an empty, clean result"
+    assert findings[0].rule == "scan-failed" and findings[0].tool == "semgrep"
+    assert findings[0].severity == "info", "it records; it does not gate"
+
+
+async def test_a_scanner_that_printed_no_json_at_all_still_reports() -> None:
+    """Exit 0 with empty output is the quietest version of the same failure, and the one a
+    check on the exit code alone would miss."""
+    quiet = BrokenExec(exit_code=0, stdout="", stderr="")
+    findings = await scanners.run_semgrep(BrokenSandbox(quiet))  # type: ignore[arg-type]
+
+    assert findings and findings[0].rule == "scan-failed"
+    assert "no JSON" in findings[0].message
+
+
+async def test_a_scanner_that_worked_reports_its_findings_and_no_failure() -> None:
+    """The counterweight. Without it, `return [failure(...)]` unconditionally would satisfy
+    every assertion above while reporting every clean scan as broken — which trains people
+    to ignore the one message that matters.
+    """
+
+    class WorkingSandbox:
+        async def exec(self, cmd: str, *, timeout_s: int = 120, **kwargs: Any) -> Any:
+            return BrokenExec(exit_code=0, stdout='{"results": [], "errors": []}', stderr="")
+
+    findings = await scanners.run_semgrep(WorkingSandbox())  # type: ignore[arg-type]
+    assert not [f for f in findings if f.rule == "scan-failed"]
