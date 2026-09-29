@@ -159,6 +159,28 @@ stream and every other route requires the header (`api/auth.require_api_key_or_q
   you name, and the allow-list bounds which of its tools are reachable, but within that it
   does what it does. `mutating` is declared by you rather than by it for exactly this
   reason.
+- **A scanner that cannot run does not stop the run.** `bandit`, `semgrep` and `gitleaks`
+  each produce a `scan-failed` finding when they fail to execute, at `info` severity — and
+  `info` cannot gate, so the run proceeds having checked less than it appears to have.
+
+  That is deliberate and it is the right trade: refusing every push on a broken scanner
+  makes a tooling outage into an outage of the whole system, and a scanner that found
+  nothing because it never started has still found nothing. But it means **a clean security
+  report is only as strong as the scanners that actually ran**, and the report says which
+  those were rather than leaving you to assume.
+
+  Not hypothetical. The `semgrep` vendored into this machine's Python sandbox image had
+  corrupt bytecode — `ValueError: bad marshal data` on import, from a `pip install` that
+  fetched a damaged wheel. Every SECURITY phase on that image ran `bandit` and `gitleaks`
+  and silently contributed nothing from `semgrep`, which is the largest of the three rule
+  sets. `tests/integration/test_scanners.py` is what caught it, by asserting the scanner
+  runs rather than that the scan returned.
+
+  **So read the `by_severity` block on a security report, and treat `info` findings named
+  `scan-failed` as a failed build rather than as a clean one.** Pinned by
+  `tests/unit/test_scanner_parsers.py` (the failure is a finding, not silence) and
+  `tests/unit/test_pr_node.py` (it cannot gate, and it does not erase a secret already
+  found).
 - **The eval judge is not independent** when it runs on the worker's own model.
 - **`API_KEYS` is a shared secret, not an identity.** There is no per-user authorisation
   and no audit of *which* caller did what — the ledger records what the run did, not who
