@@ -164,3 +164,78 @@ def test_the_shipped_example_is_a_configuration_this_build_accepts() -> None:
         example, environ={"GITHUB_TOKEN": "ghp_x", "TARGET_DATABASE_URL": "postgres://x"}
     )
     assert {s.name for s in servers} == {"github", "postgres"}
+
+
+# ---- the four gaps a mutation sweep found in this module -----------------------------------
+#
+# `test_a_valid_file_parses` asserts `command[0] == "npx"` and stops there, which is how
+# three of these survived: the first element of argv is the one thing that cannot go wrong
+# without the server failing loudly.
+
+
+def test_every_element_of_the_command_survives_parsing(tmp_path: Path) -> None:
+    """`command[0]` is the binary; the rest is what it runs.
+
+    `["npx", "-y", "@modelcontextprotocol/server-github"]` reduced to `["npx"]` launches
+    npx's interactive prompt instead of the server, on a subprocess nobody is watching —
+    so the mount hangs rather than failing, and the run waits on a session that will never
+    come up. Keeping only the first element survived the whole suite, because the only
+    assertion anywhere was on the first element.
+    """
+    [github] = config.load(write(tmp_path, VALID), environ={"GITHUB_TOKEN": "ghp_xyz"})
+    assert github.command == ["npx", "-y", "@modelcontextprotocol/server-github"]
+
+
+def test_a_configured_timeout_is_the_one_used(tmp_path: Path) -> None:
+    """Parsed since this module was written and observed by nothing.
+
+    A server that is slow to start is the reason the knob exists, so a deployment that
+    raises it and silently keeps the 60-second default gets the failure it was trying to
+    configure away — and no indication that its setting was ignored.
+    """
+    body = VALID.replace("    transport: stdio\n", "    transport: stdio\n    timeout_s: 180\n")
+    [github] = config.load(write(tmp_path, body), environ={"GITHUB_TOKEN": "ghp_xyz"})
+    assert github.timeout_s == 180
+
+
+def test_an_unconfigured_timeout_falls_back_to_the_default(tmp_path: Path) -> None:
+    """So the test above cannot pass on a parser that hard-codes 180."""
+    [github] = config.load(write(tmp_path, VALID), environ={"GITHUB_TOKEN": "ghp_xyz"})
+    assert github.timeout_s == config.TIMEOUT_S
+
+
+def test_a_command_element_that_is_not_a_string_is_refused(tmp_path: Path) -> None:
+    """The guard is invisible from the outside, because `str(c)` coerces behind it.
+
+    Disarmed, `command: ["npx", 8080]` becomes `["npx", "8080"]` and runs — a port number
+    handed to a launcher as an argument, which fails somewhere that names neither this file
+    nor the line in the YAML. A config error caught at parse time is worth a great deal
+    more than a subprocess that dies strangely.
+    """
+    body = VALID.replace(
+        '    command: ["npx", "-y", "@modelcontextprotocol/server-github"]',
+        '    command: ["npx", 8080]',
+    )
+    with pytest.raises(ConfigError, match="non-empty list of strings"):
+        config.load(write(tmp_path, body), environ={"GITHUB_TOKEN": "ghp_xyz"})
+
+
+def test_an_env_value_that_is_not_a_string_is_refused(tmp_path: Path) -> None:
+    """Both halves of `not isinstance(key, str) or not isinstance(value, str)`.
+
+    Dropping the value half survived the suite, because every test here used a string
+    value. A numeric one reaches `expand`, which expects text — and the env of a
+    subprocess has to be strings either way, so this fails later and less clearly.
+    """
+    body = VALID.replace(
+        '      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"', "      PORT: 8080"
+    )
+    with pytest.raises(ConfigError, match="keys and values must be strings"):
+        config.load(write(tmp_path, body), environ={"GITHUB_TOKEN": "ghp_xyz"})
+
+
+def test_an_env_key_that_is_not_a_string_is_refused(tmp_path: Path) -> None:
+    """The other half, so neither side of the `or` can go dead unnoticed."""
+    body = VALID.replace('      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"', '      8080: "x"')
+    with pytest.raises(ConfigError, match="keys and values must be strings"):
+        config.load(write(tmp_path, body), environ={"GITHUB_TOKEN": "ghp_xyz"})

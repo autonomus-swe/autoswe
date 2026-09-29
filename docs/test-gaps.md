@@ -1,26 +1,72 @@
 # Verified test gaps
 
-Not a wish list. Every entry below was **proved** by mutating the source and watching the
-suite stay green, with the mutation confirmed to have applied against a green baseline —
-because a mutation that fails to apply is indistinguishable from a test that caught it
-(`pytest` exits non-zero for "no such test" too).
+**All 43 are closed.** This file is kept as the record of how they were found and what each
+one was, because the method is reusable and the list is the evidence that the closing tests
+are about something.
 
-**How this was produced.** A coverage run over the Phase 6 modules, then one agent per
-module reading the uncovered lines and proposing an exact mutation for each thing a real
-defect could hide behind, then every proposal executed. 47 proposed, **43 survived**, 4
-could not be judged because the module has no test file at all.
+Not a wish list, and never was. Every entry was **proved** by mutating the source and
+watching the suite stay green, with the mutation confirmed to have applied against a green
+baseline — because a mutation that fails to apply is indistinguishable from a test that
+caught it (`pytest` exits non-zero for "no such test" too).
 
-**31 are now closed**, in three passes, and each was re-run through the harness after its
-test was written:
+## How they were found
+
+A coverage run over the Phase 6 modules, then one agent per module reading the uncovered
+lines and proposing an exact mutation for each thing a real defect could hide behind, then
+every proposal executed.
+
+**47 proposed → 43 survived.** The other 4 could not be judged at all: `evals/scale.py` had
+no test file, so every mutation in it survives trivially.
+
+## How they were closed
+
+Four passes, each test re-run through the harness after it was written:
 
 | pass | tests | closed |
 |---|---|---|
-| the MCP and eval surfaces | `test_mcp_tool_bodies_are_reached.py`, `test_task_fields_reach_the_run.py`, two additions to `test_mcp_workspace.py` | 14 |
+| the MCP and eval surfaces | `test_mcp_tool_bodies_are_reached.py`, `test_task_fields_reach_the_run.py`, additions to `test_mcp_workspace.py` | 14 |
 | the published numbers | `test_evals_scale.py`, `test_evals_verifier.py` | 8 |
 | the control plane and mounted tools | `test_api_service.py`, `test_mounted_tool_call_site.py` | 9 |
+| the reporting, benchmark, config and resume paths | additions to `test_evals_report.py`, `test_swebench.py`, `test_mcp_config.py`; `test_resume_reattach.py` | 12 |
 
-The rest are recorded here rather than fixed, because one reviewable change cannot hold 43
-tests and a list that lives in a chat log is a list that is gone.
+## What the 43 had in common
+
+Almost all of them were one shape: **a value is produced and the place that consumes it is
+not tested.** The helper has a test; the call site does not. Phase 6 shipped five instances
+of it before this sweep — `upstream` in the PR node, `starting_commit`, the ablation arm,
+the `done` gate in swebench, `wall_clock_s` — and the sweep found thirty-odd more.
+
+Two sub-shapes worth naming, because both defeat a test that looks correct:
+
+**A value equal to its own default proves nothing.** The eval harness's shared `task()`
+helper built `base="main"`, which is `Task.base`'s default — so an assertion on
+`base_branch == "main"` passed against a `create` that never sent the field at all.
+`test_no_asked_value_equals_its_own_default` now enforces the rule rather than trusting
+anyone to remember it.
+
+**A fixture where both branches agree measures nothing.** `checkout_and_verify` is the
+definition of "resolved", and dropping `--branch` from its clone survived — because the
+fixture repository's branches were never made to disagree. The test now uses a repository
+whose `main` exits 7 and whose agent branch exits 0.
+
+## The ones that would have been worst
+
+- **`return proc.returncode or 0` → `return 0`** in the eval verifier: *everything*
+  resolves, including tasks whose tests failed, and a suite reporting 3/3 looks identical
+  either way.
+- **`_pending`'s `raise Conflict` → `pass`** in the control plane: an approval accepted by a
+  run that is not waiting for one — the replay the module was written to prevent.
+- **`base_sha or base_branch` → `base_branch`** on the resume path: a pinned run resumes
+  against the head of a branch, produces a patch against a tree the instance never named,
+  and nothing errors.
+- **`_tokens`'s divisor** in the scale tool: a map over its 4 000-token budget reports as
+  under it. `docs/numbers.md` opens by admitting that exact thing happened once already.
+- **`engine=None`** at the MCP workspace call site: semantic search silently degrades to
+  text search and still answers.
+
+None of these crash. That is the whole point: every one produces a plausible, well-formed,
+wrong result, which is the category of defect a green suite is supposed to be evidence
+against.
 
 ## A note on how nearly this went wrong
 
@@ -35,60 +81,6 @@ them `INAPPLICABLE` → `SURVIVED`**, and **no verdict ever flipped between `SUR
 mutation — but that was luck, not design. Do not run a mutation harness concurrently with
 agents that can write to the same tree.
 
-## Still open
-
-### `evals/report.py` — 4 open
-
-- _why's empty-error guard is never exercised: a mixed suite (some rows errored, some clean) is untested
-- Cost totals over unverifiable tasks are unasserted: spend on crashed tasks can vanish from the report
-- main()'s --by grouping has no call site test: the documented ablation comparison can blend all arms into one
-- conditions(note=...) is never passed a note, so the caveat can be dropped silently
-
-### `evals/swebench.py` — 4 open
-
-- --limit is never checked: load_instances could load the whole split
-- main() never reaches predict in any test: --provider can be dropped
-- The problem-statement truncation length is asserted by nothing
-- write() is only ever tested into an existing directory
-
-### `mcp_bridge/config.py` — 4 open
-
-- Only command[0] is ever asserted — the rest of argv can be dropped silently
-- Configured timeout_s is parsed and never observed by any test
-- command element type guard (line 119) can be disarmed invisibly — str() coerces behind it
-- env key/value string check (line 175): half of it can go dead via and/or swap
-
-### `orchestrator/resume.py` — 4 open
-
-- Resume's worktree-recreate branch passes a committish nothing checks
-- Post-resume network-isolation guard can be demoted with the suite green
-- Nothing asserts a resumed run keeps holding the repo lock
-- CPU raise/restore around the resumed install is never exercised
-
-### `evals/scale.py` — closed
-
-**This module had no test file at all** (0 % covered, 67 statements), so every mutation in it
-survived trivially and the four below could not even be judged. `tests/unit/test_evals_scale.py`
-now exists and all four are caught:
-
-- goal dropped at the render_symbol_map call site (silent keyword default)
-- index_s timing window can collapse to ~0 with no cross-check
-- _tokens is an untested re-implementation of the budget divisor
-- _count_files counts .git internals, so files_total means two things in one JSONL
-
-It earned that test file more than its coverage number suggested, because `docs/numbers.md`
-quotes its output. Two findings came out of writing them:
-
-- **`_tokens` is the inverse of the map's own budget arithmetic**, and only stays so if the
-  two move together. A divisor wrong in the generous direction reports an over-budget map as
-  under it — which `docs/numbers.md` opens by admitting happened once. The test changes
-  `repomap.CHARS_PER_TOKEN` and requires `_tokens` to follow, rather than asserting the
-  current value, because asserting the value passes on a frozen copy.
-- **`files_total` counts `.git`.** It is files on disk, not files in the project. Pinned by a
-  test and now stated beside the table in `docs/numbers.md` rather than quietly changed —
-  redefining the measurement would invalidate every figure already published while the
-  numbers kept looking comparable.
-
 ## One fix attempted and reverted
 
 Writing `test_a_verify_command_that_hangs_is_killed_rather_than_waited_on` — the first test
@@ -100,5 +92,18 @@ Adding `await proc.wait()` after the kill **broke the test**: `asyncio.wait_for`
 cancelled `communicate()`, and awaiting in the handler re-raises `CancelledError`. Reverted
 rather than patched further — the symptom is a warning on a timed-out task, not a leak (the
 process is killed either way), and a correct fix is a deliberate change to that error path
-rather than something to bolt onto a testing change. Recorded here so it is a known, located
-issue instead of an unexplained warning in the suite output.
+rather than something to bolt onto a testing change.
+
+**This is the one thing in this document still open.** It is located and understood rather
+than mysterious, which is the most a warning of this size deserves.
+
+## Repeating this
+
+`docs/numbers.md` is the standing argument for why: this project quotes numbers about
+itself, and a measurement tool nobody tests is a number nobody can trust. The sweep is worth
+re-running whenever a module's coverage drops or a new surface is added — the finding step
+is cheap, and the verification step is the only part that has to be careful.
+
+The rule that makes it worth anything: **a mutation must be confirmed to have applied,
+against a green baseline, with the exit code read directly rather than through a pipe.**
+All three of those have caught this project out before.
