@@ -307,6 +307,14 @@ async def test_a_verify_command_that_hangs_is_killed_rather_than_waited_on(
     `VERIFY_TIMEOUT_S` is fifteen minutes in production, which is not a thing a unit test
     can wait for, so the constant is lowered rather than the behaviour faked. 124 is the
     conventional timeout code and the report shows it as the reason.
+
+    **Do not wrap this call in `asyncio.wait_for`.** An inner `wait_for` that times out
+    cancels the current task; awaiting anything in the resulting `except` block while an
+    *outer* `wait_for` is still active lets that cancellation be caught by the outer scope
+    and re-raised as its `TimeoutError`. Production never nests — `run_task` awaits the
+    verifier directly and `run_suite` uses `gather` — so the nesting only ever existed here,
+    as belt-and-braces that turned a correct fix into a red test. The lowered
+    `VERIFY_TIMEOUT_S` is what bounds this test.
     """
     origin = origin_with_two_branches(tmp_path)
     monkeypatch.setattr(evals_run, "VERIFY_TIMEOUT_S", 0.5)
@@ -316,8 +324,58 @@ async def test_a_verify_command_that_hangs_is_killed_rather_than_waited_on(
         goal="A goal long enough to satisfy the loader's floor.",
         verify=Verify(command="sleep 30"),
     )
-    code, output = await asyncio.wait_for(
-        evals_run.checkout_and_verify(task, {"work_branch": "agent/run-1"}), timeout=20
-    )
+    code, output = await evals_run.checkout_and_verify(task, {"work_branch": "agent/run-1"})
+
     assert code == 124
     assert "timed out" in output
+
+
+async def test_the_killed_process_is_reaped_rather_than_left_a_zombie(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`kill` sends the signal and returns; it does not wait for the child to die.
+
+    Left unreaped, the child's transport is finalised after the event loop has closed and
+    raises "Event loop is closed" out of `__del__` — once per timed-out task, from a place
+    that has nothing to do with the task.
+
+    Asserted on `returncode` rather than on the warning. The warning is emitted at
+    collection time, which is usually after the test that caused it, so
+    `filterwarnings("error::…Unraisable…")` does **not** fail this test when the reap is
+    removed — measured, not assumed. `returncode` is `None` until the child is reaped and
+    the signal number afterwards, which is the same fact available synchronously.
+    """
+    origin = origin_with_two_branches(tmp_path)
+    monkeypatch.setattr(evals_run, "VERIFY_TIMEOUT_S", 0.5)
+    spawned: list[Any] = []
+
+    real_spawn = asyncio.create_subprocess_shell
+
+    async def recording_spawn(cmd: str, **kwargs: Any) -> Any:
+        proc = await real_spawn(cmd, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", recording_spawn)
+
+    task = Task(
+        id="hangs",
+        repo=str(origin),
+        goal="A goal long enough to satisfy the loader's floor.",
+        verify=Verify(command="sleep 30"),
+    )
+    code, _ = await evals_run.checkout_and_verify(task, {"work_branch": "agent/run-1"})
+
+    assert code == 124
+    assert spawned, "the verify command was never started"
+    returncode = spawned[0].returncode
+    assert returncode is not None, (
+        "the killed child was never reaped; its transport will be finalised after the "
+        "event loop closes and raise out of __del__"
+    )
+    assert returncode < 0, (
+        f"returncode {returncode} means the command ran to completion — it was reaped but "
+        "never killed, so a verify command that truly hangs blocks the suite for as long "
+        "as it likes, which is the thing the timeout exists to prevent. A negative code is "
+        "death by signal."
+    )

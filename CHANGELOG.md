@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased — reap the killed verify process
+
+Fixed
+- `checkout_and_verify` killed a timed-out verify command and never reaped it. `kill` sends
+  the signal and returns, so the child's transport is finalised after the event loop has
+  closed and raises "Event loop is closed" out of `__del__` — once per timed-out task, from
+  a place with nothing to do with the task.
+
+  **This was attempted once and reverted**, because `await proc.wait()` broke the test. That
+  revert was the right call on the evidence and the wrong diagnosis. Probing the shapes in
+  isolation settled it: `kill()` alone leaks the transport; `kill()` plus `wait()` is clean.
+  The fix was correct all along.
+
+  What broke was **the test's own outer `asyncio.wait_for`**. An inner `wait_for` that times
+  out cancels the current task, and awaiting anything in the resulting `except` block while
+  an outer `wait_for` is still active lets that cancellation be caught by the outer scope
+  and re-raised as its `TimeoutError`. Production never nests — `run_task` awaits the
+  verifier directly, `run_suite` uses `gather` — so the nesting existed only in the test, as
+  belt-and-braces that turned a correct fix into a red test. The test says so, so nobody
+  adds it back.
+
+Notes
+- **The first assertion written for this did not work, and that is measured rather than
+  assumed.** Marking the test `filterwarnings("error::pytest.PytestUnraisableExceptionWarning")`
+  looks like it pins the fix and does not: the unraisable is reported at collection time,
+  usually after the test that caused it, so removing the reap **still passed**. The test now
+  asserts the child's `returncode` directly — `None` until reaped, negative when death was
+  by signal — and both mutations are caught: dropping the reap, and dropping the kill.
+- Dropping the *kill* is worth catching on its own. Without it a hung verify command is
+  waited out in full rather than killed, so one task can hold the suite for as long as it
+  likes — which is the thing the timeout exists to prevent.
+
 ## Unreleased — all 43 verified test gaps are closed
 
 Added
