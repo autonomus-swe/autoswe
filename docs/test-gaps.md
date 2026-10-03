@@ -1,6 +1,8 @@
 # Verified test gaps
 
-**All 43 are closed, and so is the one fix that was deferred.** This file is kept as the
+**All 43 of the Phase 6 sweep are closed, and so is the one fix that was deferred.** The
+method has since been pointed at the rest of the codebase; what it has found so far is in
+"Beyond Phase 6" below. This file is kept as the
 record of how they were found and what each one was, because the method is reusable and the
 list is the evidence that the closing tests are about something.
 
@@ -115,6 +117,36 @@ survived. The test now asserts the process's `returncode` directly, which is the
 available synchronously: `None` until reaped, and negative when death was by signal. Both
 mutations — dropping the reap, and dropping the kill — are caught.
 
+## Beyond Phase 6: the clone sweep
+
+The same method, applied to the modules the Phase 6 sweep did not cover. The first thin spot
+it found was `orchestrator/gc.py` at 67 %, and within it one function with **no test at all**.
+
+`tests/integration/test_gc.py` has nine tests and covers the container and worktree sweeps
+thoroughly. **`sweep_clones` appears in none of them**, and four mutations survived:
+
+| mutation | consequence |
+|---|---|
+| the attached-worktree guard → never | **a clone with live worktrees attached is deleted** |
+| the young-clone guard → never | a clone fetched into minutes ago is deleted |
+| the unreadable-clone skip → fall through | a clone is deleted *because* its state could not be read |
+| `ttl_days * 24 * 3600` → `ttl_days` | the TTL becomes seconds, so everything is ancient |
+
+The first is the serious one, and the module's own docstring says why: a clone is "the
+expensive thing to rebuild … and it is shared by every run against that repository, so age
+alone is not enough". Deleting one with worktrees attached takes the git objects out from
+under every live run on that repository at once — the worktree directories survive, and
+every git command inside them fails afterwards with something that names neither the clone
+nor the collector.
+
+The third is a shape worth naming on its own: **an error reading the state became permission
+to delete.** That is the opposite of what an unreadable thing deserves, and it is one
+`continue`.
+
+Closed by `tests/unit/test_gc_clone_sweep.py`, against real `git` repositories in `tmp_path`
+— the guard's whole question is what `git worktree list` says, so a fake would be asserting
+the fake. Unit rather than integration because `sweep_clones` touches no database.
+
 ## Repeating this
 
 `docs/numbers.md` is the standing argument for why: this project quotes numbers about
@@ -123,5 +155,14 @@ re-running whenever a module's coverage drops or a new surface is added — the 
 is cheap, and the verification step is the only part that has to be careful.
 
 The rule that makes it worth anything: **a mutation must be confirmed to have applied,
-against a green baseline, with the exit code read directly rather than through a pipe.**
-All three of those have caught this project out before.
+against a green baseline, with the exit code read directly rather than through a pipe.** All
+three of those have caught this project out before.
+
+`scripts/mutcheck.py` is that rule as a tool, because doing it by hand is where the mistakes
+live and this sweep lost its scratch copy to `/tmp` twice. It enforces all three — the old
+string must appear exactly once and the file must be observed to change; commands run
+without a shell, so a pipe is an error rather than a wrong verdict; and the baseline runs
+first and must be green. `--self-test` proves it distinguishes `caught`, `SURVIVED`,
+`INAPPLICABLE` and `RED_BASELINE` against a disposable subject, which is worth having
+because a harness that always said `caught` would be indistinguishable from a well-tested
+project.
