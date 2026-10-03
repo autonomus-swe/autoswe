@@ -1,5 +1,63 @@
 # Changelog
 
+## Unreleased — the clone sweep, a tool for the method, and a test that measured bandwidth
+
+Fixed
+- `tests/integration/test_egress.py` proved "an allow-listed host is reachable" by
+  downloading `https://pypi.org/simple/` — the **whole PyPI package index, 46 MB**. Measured
+  on a slow link: 188 s against a 120 s exec timeout, so the request was killed and
+  `%{http_code}` came back empty. A red test about egress policy, caused by throughput.
+
+  What is under test is the proxy's allow-list decision, and for an HTTPS request that is
+  made at **CONNECT**, before any of the body moves — so the index proves nothing the first
+  byte does not. Now `/simple/pip/`: 107 KB of real content through the same proxy, 0.07 s,
+  and the file says why so nobody "fixes" it back. The egress suite went from failing in
+  127 s to passing in 13 s.
+
+  Verified not weakened: pointing the same request at a host that is *not* allow-listed
+  still fails the test, so the assertion remains sensitive to the thing it is about.
+
+The Phase 6 gap sweep is finished, so the same method was pointed at the rest of the
+codebase. The first thin spot was `orchestrator/gc.py` at 67 % — and inside it, one function
+with no test at all.
+
+Added
+- `tests/unit/test_gc_clone_sweep.py`. `tests/integration/test_gc.py` has nine tests and
+  covers the container and worktree sweeps thoroughly; **`sweep_clones` appears in none of
+  them**, and four mutations survived:
+
+  **The attached-worktree guard.** A bare clone is shared by every run against that
+  repository, and the module's own docstring says age alone is not enough to judge it.
+  Deleting one with worktrees attached takes the git objects out from under every live run on
+  that repository at once — the worktree directories survive and every git command inside
+  them fails afterwards, naming neither the clone nor the collector.
+
+  **An unreadable clone was deleted because it could not be read.** `git worktree list`
+  failing means the collector does not know whether anything is attached, which is the one
+  circumstance in which deleting is least defensible. One `continue`.
+
+  Plus the young-clone guard, and the `ttl_days * 24 * 3600` conversion — without which a
+  TTL of 7 means seconds and the first pass deletes every clone on the box.
+
+  Against real `git` repositories in `tmp_path`, because the guard's whole question is what
+  `git worktree list` says and a fake would be asserting the fake. Unit rather than
+  integration: `sweep_clones` takes a root, a TTL, a clock and a counter, and touches no
+  database.
+- `scripts/mutcheck.py` — the method as a tool. This project's standard for "is this tested"
+  is mutation, not coverage, and it had no tooling for it; five passes relied on a scratch
+  copy that `/tmp` ate twice.
+
+  It enforces the three traps this project has actually hit: the old string must appear
+  exactly once **and** the file must be observed to change on disk (an inapplicable mutation
+  is indistinguishable from a caught one, because `pytest` exits non-zero for "no such test"
+  too); commands run through `shlex.split` without a shell, so a pipe is an error rather than
+  a wrong verdict; and the baseline runs first and must be green.
+
+  `--self-test` proves it distinguishes `caught`, `SURVIVED`, `INAPPLICABLE` and
+  `RED_BASELINE` against a disposable subject file. Worth having because a harness that
+  always said `caught` would be indistinguishable from a well-tested project — and the first
+  version of that self-test mutated its own source and reported two wrong verdicts about
+  itself.
 ## Unreleased — a scanner that cannot run is not a clean scan
 
 Found by the suite going red on `main` for a reason that was not a code change: the

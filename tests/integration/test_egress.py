@@ -206,8 +206,17 @@ async def test_an_allow_listed_host_is_reachable_and_others_are_not(
         proxy.reload()
         url = f"http://{proxy.name}:8888"
         env = {"HTTPS_PROXY": url, "https_proxy": url, "HTTP_PROXY": url, "http_proxy": url}
+        # `/simple/pip/` rather than `/simple/`, which is the *whole* package index — 46 MB.
+        # What is under test is the proxy's allow-list decision, and for an HTTPS request
+        # that is made at CONNECT, before any of the body moves; downloading the index
+        # proves nothing extra and makes the test hostage to bandwidth. Measured on a slow
+        # link: 188 s for `/simple/` against a 120 s exec timeout, so the request was killed
+        # and `%{http_code}` came back empty — a red test about egress policy, caused by
+        # throughput. `/simple/pip/` is 107 KB of real content through the same proxy, in
+        # 0.07 s.
         allowed = await sb.exec(
-            "curl -sS -o /dev/null -w '%{http_code}' https://pypi.org/simple/", env=env
+            "curl -sS -o /dev/null -w '%{http_code}' --max-time 60 https://pypi.org/simple/pip/",
+            env=env,
         )
         denied = await sb.exec("curl -sS https://example.com 2>&1 || true", env=env)
         unproxied = await sb.exec("curl -sS --max-time 8 https://pypi.org 2>&1 || true")
