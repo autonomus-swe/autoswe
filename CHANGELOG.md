@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased — every security claim, mutation-tested; two were hopes
+
+`docs/security.md` opens by saying **"a guarantee with no test beside it is a hope"** and
+then lists each claim beside the test that proves it. Nobody had checked whether those tests
+actually hold. So every claim was mutation-tested: break the thing the claim is about, and
+see whether the cited test goes red.
+
+**Most of them hold.** All seven sandbox-hardening claims (§1) are genuinely held —
+read-only rootfs, every capability dropped, the pids cap, `no-new-privileges`, the memory
+ceiling, the run-id label, gVisor when configured. So are both command claims (§3) and all
+three path-containment claims (§4), and the budget ledger claim (§9). That is worth stating
+as a result rather than left as an assumption.
+
+**Two were not.**
+
+Fixed
+- **§8's constant-time row cited its own subject.** "Keys are compared in constant time
+  against every configured key" pointed at `api/auth._matches` — the implementation it is a
+  claim about — where every other row points at a test. Measured: replacing
+  `hmac.compare_digest` with `candidate in configured` survives the **entire unit suite**.
+  Both give the same answers; the difference is only how long a wrong key takes to reject,
+  which is what leaks which prefix was right.
+
+  `tests/unit/test_auth_compares_in_constant_time.py` now holds it, and §8 cites the test.
+  It asserts the mechanism from the source rather than timing anything, and says why: the
+  difference is nanoseconds against scheduling noise, so a timing assertion would be flaky
+  on a loaded machine and would pass silently on a build that had lost the property. That
+  is a weaker kind of test than the rest of the suite, so §8 now names it as structural
+  rather than leaving a reader to assume otherwise.
+- **§7's key-based secret redaction was untested** while the pattern-based branch was. The
+  existing test passes `api_key="sk-ant-…"` and `github_token="ghp_…"` — values the
+  *pattern* branch also catches — so disabling the key branch entirely left it green.
+
+  The same trap as `base="main"` against a default of `"main"`: a value two mechanisms both
+  catch proves only that one of them works. The new tests use deliberately unremarkable
+  values (`api_key="unremarkable"`), so redaction has to come from the key alone. The key
+  branch is the one that matters most, because it covers a secret whose *shape* nobody
+  anticipated — an internal token, a rotated format, a vendor that changed its prefix.
+
+Notes
+- **A guard that could not be reached, made reachable.** `drop_sensitive`'s `key != "event"`
+  clause cannot change the outcome today — `_is_sensitive_key("event")` is `False` — so no
+  ordinary input can catch its removal. It is not dead code: it defends against somebody
+  adding "event" to `SENSITIVE_KEYS`, at which point **every log line loses the field that
+  says what happened**, invisibly, because the lines still parse. The new test creates that
+  condition with `monkeypatch`, which is the only way to hold the clause. Without it the
+  clause is indistinguishable from dead code and gets deleted by the next simplification —
+  exactly when it would have started mattering.
+- A corrupted `.pyc` in `.venv/lib/python3.12/site-packages/_pytest/_py/` made pytest itself
+  fail to import with `ValueError: bad marshal data` — the same corruption that hit the
+  sandbox image's semgrep. Cleared by removing `__pycache__`. Worth knowing on this machine:
+  it is the third corrupted artefact here, and the symptom never names the cause.
+
 ## Unreleased — the clone sweep, a tool for the method, and a test that measured bandwidth
 
 Fixed

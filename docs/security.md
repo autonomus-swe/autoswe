@@ -110,11 +110,18 @@ approving goes through it — which is the reason `api/service.py` exists.
 | Claim | Proved by |
 |---|---|
 | Every route requires a key | `tests/integration/test_api.py::test_create_run_requires_a_valid_key` |
-| Keys are compared in constant time against every configured key | `api/auth._matches` |
+| Keys are compared in constant time against every configured key | `tests/unit/test_auth_compares_in_constant_time.py` |
 | The MCP transport is guarded too, at the ASGI layer | `tests/integration/test_mcp_server.py::test_the_http_transport_refuses_an_unknown_key` |
 | Writes and reads have separate rate-limit buckets | `tests/integration/test_api.py::test_reads_do_not_spend_the_write_budget` |
 | The write bucket actually limits | `…::test_rate_limit_after_the_burst` |
 | Only `https://github.com/owner/name` repositories are accepted | `tests/integration/test_api.py::test_invalid_bodies_are_rejected` |
+
+**The constant-time row is held by a structural test, and that is worth knowing.**
+`compare_digest` and a plain `in` return the same answers, so no behavioural test can tell
+them apart — the difference is only how long a wrong key takes to reject. A timing assertion
+would be nanoseconds against scheduling noise: flaky on a loaded machine, and silently
+passing on a build that had lost the property. So that test reads the source and asserts the
+mechanism instead. Weaker than the rest of this document, and named rather than hidden.
 
 **The event stream accepts its key as a query parameter.** Browsers cannot set headers on
 an `EventSource`, so there is no other way to authenticate one. Query strings end up in
