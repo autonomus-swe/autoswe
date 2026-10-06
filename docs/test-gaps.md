@@ -147,6 +147,67 @@ Closed by `tests/unit/test_gc_clone_sweep.py`, against real `git` repositories i
 — the guard's whole question is what `git worktree list` says, so a fake would be asserting
 the fake. Unit rather than integration because `sweep_clones` touches no database.
 
+## The security-claim audit: nine gaps, and four miscitations
+
+`docs/security.md` says "a guarantee with no test beside it is a hope". Every claim in it was
+mutation-tested. Most held — all seven sandbox-hardening claims, both command claims, all
+three path-containment guards, the budget ledger. **Nine did not**, and each is now closed:
+
+| § | mutation that survived | what it meant |
+|---|---|---|
+| 2 | the install network created with `internal=False` | the sandbox gets a default route around the proxy |
+| 2 | SETUP's `has_network()` guard removed | the Coder starts with network access and nothing says so |
+| 7 | the container handed the whole host environment | every key the worker holds, inside the sandbox |
+| 7 | `not environ.get(name)` → `name not in environ` | a **set but empty** `${VAR}` becomes an empty credential |
+| 8 | the answer route losing its auth dependency | one write route open to anyone |
+| 8 | `parsed.scheme != "https"` → `False` | `http://` repositories accepted |
+| 8 | the event stream losing its query-parameter key | the documented exception, untested |
+| 8 | reads and writes sharing one rate-limit bucket | **a single GET refills the write allowance** |
+| 9 | `state.waiting_s += seconds` → `pass` | the four-hour approval wait charged to the run's clock |
+
+Two are worth dwelling on.
+
+**The shared rate-limit bucket survived both cited tests**, because neither interleaves a read
+with a write burst: one does 20 reads then a write (the Lua clamps, so it passes), the other
+does 6 writes with no reads (so it passes). The real effect is worse than a merged limit — one
+GET between writes tops the write allowance back up, so the write limit stops limiting. The
+new test exhausts the write bucket, makes reads, and requires the bucket to be *still*
+exhausted.
+
+**The guard for SETUP's network isolation was tested in `resume.py` and not in `nodes.py`.**
+The resume twin has a test precisely because that same mutation survived there once. The
+SETUP one — the path every first-attempt run takes — did not.
+
+### Four rows cited the wrong thing
+
+Separate from the gaps, and fixed in the same pass. Each was checked directly rather than
+taken from a report:
+
+- **§7 located `expand` in `mcp_bridge/config.py`.** It is in `core/envsubst.py`, shared with
+  `evals/suite.py` — a reader looking where the doc points would not find it.
+- **§7's "caught in CI" cited `.pre-commit-config.yaml`**, which is a *local* hook CI never
+  runs. The CI gate is the `gitleaks` job in `.github/workflows/ci.yml`. Both are real; they
+  are different claims and now have different rows.
+- **§6's rejection row cited a test that asserts the `Decision` object**, not the string the
+  model reads as the tool result — which is what the claim says. That string is built in
+  `orchestrator/hooks.py`, and an uncited test holds it.
+- **§3's "ordinary commands are not refused" cited a test that only calls `check_bash`** —
+  the DENY list. The ASK half was held by an uncited integration test.
+
+### What is recorded rather than closed
+
+- **`proxy/allowlist.txt` losing a `$` anchor is untested**, and the file's own header calls
+  that "the whole allow-list defeated by anyone who can register a domain". It is untestable
+  by mutation alone: the file is baked into the proxy image, so a mutation never reaches the
+  running container unless the image is rebuilt first. Closing it needs an image-rebuild step
+  in the test, which is a bigger change than this pass.
+- **`.pre-commit-config.yaml` and the CI workflow cannot be held by pytest at all.** No test
+  can notice a disabled hook. The doc now names them as config rather than implying a test.
+- **§8's "every route requires a key" is literally false** for `/healthz`, `/metrics`, `/`,
+  `/ui/*`, `/openapi.json` and `/docs`. All defensible, none previously written down. The new
+  structural test classifies each with its reason, so the exceptions are a list somebody chose
+  rather than a slogan nobody checked.
+
 ## Repeating this
 
 `docs/numbers.md` is the standing argument for why: this project quotes numbers about

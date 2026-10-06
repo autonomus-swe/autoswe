@@ -45,7 +45,7 @@ before the agent sees the repository.
 | Claim | Proved by |
 |---|---|
 | Forbidden commands are refused, not merely gated | `tests/unit/test_policy.py::test_denied_commands`, `tests/integration/test_injection.py::test_the_forbidden_commands_really_are_forbidden` |
-| Ordinary commands are not refused | `tests/unit/test_policy.py::test_allowed_commands` |
+| Ordinary commands are not refused | `tests/unit/test_policy.py::test_allowed_commands` (DENY), `tests/integration/test_approvals.py::test_the_ask_list_decides_by_what_a_command_does` (ASK) |
 | Commands that change the environment stop for a human | `tests/integration/test_injection.py::test_the_gated_commands_are_gated_rather_than_forbidden` |
 | `DENY` is checked before `ASK`, so a forbidden command is refused rather than offered for approval | `tests/integration/test_approvals.py::test_a_forbidden_command_is_not_offered_for_approval` |
 
@@ -81,8 +81,8 @@ layer, not in the prompt.
 |---|---|
 | An approval releases exactly the call it names | `tests/integration/test_approvals.py::test_approving_lets_the_call_through` |
 | A decision for a different call is not consumed | `…::test_a_decision_for_another_call_is_not_consumed` |
-| A rejection's reason reaches the model as the tool result | `…::test_rejecting_returns_the_reason_to_the_model` |
-| An unattended run refuses rather than parking forever | `…::test_an_unattended_run_refuses_immediately_without_parking` |
+| A rejection's reason reaches the model as the tool result | `…::test_rejecting_returns_the_reason_to_the_model` (the decision), `tests/integration/test_mcp_client.py::test_a_rejected_mounted_tool_call_never_reaches_the_server` (the string the model reads) |
+| An unattended run refuses rather than parking forever | `tests/integration/test_approvals.py::test_an_unattended_run_refuses_immediately_without_parking` |
 | The same guard applies over MCP | `tests/integration/test_mcp_server.py::test_an_approval_for_a_different_call_is_refused` |
 | A mounted external MCP tool marked mutating pauses the run | `tests/integration/test_mcp_client.py::test_a_mutating_mounted_tool_pauses_the_run_for_approval` |
 
@@ -100,8 +100,9 @@ approving goes through it — which is the reason `api/service.py` exists.
 | A mounted MCP server gets only the variables named for it | `tests/integration/test_mcp_client.py::test_the_child_gets_only_the_environment_it_was_given` |
 | Secrets are redacted from structured logs | `tests/unit/test_logging.py` |
 | A committed secret stops the push before it happens | `tests/unit/test_pr_node.py::test_a_committed_secret_stops_the_push_before_it_happens` |
-| Committed secrets are caught in CI | `gitleaks` in `.pre-commit-config.yaml` |
-| An unset `${VAR}` in a config file is an error, not an empty credential | `tests/unit/test_mcp_config.py::test_an_unset_variable_is_an_error_not_an_empty_string` |
+| Committed secrets are caught in CI | the `gitleaks` job in `.github/workflows/ci.yml` |
+| …and before they are committed, locally | the `gitleaks` hook in `.pre-commit-config.yaml` |
+| An unset **or empty** `${VAR}` in a config file is an error, not an empty credential | `tests/unit/test_envsubst.py` (`core/envsubst.expand`, shared with `evals/suite.py`) |
 
 ---
 

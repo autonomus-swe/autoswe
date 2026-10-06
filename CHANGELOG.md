@@ -1,5 +1,73 @@
 # Changelog
 
+## Unreleased — nine security claims that were hopes, closed
+
+The second half of the `docs/security.md` audit. Every claim in that document was
+mutation-tested; most held and were recorded as holding. **Nine did not.** Each was verified
+by me on a quiet tree before any test was written, and re-verified after.
+
+Added
+- `tests/unit/test_api_surface_requires_a_key.py` — §8 claims "Every route requires a key"
+  and cited a test covering **one** route. Nothing asserted a key on `POST /runs/{id}/answer`,
+  `/approve`, `/reject`, `GET /runs/{id}` or `/detail`. Structural, like
+  `test_mcp_tool_bodies_are_reached.py`: every route must be classified authenticated,
+  ASGI-guarded, or explicitly public **with a reason**, so adding one forces the decision.
+
+  It also pins the event stream's query-parameter key — §8 documents that as a deliberate
+  exception because browsers cannot set headers on an `EventSource`, and **nothing in the
+  suite had ever sent `?key=`**. The one route whose auth path is special was the one route
+  whose auth path was untested.
+
+  And it writes down that §8's claim is *literally false* for `/healthz`, `/metrics`, `/`,
+  `/ui/*`, `/openapi.json` and `/docs`. All defensible; none previously written down.
+- `tests/integration/test_rate_limit_buckets.py` — §8's separate-buckets claim survived
+  **both** cited tests, because neither interleaves a read with a write burst. One does 20
+  reads then a write (the Lua clamps, so it passes); the other does 6 writes with no reads.
+  The real effect of one shared bucket is worse than a merged limit: **a single GET between
+  writes tops the write allowance back up**, so the write limit stops limiting. The new test
+  exhausts the write bucket, makes reads, and requires it to be still exhausted.
+- `tests/unit/test_envsubst.py` — a first test file for `core/envsubst.py`. `expand`'s
+  docstring promises "an unset **or empty** variable raises", and every existing test passed
+  either `environ={}` or a non-empty value — so nothing distinguished `not environ.get(name)`
+  from `name not in environ`. The empty case is the likelier one: `GITHUB_TOKEN=` left in a
+  `.env`, or a shell that flattened an unset variable.
+- `tests/unit/test_setup_isolates_the_network.py` — SETUP's post-install `has_network()`
+  guard, and the approval wait leaving the wall-clock budget. The **identical** network guard
+  in `resume.py` has a test precisely because that mutation survived there once; the SETUP
+  twin — the path every first attempt takes — did not. And `state.waiting_s += seconds` is the
+  only wiring between `ApprovalGate`'s `on_wait` and the run's clock, so the four-hour
+  mid-tool-call approval wait had nothing keeping it out of the budget.
+- `tests/unit/test_repo_url_validation.py` — §8's `https://` requirement had no test for the
+  *scheme*. `evals/suite.py` has its own copy of the rule and is tested for `http://`; the API
+  schema was not.
+- Four tests appended to `tests/unit/test_sandbox_hardening.py` — §7 claims the sandbox never
+  receives API keys and cited this file, which never read `kwargs["environment"]`. And §2's
+  internal-network claim was held by a test that **builds the network itself**, so
+  `_ensure_network`'s create branch never ran. `FakeNetworks.created` was already recording
+  `(name, internal)`, apparently written for this, and nothing asserted on it. It does now.
+
+Fixed
+- **Four rows in `docs/security.md` cited the wrong thing**, each checked directly:
+  §7 located `expand` in `mcp_bridge/config.py` when it is in `core/envsubst.py`; §7's
+  "caught in CI" cited `.pre-commit-config.yaml`, a *local* hook CI never runs, where the CI
+  gate is the `gitleaks` job in `.github/workflows/ci.yml`; §6's rejection row cited a test
+  asserting the `Decision` object rather than the string the model actually reads; and §3's
+  "ordinary commands are not refused" cited a test that only calls `check_bash`, so the ASK
+  half was held by an uncited test.
+
+Notes
+- **Every counterweight was checked too**, not just the gap. A test asserting "X is refused"
+  that passes on an implementation refusing *everything* is worse than no test: five
+  over-refusal mutations (reject every key, refuse every variable, empty container
+  environment, always-internal network, reject every URL) are all caught.
+- One of my own counterweight mutations was a no-op — `environment={} or {…}` evaluates to
+  the second dict, so nothing changed and it read as a surviving gap. Re-done properly; the
+  lesson is that a mutation must be checked for *semantic* effect, not only for applying.
+- Recorded rather than closed, in `docs/test-gaps.md`: `proxy/allowlist.txt` losing a `$`
+  anchor is untestable by mutation alone, because the file is baked into the proxy image and
+  a mutation never reaches the running container without an image rebuild. The file's own
+  header calls that anchor "the whole allow-list defeated by anyone who can register a
+  domain", so it deserves a test with a rebuild step — a bigger change than this pass.
 ## Unreleased — the unit suite no longer passes off a file CI does not have
 
 `main`'s CI had been **red**, and a local `pytest -m unit` said nothing. Found by opening a
