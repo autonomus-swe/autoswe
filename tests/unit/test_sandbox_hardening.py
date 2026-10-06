@@ -178,3 +178,145 @@ async def test_the_run_is_labelled_with_its_own_id_so_the_collector_can_find_it(
     assert containers.kwargs["labels"] == {"autoswe.run_id": str(run_id)}
     assert sandbox.id == f"run-{run_id}"
     assert containers.kwargs["name"] == sandbox.id
+
+
+# ---- the environment the container is handed ------------------------------------------------
+#
+# `docs/security.md` §7 claims "the sandbox never receives API keys or database credentials"
+# and cites this file as the proof. Until now this file never read `kwargs["environment"]`
+# at all: every assertion above is about some other keyword argument, and `FakeContainers.run`
+# swallows whatever else it is passed. Spreading the host's `os.environ` into that dict
+# survived the whole suite — the agent would have been handed the orchestrator's model keys
+# and its database URL, in a container it is allowed to run arbitrary commands in.
+
+# Written out rather than imported from `sandbox.docker`, because importing the constant
+# would assert the source against itself. These five exist so `uv` can run offline as a
+# non-root uid with nothing writable but the tmpfs.
+SANDBOX_ENV: dict[str, str] = {
+    "HOME": "/tmp/home",
+    "UV_CACHE_DIR": "/tmp/uv",
+    "UV_PYTHON_DOWNLOADS": "never",
+    "UV_LINK_MODE": "copy",
+    "PIP_NO_CACHE_DIR": "1",
+}
+
+# Names an orchestrator really does hold, with values no sandbox default could coincide
+# with, so a leak is unmistakable in the failure output rather than plausible.
+HOST_SECRETS: dict[str, str] = {
+    "ANTHROPIC_API_KEY": "sk-ant-this-must-not-reach-the-sandbox-4f21",
+    "DATABASE_URL": "postgresql://leak:leak@db.invalid:5432/leak",
+    "AWS_SECRET_ACCESS_KEY": "wJalrNeverLeavesTheHost7Qe",
+}
+
+
+async def test_the_host_environment_does_not_reach_the_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A compromised agent reading its own `/proc/self/environ` must find nothing it can spend.
+
+    The sandbox runs text written by a repository against a model that can be talked into
+    anything, so the environment it is handed is a list of what an attacker gets for free.
+    An explicit dict gives them nothing; the host's own environment gives them this
+    deployment's model key, its database credentials and its cloud credentials at once, with
+    a shell already available to use them.
+
+    Asserted on the *key set*, not on values, and that is the point of the test. The leak
+    that survived spread `os.environ` ahead of the explicit entries, so `HOME` and
+    `UV_CACHE_DIR` still came out as the sandbox's own — every value assertion anyone would
+    naturally write stays green while the key set quietly triples.
+    """
+    for name, value in HOST_SECRETS.items():
+        monkeypatch.setenv(name, value)
+
+    _, containers = await started()
+    environment: dict[str, str] = containers.kwargs["environment"]
+
+    assert set(environment) == set(SANDBOX_ENV), (
+        "the sandbox's environment is an explicit allow-list; it gained or lost "
+        f"{sorted(set(environment) ^ set(SANDBOX_ENV))}. If a variable is genuinely needed "
+        "inside the container, add it here too and say why in docs/security.md §7"
+    )
+    leaked = sorted(k for k, v in environment.items() if v in set(HOST_SECRETS.values()))
+    assert leaked == [], f"host credentials reached the sandbox under the names {leaked}"
+
+
+async def test_the_container_still_gets_the_variables_uv_needs_to_run_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The counterweight: `environment={}` passes the leak test above and breaks every run.
+
+    Without `HOME` and `UV_CACHE_DIR` pointed at the tmpfs, `uv` writes to a rootfs that is
+    read-only and the dependency install dies in SETUP; without `UV_PYTHON_DOWNLOADS=never`
+    it tries to fetch an interpreter after the network has been taken away. So the claim
+    being proved is two-sided — nothing of the host's, and all of the sandbox's.
+
+    The host values here deliberately collide with the sandbox's own names. That catches the
+    other half of the leak: spreading `os.environ` *after* the explicit entries rather than
+    before would point `HOME` at a host directory the container cannot even see.
+    """
+    monkeypatch.setenv("HOME", "/home/orchestrator-not-the-sandbox")
+    monkeypatch.setenv("UV_CACHE_DIR", "/var/cache/host-uv")
+    monkeypatch.setenv("UV_PYTHON_DOWNLOADS", "automatic")
+
+    _, containers = await started()
+
+    assert containers.kwargs["environment"] == SANDBOX_ENV, (
+        "the container's environment is not the dict the sandbox chose, so either a variable "
+        "uv needs went missing or the host's copy of one displaced it"
+    )
+
+
+# ---- the install network --------------------------------------------------------------------
+#
+# `docs/security.md` §2 claims "an internal network has no route out", and cites an
+# integration test that builds the network itself in its fixture and hands the name in. That
+# makes `_ensure_network` take its `networks.get` branch every time, so the branch that
+# actually creates the network has never run under assertion. Creating it as a plain bridge
+# survived: the sandbox reaches the open internet directly and ignores the egress proxy, while
+# every allow-list test still passes, because the proxy does return 403 — it just stops being
+# the only way out.
+#
+# `FakeNetworks.get` above raises `NotFound` unconditionally, so these take the create path.
+
+
+async def created_networks(**overrides: Any) -> list[tuple[str, bool]]:
+    """Start a sandbox against a fresh fake daemon and hand back the networks it created.
+
+    `started` returns the containers fake only, and the record the create path leaves behind
+    is on the networks fake.
+    """
+    client = FakeClient()
+    await started(client=client, **overrides)
+    return client.networks.created
+
+
+async def test_the_install_network_is_created_internal_when_egress_is_enforced() -> None:
+    """An install network created as a plain bridge is an egress allow-list with no teeth.
+
+    `EGRESS_ENFORCED=true` is an operator saying the sandbox may reach exactly the hosts on
+    the list. `internal` is what makes that true: without a default route the only way off
+    the subnet is the proxy. Create the same network as an ordinary bridge and the container
+    talks to the internet directly, the proxy is never consulted, and nothing anywhere
+    reports a difference.
+    """
+    created = await created_networks(network="autoswe-install-enforced", network_internal=True)
+
+    assert created == [("autoswe-install-enforced", True)], (
+        "the install network was not created internal, so the sandbox has a route around "
+        "the egress proxy"
+    )
+
+
+async def test_a_sandbox_that_was_not_asked_for_an_internal_network_does_not_get_one() -> None:
+    """The counterweight: the flag has to be threaded, not hard-coded either way.
+
+    Hard-coding `internal=True` would satisfy the test above and break every default
+    deployment instead — an internal network has no route out for `uv sync` either, so
+    dependency installation fails in SETUP on a machine nobody asked to lock down.
+    """
+    created = await created_networks(network="autoswe-install-open")
+
+    assert created == [("autoswe-install-open", False)], (
+        "a deployment that did not enable egress enforcement got an internal network, which "
+        "leaves the dependency install with nowhere to fetch from"
+    )
