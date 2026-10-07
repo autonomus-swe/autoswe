@@ -36,6 +36,26 @@ jobs:
       # loop — skips instead of running, and the tier goes green while proving nothing.
       - run: make sandbox-image
       - run: docker image inspect agent-sandbox:python-3.12 --format 'sandbox image {{.Id}}'
+      # The PR node scans for secrets before it pushes, on the worker rather than in the
+      # sandbox — so `gitleaks` has to be on PATH for this tier, not only in the job that
+      # scans this repository's own history. Without it seven tests died with
+      # `FileNotFoundError: 'gitleaks'`: every test that reaches the push gate, including
+      # the one that proves a committed secret stops the push. They were not skipping, they
+      # were failing, and the tier had been red on main for it.
+      #
+      # Same version as the `gitleaks` job below and as `.pre-commit-config.yaml`, so the
+      # three agree on the rules. Installed to /usr/local/bin because the code resolves the
+      # binary by name.
+      - name: install gitleaks (the PR node shells out to it)
+        env:
+          GITLEAKS_VERSION: 8.24.3
+        run: |
+          set -euo pipefail
+          curl -sSfL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks --version
       - run: make test-int
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
