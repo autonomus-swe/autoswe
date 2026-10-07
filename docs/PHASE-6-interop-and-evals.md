@@ -625,11 +625,20 @@ lives — or that it does not exist.
       Ticked where something was run, `[~]` with a reason where it was not, which is the
       only version of this box worth having. `docs/README.md` links every phase document.
 - [~] README §14 has the private-suite and SWE-bench Lite tables with conditions; §15 has X and Y filled.
-      **No §14 or §15 exists in this README**, and none ever has. The equivalent exists
-      and is better placed: `docs/numbers.md` carries every measured figure with the run
-      that produced it, and `evals/report.py` renders suite tables with their conditions
-      attached. What is genuinely missing is a private-suite run to fill one, which needs
-      a fork and a key.
+      **No §14 or §15 exists in this README and none ever has.** The equivalent exists and is
+      better placed: `docs/numbers.md` carries every measured figure with the run that
+      produced it, and `evals/report.py` renders suite tables with their conditions attached.
+      The README points at it.
+
+      Both tables the criterion asks for are now there. The private suite: **3/3 resolved,
+      three real pull requests, $0.00**. SWE-bench Lite: **0/5, $0.00**, five well-formed
+      predictions with their wall clocks.
+
+      Stays `[~]` for one reason, stated plainly: five instances is not a score, so there is
+      no X/Y to fill. Writing 0/5 into a README as though it were a benchmark result would be
+      the kind of number this project exists not to publish — one repository, one small free
+      model, offered as if it measured the system.
+
 - [x] `docs/security.md` maps every threat in README §9 to a test.
       Again no §9 to map, so the document is organised by what the system actually claims
       — sandbox, network, commands, paths, injection, approvals, secrets, API, budgets —
@@ -669,9 +678,12 @@ lives — or that it does not exist.
       Not made. A screen recording is not something a test can produce; §5's demo script
       is what it would follow.
 - [~] Tag `v1.0.0`.
-      `pyproject.toml` says `1.0.0` and `CHANGELOG.md` has the entry. The tag itself is a
-      push to `upstream`, which is the one thing the fork workflow does not let this
-      session do:
+      `pyproject.toml` says `1.0.0`, `autoswe version` agrees, and `CHANGELOG.md` has the
+      entry. Everything in this phase that could be merged is merged: five pull requests,
+      #107 and #110 and #111 merged, #108 and #109 closed because #110 carried them.
+
+      The tag itself is a push to `upstream`, which is the one thing the fork workflow does
+      not let this session do — and that is the rule working, not a gap:
 
       ```bash
       git checkout main && git pull --ff-only upstream main
@@ -679,8 +691,9 @@ lives — or that it does not exist.
       git push upstream v1.0.0
       ```
 
-      `test_the_version_matches_the_latest_tag` was renamed and relaxed to make this state
-      legal. It demanded equality, which fails for any repository with a release prepared
-      and not yet tagged — the ordinary state of every release, for as long as it takes to
-      merge. It now asserts the version is never *behind* the newest tag, which is the
-      drift it was written for: `0.0.1` shipped against a `v0.3.0` tag.
+      **One recommendation before anybody runs that.** Five corrupted artefacts turned up on
+      the development machine while this phase closed — a wheel, a `.pyc`, an installed
+      source file with a stray character spliced into it, a compiled binary that segfaulted,
+      and two model downloads. Two of those were generated locally rather than downloaded,
+      which points at memory or disk rather than the network. `docs/numbers.md` records it.
+      A release cut on a machine that is corrupting files is a release nobody can reproduce.
