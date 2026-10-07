@@ -34,9 +34,21 @@ from repo.worktree import Worktree
 pytestmark = pytest.mark.unit
 
 
+# `Settings` requires `database_url`, `redis_url` and `API_KEYS`, and reads `.env` from the
+# repository root when they are absent from the environment. Supplying them here rather than
+# letting that happen is what makes these tests say the same thing on a developer's machine
+# and in CI: without it they passed locally, off a `.env` nobody mentioned, and failed in CI
+# with three pydantic validation errors that named settings the tests do not care about.
+REQUIRED_BY_SETTINGS: dict[str, Any] = {
+    "database_url": "postgresql+asyncpg://u:p@localhost:5432/unused",
+    "redis_url": "redis://localhost:6379/0",
+    "API_KEYS": "unused-in-this-test",
+}
+
+
 class FakeDeps:
     def __init__(self, version: str) -> None:
-        self.settings = Settings(repo_map_version=cast("Any", version))
+        self.settings = Settings(repo_map_version=cast("Any", version), **REQUIRED_BY_SETTINGS)
         self.engine = None
 
 
@@ -90,7 +102,7 @@ async def test_v2_is_what_a_deployment_gets_unless_it_says_otherwise(
 ) -> None:
     """An ablation switch that silently became the default would be the ablation shipping
     as the product."""
-    assert Settings().repo_map_version == "v2"
+    assert Settings(**REQUIRED_BY_SETTINGS).repo_map_version == "v2"
 
 
 async def test_the_two_arms_produce_different_maps(

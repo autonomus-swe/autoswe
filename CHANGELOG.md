@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased — the unit suite no longer passes off a file CI does not have
+
+`main`'s CI had been **red**, and a local `pytest -m unit` said nothing. Found by opening a
+pull request and reading the job log instead of trusting the local result.
+
+Fixed
+- Three tests in `tests/unit/test_repo_map_ablation.py` built `Settings(...)` without the
+  three fields it requires — `database_url`, `redis_url`, `API_KEYS` — and passed, because
+  `SettingsConfigDict(env_file=".env")` quietly supplied them from the developer's own file.
+  CI has no `.env`, so they failed there with validation errors naming settings those tests
+  do not care about. They now pass what they need.
+
+  **The failure mattered more than the three tests.** The local suite and the one that gates
+  merges disagreed about whether the project was green, and the local one was the more
+  flattering of the two. Every "unit suite exits 0" I have reported on this machine was true
+  of this machine and not of CI.
+- `tests/unit/conftest.py` removes `.env` from `Settings`' view for the whole unit tier, so
+  the class cannot recur. Measured before adding it: exactly those three tests depended on
+  it, so nothing else loses anything. The suite is now green **both** with `.env` present and
+  with it hidden — those are the developer's case and CI's case, and they should not be
+  different runs.
+
+Notes
+- The guard is asserted rather than assumed. With the three tests fixed, removing the fixture
+  changes nothing for them, so no ordinary test can catch its loss —
+  `test_a_unit_test_cannot_see_the_dotenv_file` asserts the condition the fixture creates
+  instead. It only bites on a machine that *has* a `.env`, which is exactly the machine where
+  the guard matters: CI fails without it either way, and a developer would not have noticed.
+  Same shape as `drop_sensitive`'s `key != "event"` clause, and handled the same way.
+- A unit test that needs a setting should say which one, by passing it. `unit` means no I/O,
+  and reading a file off disk to decide what a test asserts is I/O with an opinion.
+
 ## Unreleased — SWE-bench concurrency is per repository
 
 Found by running the step `docs/evals.md` recommends — "run five before you run fifty" —

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.settings import EXIT_CONFIG, get_settings, load_settings
+from core.settings import EXIT_CONFIG, Settings, get_settings, load_settings
 
 pytestmark = pytest.mark.unit
 
@@ -188,3 +188,35 @@ def test_the_proxy_variables_cover_both_cases_and_spare_the_loopback(
     assert env["HTTP_PROXY"] == env["http_proxy"] == "http://p:8888"
     assert env["HTTPS_PROXY"] == env["https_proxy"] == "http://p:8888"
     assert "127.0.0.1" in env["NO_PROXY"] and "127.0.0.1" in env["no_proxy"]
+
+
+def test_a_unit_test_cannot_see_the_dotenv_file() -> None:
+    """The guard in `tests/unit/conftest.py` is in force, asserted rather than assumed.
+
+    `Settings` declares `env_file=".env"`, so on a developer's machine `Settings()` with no
+    arguments succeeds off a file CI does not have. That is how three tests in
+    `test_repo_map_ablation.py` passed locally while **`main`'s CI was red** — the local
+    suite and the one that gates merges disagreed, and the local one was the flattering one.
+
+    The autouse fixture removes `.env` from `Settings`' view for the unit tier. Removing the
+    fixture changes nothing for the tests that are now hermetic, so no ordinary test can
+    catch its loss — this one can, because it asserts the condition the fixture creates.
+
+    It only bites on a machine that *has* a `.env`, which is exactly the machine where the
+    guard matters: CI fails without it either way, and a developer would not have noticed.
+    """
+    from pydantic import ValidationError
+
+    assert Settings.model_config["env_file"] is None, (
+        "the unit tier's no-dotenv fixture is not in force; a unit test can now pass off a "
+        "file CI does not have"
+    )
+
+    with pytest.raises(ValidationError) as caught:
+        Settings()
+
+    missing = {e["loc"][0] for e in caught.value.errors()}
+    assert {"database_url", "redis_url", "API_KEYS"} <= missing, (
+        "a unit test that needs a setting must pass it explicitly; the required ones are "
+        f"{sorted(missing)}"
+    )
