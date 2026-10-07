@@ -203,16 +203,36 @@ is recorded as such rather than ticked from the code that would make it work.
       `tests/unit/test_cli.py::test_json_works_on_every_read_command` asserts by
       parametrising over the list — a flag that worked on four out of six would be worse
       than none, because a script cannot tell which without trying.
-- [~] Tag `v1.0.0`.
-      `pyproject.toml` says `1.0.0` and `CHANGELOG.md` has the entry. The tag itself is a
-      push to `upstream`, which is the one thing the fork workflow does not let this
-      session do; §7 has the command.
+- [x] Tag `v1.0.0`.
+      Pushed by the developer on 2026-10-07. Annotated tag `7e6b12f`, dereferencing to
+      `fd17015`, which is `upstream/main`'s tip — verified with `git ls-remote --tags
+      upstream` against the local object rather than from the absence of an error:
 
-      `test_the_version_matches_the_latest_tag` was changed to make this state legal: it
-      demanded equality, which fails for a repository that has a release prepared and not
-      yet tagged — the ordinary state of every release, for as long as it takes to merge.
-      It now asserts the version is never *behind* the newest tag, which is the drift it
-      was written for (`0.0.1` shipped against a `v0.3.0` tag).
+      ```
+      7e6b12fa…  refs/tags/v1.0.0
+      fd17015e…  refs/tags/v1.0.0^{}
+      ```
+
+      `pyproject.toml`, `uv.lock` and `autoswe version` all say `1.0.0`.
+
+      **It took two attempts, and the first one is the reason this paragraph is long.** The
+      first `git tag -a v1.0.0` was run while the tree sat on `docs/phase-6-final-state`, so
+      the tag pointed at `58bcb4a` — a commit that is not on `main` at all. Nothing
+      complained. A tag is just a ref; pointing it at the wrong commit is not an error, it is
+      a release. It was caught by asking `git merge-base --is-ancestor v1.0.0^{commit} main`
+      instead of trusting that a tag made from a checkout is made from the branch, and
+      deleted before it was pushed.
+
+      `test_the_version_matches_the_latest_tag` was changed to make the *untagged* state
+      legal: it demanded equality, which fails for a repository that has a release prepared
+      and not yet tagged — the ordinary state of every release, for as long as it takes to
+      merge. It now asserts the version is never *behind* the newest tag, which is the drift
+      it was written for (`0.0.1` shipped against a `v0.3.0` tag). That relaxation was
+      audited on 2026-10-07 and leaves no hole in the other direction:
+      `test_the_changelog_documents_the_version_being_shipped` pins the newest `## X.Y.Z`
+      heading to the package version, so a `pyproject.toml` that ran *ahead* still fails.
+      What the pair is blind to is `## Unreleased` — which is exactly how twenty unreleased
+      sections shipped inside this tag with a green suite. See `CHANGELOG.md`.
 
 ---
 
@@ -576,7 +596,7 @@ that needs Docker.
 |---|---|---|
 | unit | OpenAI-compat provider with a fake server, tool schemas, MCP tool wrapping, report rendering | `make test` |
 | integration | FastMCP server in-process, stub MCP client server with approval, cross-fork PR (mocked GitHub) | `make test-int` |
-| e2e | Claude Code over MCP (manual, scripted in `docs/mcp.md`), open-model M1 fixture, private suite, SWE-bench Lite subset | `uv run autoswe eval --suite private`, `uv run python evals/swebench.py --limit 50` |
+| e2e | Claude Code over MCP (manual, scripted in `docs/mcp.md`), open-model M1 fixture, private suite, SWE-bench Lite subset | `uv run autoswe eval --suite private`, `uv run python -m evals.swebench --limit 5` |
 
 ---
 
@@ -592,14 +612,38 @@ claude
 # 2. Open model, offline
 docker compose --profile gpu up -d vllm
 uv run autoswe run --provider openai_compat --repo … --goal "Implement subtract(a, b) and slugify(text) so tests pass."
-psql "$DATABASE_URL" -c "select distinct provider, model from llm_calls where step_id in (select id from steps where run_id='<id>')"
+# `psql` is not on the host — go through the container, as MANUAL-TESTING.md §112 does.
+docker compose exec postgres psql -U postgres -d autoswe -c \
+  "select distinct provider, model from llm_calls where step_id in (select id from steps where run_id='<id>')"
 # → openai_compat | Qwen/Qwen3-Coder-30B-A3B-Instruct
 
 # 3. Numbers
 uv run autoswe eval --suite private --concurrency 3
-uv run python evals/report.py evals/results/latest.jsonl
-uv run python evals/swebench.py --limit 50 && uv run python evals/report.py --swebench
+uv run python -m evals.report evals/results/eval-private.jsonl
+
+# 4. SWE-bench Lite. This writes predictions; it does not score them — the official
+#    harness does, and that split is deliberate (see evals/swebench.py's docstring).
+uv run python -m evals.swebench --limit 5
+python -m swebench.harness.run_evaluation \
+  --predictions_path evals/results/predictions.jsonl --run_id demo
 ```
+
+**This block was wrong in four places until 2026-10-07, and it is worth saying how,**
+because Definition-of-Done bullet 2 asks that the demo script run end to end *following only
+this document* — so a reader with a clean checkout was the one person guaranteed to hit all
+four.
+
+| Was | Why it could not work |
+|---|---|
+| `psql "$DATABASE_URL"` | `psql` is not installed on the host, and `DATABASE_URL` carries the `+asyncpg` driver suffix that `core/settings.py:29` requires and libpq does not accept |
+| `evals/report.py evals/results/latest.jsonl` | nothing in the repository writes `latest.jsonl`; `evals/record.append` names files after the run (`eval-private.jsonl`) |
+| `evals/report.py --swebench` | there is no `--swebench` flag. `report.py` takes a required positional path plus `--title` and `--by`, so this exits 2 |
+| `uv run python evals/swebench.py --limit 50` | the path form, which §1 of this same file already records as unable to run at all — `docs/evals.md:180` replaced it with `-m evals.swebench` weeks before |
+
+Three of the four are original plan text from the first commit, never revisited. The fourth
+contradicted a correction made in §1 of this file. **A demo script is the one piece of a
+phase document that has an exact pass/fail, and nobody ran it** — which is how all four
+survived to a tagged release.
 
 ---
 
@@ -617,18 +661,35 @@ uv run python evals/swebench.py --limit 50 && uv run python evals/report.py --sw
 
 ## 7. Release checklist (`v1.0.0`)
 
-Three of these refer to sections of a README this project did not write. Rather than
-inventing a §9 and a §14 to tick a box against, each says where the equivalent actually
-lives — or that it does not exist.
+Three of these refer to "README §N". **`README.md` has never had numbered sections — but
+the sections exist, in [`ARCHITECTURE.md`](ARCHITECTURE.md),** which carries §1–§15 and has
+since the first substantive commit: §9 is the security model at `:635`, §14 evaluation at
+`:784`, §15 the resume framing at `:795`. Every "README §N" citation across these phase
+documents resolves there. The plan was written against a document that was renamed before it
+was ever published under the name the citations use.
+
+The boxes below were originally closed on the premise that those sections *did not exist*,
+which was wrong about the referent even where it was right about the box. Each now says
+where the equivalent actually lives. The substance of each tick was re-checked on 2026-10-07
+and holds; only the reasoning was repaired.
 
 - [x] All six phase exit checklists ticked and linked from the release notes.
       Ticked where something was run, `[~]` with a reason where it was not, which is the
       only version of this box worth having. `docs/README.md` links every phase document.
 - [~] README §14 has the private-suite and SWE-bench Lite tables with conditions; §15 has X and Y filled.
-      **No §14 or §15 exists in this README and none ever has.** The equivalent exists and is
-      better placed: `docs/numbers.md` carries every measured figure with the run that
-      produced it, and `evals/report.py` renders suite tables with their conditions attached.
-      The README points at it.
+      The sections are `ARCHITECTURE.md` §14 (`:784`) and §15 (`:795`), not `README.md` —
+      this box said "no §14 or §15 exists in this README and none ever has", which is true
+      of `README.md` and misses where the citation points.
+
+      `[~]` and staying `[~]`. `docs/numbers.md` carries every measured figure with the run
+      that produced it, and `evals/report.py` renders suite tables with their conditions
+      attached — that part is done and is better placed than a README section. But
+      **`ARCHITECTURE.md:797` and `:799` still read `Resolved X % of SWE-bench Lite at $Y per
+      task`, and they are staying that way on purpose.** The only SWE-bench number this
+      project has is 0 of 5 from a single repository, which is not a resolution rate; it is
+      five attempts against one project's test environment. Writing `0 %` there would be a
+      score, and a score is a claim about the benchmark. The placeholder is the honest
+      entry until `--limit 50` has actually run.
 
       Both tables the criterion asks for are now there. The private suite: **3/3 resolved,
       three real pull requests, $0.00**. SWE-bench Lite: **0/5, $0.00**, five well-formed
@@ -640,7 +701,11 @@ lives — or that it does not exist.
       model, offered as if it measured the system.
 
 - [x] `docs/security.md` maps every threat in README §9 to a test.
-      Again no §9 to map, so the document is organised by what the system actually claims
+      The §9 being cited is `ARCHITECTURE.md:635`, the security model — this box used to say
+      "again no §9 to map", which was wrong about where it lives. The mapping was re-checked
+      against that section on 2026-10-07 and covers it row for row, so the tick stands on
+      better ground than the sentence that used to justify it. The document is organised by
+      what the system actually claims
       — sandbox, network, commands, paths, injection, approvals, secrets, API, budgets —
       and every row names its test. `tests/unit/test_security_doc.py` asserts the
       citations resolve, which is what stops the document rotting quietly.
@@ -677,19 +742,29 @@ lives — or that it does not exist.
 - [ ] The demo recording exists.
       Not made. A screen recording is not something a test can produce; §5's demo script
       is what it would follow.
-- [~] Tag `v1.0.0`.
+- [x] Tag `v1.0.0`.
       `pyproject.toml` says `1.0.0`, `autoswe version` agrees, and `CHANGELOG.md` has the
-      entry. Everything in this phase that could be merged is merged: five pull requests,
-      #107 and #110 and #111 merged, #108 and #109 closed because #110 carried them.
+      entry. Everything in this phase that could be merged is merged: #107, #110, #111 and
+      #112 merged, #108 and #109 closed because #110 carried their commits.
 
-      The tag itself is a push to `upstream`, which is the one thing the fork workflow does
-      not let this session do — and that is the rule working, not a gap:
+      The tag is a push to `upstream`, which is the one thing the fork workflow does not let
+      an agent session do — so it was handed over, and the developer ran it on 2026-10-07:
 
       ```bash
       git checkout main && git pull --ff-only upstream main
       git tag -a v1.0.0 -m "v1.0.0 — Phase 6: interop, independence, and evaluation"
-      git push upstream v1.0.0
+      git push upstream v1.0.0     # → * [new tag]  v1.0.0 -> v1.0.0
       ```
+
+      Annotated tag `7e6b12f` → `fd17015` = `upstream/main`. §1 has the verification and the
+      story of the first attempt, which landed on a commit that was not on `main`.
+
+      That handover is also the rule working rather than a gap — but the sentence this box
+      used to carry, *"the one thing the fork workflow does not let this session do"*,
+      survived eleven days past the push and was still telling readers the tag did not
+      exist. Both this box and §1's said it. **A record of a release that describes the
+      release as impossible is the shape of staleness worth looking for:** not a wrong fact,
+      a true fact kept past the moment it stopped being true.
 
       **One recommendation before anybody runs that.** Five corrupted artefacts turned up on
       the development machine while this phase closed — a wheel, a `.pyc`, an installed

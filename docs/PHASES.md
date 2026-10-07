@@ -59,7 +59,15 @@ Packages are top-level inside the repository root (`api.main:app`, `orchestrator
 - Runs: UUID v4. Work branch: `agent/<run-id>`. Sandbox container: `run-<run-id>`. Worktree: `<WORKTREES_DIR>/<run-id>`.
 - Tasks: short slugs from the decomposer (`t1-skeleton`, `t2-models`). Steps: UUID. Events: Redis stream IDs.
 - Phases: the `Phase` enum from README §4.2, in `orchestrator/state.py`. Never compare phases as strings elsewhere.
-- Agent roles: `analyzer`, `planner`, `decompose`, `coder`, `tester`, `debugger`, `review_pre`, `review`, `security`, `triage`, `pr_writer`. These are the keys of `ROUTES` and the names on `steps.agent`.
+- Agent roles: `analyzer`, `planner`, `decomposer`, `coder`, `tester`, `debugger`, `review_pre`, `review`, `security`, `pr_writer`. These are the ten keys of `ROUTES` (`gateway/routing.py:47-57`) and the names on `steps.agent`.
+
+  This line said `decompose` and listed an eleventh role, `triage`, until 2026-10-07.
+  `triage` does not exist anywhere in the code. `decompose` is the more instructive of the
+  two, because it had a consequence: `DOWNGRADE` is keyed by `ROUTES` names, and
+  `gateway/routing.py:68-70` records what the typo would have cost — "that entry would never
+  have matched and the decomposer would have stayed on opus while the code looked like it
+  downgraded." The code was written against the real key and carries a comment saying the
+  document is wrong. Nobody then fixed the document, for three weeks.
 
 ### The two-model rule for contracts
 
@@ -70,8 +78,27 @@ Every LLM-facing schema is a pure data model: `extra="forbid"`, no methods that 
 - [ ] All steps' tests exist and pass: `make check` and `make test-int`.
 - [ ] The phase's demo script runs end to end on a clean checkout following only the phase doc.
 - [ ] No secrets in the repo (`gitleaks detect` clean), no PII in logs, required env vars validated at startup.
-- [ ] `CHANGELOG.md` has an entry for the phase; the README's §12 commands still work.
-- [ ] The exit checklist in the phase file is ticked in the PR description that closes the phase.
+- [ ] `CHANGELOG.md` has an entry for the phase; the commands in `README.md` still work.
+- [ ] The exit checklist **in the phase file** is ticked, and the PR that closes the phase says in prose which boxes moved and why.
+
+The last bullet used to read "ticked in the PR description that closes the phase", and on
+2026-10-07 that was checked against every pull request this project has: 112 bodies, of
+which **exactly one contains a checkbox at all** (#23, quoting an unticked line as the thing
+being fixed) and **none contains a `- [x]`**. There is no `.github/PULL_REQUEST_TEMPLATE`,
+so nothing ever asked for one.
+
+What the project has actually done since PR #2 is tick the boxes in the phase file and
+narrate the move in the PR. Six phases closed that way. So the bullet was not a standard
+Phase 6 failed; it was a sentence describing a practice nobody had, and the honest repair is
+to write down the practice rather than to retrofit six PR descriptions. The narration half
+is the part worth keeping — a tick with no sentence explaining it is how `[~]` boxes turn
+into `[x]` boxes quietly.
+
+Two of the bullets above also referred to "the README's §12". `README.md` has never had
+numbered sections; every "README §N" citation in these documents resolves to
+[`ARCHITECTURE.md`](ARCHITECTURE.md), which carries §1–§15 and has since the first
+substantive commit. The citations were written against a document that got renamed before
+it was ever published under that name.
 
 ### Git workflow
 
@@ -82,22 +109,40 @@ Every LLM-facing schema is a pure data model: `extra="forbid"`, no methods that 
 
 ### Environment variables
 
-The set grows by phase. All are validated at startup by `core/settings.py`; the process exits naming the missing variable.
+The set grows by phase. **`.env.example` is the list** — it is the file the code is written
+against, and where this table and that file disagree, that file is right. The `Read by`
+column exists because "validated at startup" was not true of every row and the difference
+matters: a `Settings` field is validated, and `Settings` is declared `extra="ignore"`
+(`core/settings.py:26`), so a name that is *not* a field is read by nothing and fails
+silently.
 
-| Variable | Introduced | Required | Purpose |
-|---|---|---|---|
-| `DATABASE_URL` | 0 | yes | `postgresql+asyncpg://…` |
-| `REDIS_URL` | 0 | yes | `redis://…` |
-| `API_KEYS` | 0 | yes | comma-separated API keys accepted by the control plane |
-| `ANTHROPIC_API_KEY` | 1 | yes | worker only |
-| `GITHUB_TOKEN` | 1 | yes | worker only; push + PR |
-| `WORKTREES_DIR`, `REPOS_DIR` | 1 | default | host paths for worktrees and bare clone cache |
-| `SANDBOX_IMAGE` | 1 | default | `agent-sandbox:python-3.12` |
-| `SANDBOX_RUNTIME` | 5 | optional | `runsc` for gVisor |
-| `EGRESS_PROXY_URL` | 5 | optional | allow-listed proxy for dependency installs |
-| `VOYAGE_API_KEY` or `EMBEDDING_MODEL` | 5 | optional | embeddings |
-| `LANGFUSE_*`, `OTEL_EXPORTER_OTLP_ENDPOINT` | 5 | optional | tracing |
-| `OPENAI_COMPAT_BASE_URL`, `OPENAI_COMPAT_MODEL` | 6 | optional | vLLM endpoint |
+| Variable | Introduced | Required | Read by | Purpose |
+|---|---|---|---|---|
+| `DATABASE_URL` | 0 | yes | `Settings` | `postgresql+asyncpg://…` |
+| `REDIS_URL` | 0 | yes | `Settings` | `redis://…` |
+| `API_KEYS` | 0 | yes | `Settings` | comma-separated API keys accepted by the control plane |
+| `LLM_PROVIDER` | 1 | default | `Settings` | `openai_compat` (the default) or `anthropic` |
+| `LLM_BASE_URL`, `LLM_MODEL` | 1 | default | `Settings` | any OpenAI-compatible endpoint; this is the vLLM knob too |
+| `LLM_API_KEY` | 1 | worker, unless `LLM_PROVIDER=anthropic` | `Settings` | `require_worker()` picks this or `ANTHROPIC_API_KEY` by provider |
+| `ANTHROPIC_API_KEY` | 1 | worker, only when `LLM_PROVIDER=anthropic` | `Settings` | optional otherwise; the default provider is not Anthropic |
+| `GITHUB_TOKEN` | 1 | worker | `Settings` | push + PR |
+| `WORKTREES_DIR`, `REPOS_DIR` | 1 | default | `Settings` | host paths for worktrees and bare clone cache |
+| `SANDBOX_IMAGE` | 1 | default | `Settings` | `agent-sandbox:python-3.12` |
+| `SANDBOX_RUNTIME` | 5 | optional | `Settings` | `runsc` for gVisor |
+| `EGRESS_PROXY_URL` | 5 | optional | `Settings` | allow-listed proxy for dependency installs. Setting it *is* the on switch — `egress_enforced` is derived from it (`core/settings.py:137`), there is no separate flag |
+| `KEEP_FAILED_SANDBOX`, `SANDBOX_TTL_S` | 5 | default | `Settings` | a boolean and a number, not one combined setting |
+| `EMBEDDING_PROVIDER`, `VOYAGE_API_KEY`, `OLLAMA_URL` | 5 | optional | `os.environ` | `repo/embeddings.py:264-271` reads these directly, so a typo is silent — not a `Settings` field |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | 5 | optional | the OTel SDK | tracing |
+
+Four rows of this table named variables that do not exist, until 2026-10-07:
+`EMBEDDING_MODEL` (the real name is `EMBEDDING_PROVIDER`), `OPENAI_COMPAT_BASE_URL` and
+`OPENAI_COMPAT_MODEL` (`LLM_BASE_URL` and `LLM_MODEL`, with `LLM_PROVIDER=openai_compat`
+selecting the path), and `LANGFUSE_*`, whose SDK path was never built — `docker-compose.yml`
+records that, and the row outlived it. `ANTHROPIC_API_KEY` was also marked flatly required
+when the default provider has never been Anthropic.
+
+None of this broke a run, which is the point worth keeping: every one of these was a wrong
+*name in a document*, so the only thing it could break was somebody following the document.
 
 ### Security invariants (from Phase 1 onward)
 
@@ -131,5 +176,18 @@ Copy this into the project's main issue and tick as you go.
 - [x] Phase 2 — plan and state (`v0.2.0`, 2026-09-15)
 - [x] Phase 3 — verification loop (`v0.3.0`, 2026-09-16)
 - [x] Phase 4 — review, security, PR (`v0.4.0`, 2026-09-18)
-- [ ] Phase 5 — scale and cost (`v0.5.0`)
-- [ ] Phase 6 — interop and evals (`v1.0.0`)
+- [x] Phase 5 — scale and cost (`v0.5.0`, 2026-09-22)
+- [x] Phase 6 — interop and evals (`v1.0.0`, 2026-10-07)
+
+Phase 6 ships with two of its eight exit criteria at `[~]`, and they are `[~]` for reasons
+no amount of work on this repository would change: Qwen3-Coder via vLLM needs a CUDA device
+(this machine has neither `nvidia-smi` nor `/dev/nvidia*`), and SWE-bench at `--limit 50` is
+roughly forty hours run serially — five instances were run instead, scored 0 of 5, and the
+row says so. The demo recording is a screencast, and `docs/ARCHITECTURE.md` §15 keeps its
+`X`/`Y` placeholders deliberately: 0 of 5 from a single repository is not a score, and
+writing one in would be worse than leaving it blank. See
+[PHASE-6-interop-and-evals.md](PHASE-6-interop-and-evals.md) §1 for the evidence per box.
+
+These two rows went unticked for fifteen days after `v0.5.0` and `v1.0.0` were both tagged,
+which is its own small lesson: **a tracker nobody re-derives is a tracker that lies.** It was
+found by auditing this file against `git tag`, not by reading it.

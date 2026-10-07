@@ -149,11 +149,13 @@ services:
   #   SANDBOX_RUNTIME=runsc        gVisor. Without it a container escape is a container
   #                                escape; this is the single biggest difference between
   #                                the development and the production threat model.
-  #   EGRESS_ENFORCED=true         the sandbox joins an internal network and reaches the
-  #                                outside only through the allow-listed proxy.
-  #   KEEP_FAILED_SANDBOX_TTL      short. A kept container is a debugging aid in
-  #                                development and a running process with a checkout of
-  #                                somebody's repository in production.
+  #   EGRESS_PROXY_URL             set it, and the sandbox joins an internal network and
+  #                                reaches the outside only through the allow-listed proxy.
+  #                                Setting it is what turns egress enforcement on; there is
+  #                                no separate on/off flag (`core/settings.py:137`).
+  #   KEEP_FAILED_SANDBOX=false    a kept container is a debugging aid in development and a
+  #   SANDBOX_TTL_S                running process with a checkout of somebody's repository
+  #                                in production. Two settings, a boolean and a number.
   #   API_KEYS                     rotated by adding the new key, deploying, then removing
   #                                the old one — never by replacing it in one step, which
   #                                is an outage for every caller that has not been told.

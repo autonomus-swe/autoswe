@@ -50,13 +50,41 @@ provider would not have shown it.
 | **1 — single-agent loop** | tools, sandbox, worktree, Coder, gateway, opens a PR | **done** |
 | **2 — plan and state** | Analyzer/Planner/Decomposer, checkpoint/resume, events, API, console, CLI | **done** (1 criterion partial) |
 | **3 — verification loop** | parsed failures, Debugger, escalation, approvals, budgets, cancel | **done** (1 criterion unproven) |
-| **4 — review, security, PR** | reviewer, `bandit`/`semgrep`/`pip-audit`, fix rounds, a real PR body | **not started** — 13 criteria open |
-| **5 — scale and cost** | concurrency, caching, model downgrade, GC, metrics | **not started** — 14 criteria open |
-| **6 — interop and evals** | MCP server and client, SWE-bench-style evals, Anthropic provider | **not started** — 14 criteria open |
+| **4 — review, security, PR** | reviewer, `bandit`/`semgrep`/`pip-audit`, fix rounds, a real PR body | **done** (`v0.4.0`, 2026-09-18) |
+| **5 — scale and cost** | concurrency, caching, model downgrade, GC, metrics | **done** (`v0.5.0`, 2026-09-22) |
+| **6 — interop and evals** | MCP server and client, SWE-bench-style evals, open-model provider | **done** (`v1.0.0`, 2026-10-07; 2 of 8 criteria `[~]`) |
 
 In one sentence: **it can take a goal, plan it, write the code, run the tests, debug a
-failure, and open a pull request — and it does none of the reviewing, scanning, or
-scaling that would make that pull request safe to merge unread.**
+failure, review and scan the result, and open a pull request** — and the two things it
+cannot show you are both measurements rather than features: Qwen3-Coder on a GPU this
+machine does not have, and a fifty-instance SWE-bench run nobody has sat through.
+
+> ### This document stops at Phase 3, and that is the part to know before reading on
+>
+> **Parts 0 to 6 below were written and verified at the end of Phase 3 (2026-09-16).** Every
+> command in them was really run and every output is really what printed — that promise
+> still holds for what is here. What is *missing* is three phases of it: nothing below walks
+> you through the Reviewer, the security scanners, the repo map, pgvector retrieval, the MCP
+> server, or the eval harness, because those did not exist when it was written.
+>
+> Until 2026-10-07 the table above said Phases 4, 5 and 6 were "not started — 41 of 41
+> criteria open", and `README.md` sends new readers here first. So the single most likely
+> first impression of a finished project was that half of it had not been built. **A
+> runbook's status table ages faster than its commands, and it is the part a new reader
+> believes hardest.**
+>
+> For the three phases this document does not cover, the per-phase documents do, each with
+> its exit criteria and the evidence per box:
+> [Phase 4](docs/PHASE-4-review-security-pr.md) ·
+> [Phase 5](docs/PHASE-5-scale-and-cost.md) ·
+> [Phase 6](docs/PHASE-6-interop-and-evals.md). Measured figures live in
+> [docs/numbers.md](docs/numbers.md), the security claims and their tests in
+> [docs/security.md](docs/security.md).
+>
+> Those three phases have not been given Parts here rather than described from the code,
+> because the whole value of this file is that somebody ran every line in it. Writing
+> plausible transcripts for features I have not driven by hand would make the other six
+> parts worth less.
 
 ---
 
@@ -723,10 +751,13 @@ Read this before you try it:
   a local path submitted through the API would bind-mount arbitrary host directories into a
   sandbox — but it means you need a real GitHub repository and a `GITHUB_TOKEN` that can
   push to it.
-- **The model must speak the OpenAI-compatible API.** `LLM_PROVIDER=anthropic` raises
-  `NotImplementedError: the anthropic provider arrives in Phase 6; set
-  LLM_PROVIDER=openai_compat`. An Anthropic key is of no use on its own today; OpenRouter or
-  any OpenAI-compatible gateway is.
+- **The model must speak the OpenAI-compatible API.** `LLM_PROVIDER=anthropic` is a name this
+  build recognises and refuses, with a message naming the providers that do work
+  (`gateway/providers.py:18-19` — a 422 at the API beats a `NotImplementedError` in a
+  worker). An Anthropic key is of no use on its own; OpenRouter, Groq, Gemini, Cerebras or a
+  local Ollama endpoint are. This row said the provider "arrives in Phase 6" — Phase 6 has
+  shipped and it deliberately did not arrive: the project runs on what is cheap or free, and
+  `docs/open-source-model.md` is candid that the open-model path is the only path here.
 - **A local 7B model will not finish.** Measured on this machine: `qwen2.5:7b` via Ollama got
   through SETUP, ANALYZE (with the baseline) and PLAN in 13 minutes, then failed at
   DECOMPOSE — it returned prose instead of calling the forced `submit_TaskGraphSpec`
@@ -741,35 +772,55 @@ Read this before you try it:
 
 This is the part to read before planning. Everything here is verified, not assumed.
 
-### Whole phases missing
+### Whole phases missing — no longer true, and the command below is why it is worth keeping
 
-**Phases 4, 5 and 6 are unbuilt: 41 of 41 exit criteria open.** In practice that means the
-agent pushes a branch and opens a pull request with **no code review, no security scan and
-no dependency audit**. `REVIEW` and `SECURITY` exist in the phase enum and have no nodes.
-The PR body has three sections where Phase 4 promises eight.
+**At the end of Phase 3 this section opened: "Phases 4, 5 and 6 are unbuilt: 41 of 41 exit
+criteria open."** All three have since shipped — `v0.4.0`, `v0.5.0`, `v1.0.0`. Re-run the
+same command the section used as its evidence:
 
 ```bash
 grep -c '^- \[ \]' docs/PHASE-4-review-security-pr.md docs/PHASE-5-scale-and-cost.md docs/PHASE-6-interop-and-evals.md
-# 13, 14, 14
+# then: 13, 14, 14
+# now:   2,  0,  1          (measured 2026-10-07)
 ```
+
+The three that remain are open for stated reasons, not for want of code: two in Phase 6 need
+a CUDA device and about forty hours, and Phase 4's two are `[ ]` with written reasons rather
+than oversights. `REVIEW` and `SECURITY` have nodes. The pull request gets a review, a
+security scan and a dependency audit.
 
 ### Things that will bite you today
 
-| what | evidence |
-|---|---|
-| **A pause longer than ~50 minutes is killed, not honoured.** The open-question timeout is 24 h; the queue's job timeout is 50 min. | `orchestrator/worker.py:98  job_timeout = 50 * 60` vs `orchestrator/nodes.py:58  AWAITING_INPUT_TIMEOUT_S = 24 * 3600` |
-| **A cancel does not interrupt a model call.** It kills the sandbox command in ~2 s, then waits out the provider request — bounded only by `llm_timeout_s` (600 s default). | Part 4's timings |
-| **Nothing is reaped.** One worktree per run that did not push, with its `.venv` inside, plus every stopped container. | `./scripts/bringup.sh status` → `41 worktrees, 322M`; `docker ps -a --filter name=run- \| wc -l` → `19`, oldest 9 days |
-| **The dollar budget cannot bound an unpriced model** — only the 45-minute wall clock can. The system knows this rather than reporting a reassuring zero: an unknown model logs `unknown_model_pricing` and the budget drops the dollar dimension (`cost_measurable=False`). A *local* endpoint is different — there a zero is a real measurement. | `PRICES` in `gateway/pricing.py` has three entries (the Claude models); `uv run python -c "from gateway.pricing import is_free, priced; print(priced('some/paid-model'), is_free('qwen2.5:7b','http://localhost:11434/v1'))"` → `False True` |
-| **The console cannot approve or reject a tool call.** The endpoints and CLI commands exist; the buttons do not. | `grep -c approve api/static/app.js` → `0` |
-| **Nothing shows you the `tool_call_id`** that `autoswe approve` needs. | it is in the `awaiting_input` event payload; neither the console nor `watch` prints it |
-| **`unattended` cannot be set by any client.** Every run created through the API is attended, so escalation always parks rather than failing. | `unattended` appears in `storage/repo.py`, not in `api/schemas.py` |
-| **Artifacts are written and nothing can read them.** Four kinds go into the `artifacts` table — `baseline_report`, `test_report`, `test_report_raw` (the unfiltered report, kept precisely so a reviewer can ask *why did this pass*) and `step_input`. There is no `GET /runs/{id}/artifacts`, no `autoswe artifacts`, and no console field, so the only way to read any of it is SQL. The diff itself is not stored at all — it lives only in the worktree. | `grep -rn save_artifact orchestrator/ \| grep -v test` → 4 call sites; `grep -rn artifact api/routes/ cli/` → nothing |
-| **`/metrics` is a placeholder** and needs no key. | `curl -s localhost:8000/metrics` → `{"detail":"prometheus metrics arrive in Phase 5"}` |
-| **There is no MCP server or client.** | `wc -c mcp_bridge/__init__.py` → `0` |
-| **Only a Python sandbox image exists.** A repository whose tests are `go test` or `npm test` has nothing to run them in. | `ls sandbox/images/` |
-| **The worker refuses to start without `GITHUB_TOKEN`**, even for a run that would never push. | `core/settings.py  require_worker()` |
-| **The README still describes Phase 2** and quotes an integration count 39 short. | `head -1 README.md` |
+**Read the status column before the row.** This table was verified at the end of Phase 3 and
+re-checked on 2026-10-07; ten of its fifteen rows describe gaps that Phases 4–6 closed. They
+are kept rather than deleted because a limitation and the date it stopped being one are both
+worth knowing — and because one row here is the best example in this repository of why
+"evidence" and "conclusion" are not the same thing.
+
+**That row is the MCP one.** Its evidence command, `wc -c mcp_bridge/__init__.py`, still
+prints `0` today. The package's `__init__.py` is genuinely empty — and `mcp_bridge/server.py`
+next to it offers thirteen tools. The command never stopped being true; it just stopped
+measuring the claim it was attached to. A check whose output is stable while the thing it
+stands for changes underneath is worse than no check, because it reports *confirmed*.
+
+Rows marked **superseded** were re-measured on 2026-10-07 by running the command in the
+evidence column. Rows marked **still true** were re-measured the same way and still hold.
+
+| status | what | evidence |
+|---|---|---|
+| **still true** | **A pause longer than ~50 minutes is killed, not honoured.** The open-question timeout is 24 h; the queue's job timeout is 50 min. | `orchestrator/worker.py:187  job_timeout = 50 * 60` vs `orchestrator/nodes.py:66  AWAITING_INPUT_TIMEOUT_S = 24 * 3600`. Both line numbers moved; the mismatch did not |
+| **not re-run** | **A cancel does not interrupt a model call.** It kills the sandbox command in ~2 s, then waits out the provider request — bounded only by `llm_timeout_s` (600 s default). | Part 4's timings. Needs a live run to re-measure, so it is neither confirmed nor withdrawn here |
+| **superseded** | **Nothing is reaped.** One worktree per run that did not push, with its `.venv` inside, plus every stopped container. | Phase 5 shipped the collector: `orchestrator/gc.py`, an arq cron over containers, worktrees and bare clones. `docs/test-gaps.md` §"Beyond Phase 6" covers its clone sweep |
+| **claim holds, count stale** | **The dollar budget cannot bound an unpriced model** — only the 45-minute wall clock can. The system knows this rather than reporting a reassuring zero: an unknown model logs `unknown_model_pricing` and the budget drops the dollar dimension (`cost_measurable=False`). A *local* endpoint is different — there a zero is a real measurement. | `PRICES` in `gateway/pricing.py` now has eleven entries, not the three this row says. The behaviour for a model that is *not* in them is unchanged |
+| **still true** | **The console cannot approve or reject a tool call.** The endpoints and CLI commands exist; the buttons do not. | `grep -c approve api/static/app.js` → `0`, re-run 2026-10-07 |
+| **superseded (CLI only)** | **Nothing shows you the `tool_call_id`** that `autoswe approve` needs. | `grep -c tool_call_id cli/main.py` → `4`. The console still shows nothing: `api/static/app.js` → `0` |
+| **superseded** | **`unattended` cannot be set by any client.** Every run created through the API is attended, so escalation always parks rather than failing. | `grep -c unattended api/schemas.py` → `2` |
+| **superseded** | **Artifacts are written and nothing can read them.** Four kinds go into the `artifacts` table — `baseline_report`, `test_report`, `test_report_raw` (the unfiltered report, kept precisely so a reviewer can ask *why did this pass*) and `step_input`. There is no `GET /runs/{id}/artifacts`, no `autoswe artifacts`, and no console field, so the only way to read any of it is SQL. The diff itself is not stored at all — it lives only in the worktree. | `api/routes/artifacts.py` exists and `cli/main.py:349` is `def artifacts`. The diff is stored too — SWE-bench reads a run's `diff` artifact |
+| **superseded** | **`/metrics` is a placeholder** and needs no key. | `observability/metrics.py:151-153` returns `generate_latest()` with `CONTENT_TYPE_LATEST` — real Prometheus output |
+| **superseded** | **There is no MCP server or client.** | `grep -c '@server.tool()' mcp_bridge/server.py` → `13`. **Note the original evidence, `wc -c mcp_bridge/__init__.py` → `0`, is still exactly true** — see the paragraph above this table |
+| **superseded** | **Only a Python sandbox image exists.** A repository whose tests are `go test` or `npm test` has nothing to run them in. | `ls sandbox/images/` → `go  node  python` |
+| **still true** | **The worker refuses to start without `GITHUB_TOKEN`**, even for a run that would never push. | `core/settings.py  require_worker()` — `missing = [name for name in (key_field, "github_token") ...]`, unchanged |
+| **superseded** | **The README still describes Phase 2** and quotes an integration count 39 short. | `head -1 README.md` → `# autoswe` |
 
 ### The one unproven claim in Phase 3
 

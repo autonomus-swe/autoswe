@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased — nine security claims that were hopes, closed
+## 1.0.0 — Phase 6: interop, independence, and evaluation
+
+Tagged 2026-10-07. Annotated tag `7e6b12f` → `fd17015`.
+
+**Every subsection below this heading is part of 1.0.0.** Twenty of them said `## Unreleased`
+until 2026-10-07, eleven days after the tag was cut — they were written one pull request at a
+time while the phase closed, and nothing ever folded them into the release they belong to.
+They are left in the order they were written, newest first, because the order is the record
+of how the phase actually went.
+
+Two tests pin this file to the package version, and **neither could catch that**:
+`test_the_changelog_documents_the_version_being_shipped` matches `^## (\d+\.\d+\.\d+)`,
+so a heading reading `Unreleased` is not a version heading that disagrees — it is not a
+version heading at all. The guard was looking for a *wrong* number and this was a *missing*
+one. A twenty-section gap between what shipped and what the notes called shipped passed a
+green suite.
+
+### nine security claims that were hopes, closed
 
 The second half of the `docs/security.md` audit. Every claim in that document was
 mutation-tested; most held and were recorded as holding. **Nine did not.** Each was verified
@@ -68,7 +85,7 @@ Notes
   a mutation never reaches the running container without an image rebuild. The file's own
   header calls that anchor "the whole allow-list defeated by anyone who can register a
   domain", so it deserves a test with a rebuild step — a bigger change than this pass.
-## Unreleased — the unit suite no longer passes off a file CI does not have
+### the unit suite no longer passes off a file CI does not have
 
 `main`'s CI had been **red**, and a local `pytest -m unit` said nothing. Found by opening a
 pull request and reading the job log instead of trusting the local result.
@@ -100,7 +117,7 @@ Notes
 - A unit test that needs a setting should say which one, by passing it. `unit` means no I/O,
   and reading a file off disk to decide what a test asserts is I/O with an opinion.
 
-## Unreleased — SWE-bench concurrency is per repository
+### SWE-bench concurrency is per repository
 
 Found by running the step `docs/evals.md` recommends — "run five before you run fifty" —
 rather than by reading it.
@@ -141,7 +158,7 @@ Notes
   (the original bug), collapsing it to one lock for the whole batch (serial, the other wrong
   answer), and dropping the global ceiling (unbounded containers).
 
-## Unreleased — every security claim, mutation-tested; two were hopes
+### every security claim, mutation-tested; two were hopes
 
 `docs/security.md` opens by saying **"a guarantee with no test beside it is a hope"** and
 then lists each claim beside the test that proves it. Nobody had checked whether those tests
@@ -194,7 +211,7 @@ Notes
   sandbox image's semgrep. Cleared by removing `__pycache__`. Worth knowing on this machine:
   it is the third corrupted artefact here, and the symptom never names the cause.
 
-## Unreleased — the clone sweep, a tool for the method, and a test that measured bandwidth
+### the clone sweep, a tool for the method, and a test that measured bandwidth
 
 Fixed
 - `tests/integration/test_egress.py` proved "an allow-listed host is reachable" by
@@ -252,7 +269,7 @@ Added
   always said `caught` would be indistinguishable from a well-tested project — and the first
   version of that self-test mutated its own source and reported two wrong verdicts about
   itself.
-## Unreleased — a scanner that cannot run is not a clean scan
+### a scanner that cannot run is not a clean scan
 
 Found by the suite going red on `main` for a reason that was not a code change: the
 `semgrep` vendored into this machine's Python sandbox image had **corrupt bytecode** —
@@ -287,7 +304,7 @@ Fixed
   to do about it: read the `by_severity` block, and treat an `info` finding named
   `scan-failed` as a failed build rather than a clean one.
 
-## Unreleased — reap the killed verify process
+### reap the killed verify process
 
 Fixed
 - `checkout_and_verify` killed a timed-out verify command and never reaped it. `kill` sends
@@ -319,7 +336,7 @@ Notes
   waited out in full rather than killed, so one task can hold the suite for as long as it
   likes — which is the thing the timeout exists to prevent.
 
-## Unreleased — all 43 verified test gaps are closed
+### all 43 verified test gaps are closed
 
 Added
 - The last twelve, across four modules, plus `tests/unit/test_resume_reattach.py` for the
@@ -359,7 +376,7 @@ Notes
 - None of the 43 crash. Every one produces a plausible, well-formed, wrong result — the
   category a green suite is supposed to be evidence against.
 
-## Unreleased — the control plane's own guarantees, and the mounted-tool call site
+### the control plane's own guarantees, and the mounted-tool call site
 
 Added
 - `tests/unit/test_api_service.py` — a **first** test file for `api/service.py`, the module
@@ -394,7 +411,7 @@ Notes
   mutation harness after its test was written. `docs/test-gaps.md` tracks the 16 still open:
   `evals/report.py`, `evals/swebench.py`, `mcp_bridge/config.py`, `orchestrator/resume.py`.
 
-## Unreleased — the numbers this project publishes are now tested
+### the numbers this project publishes are now tested
 
 Added
 - `tests/unit/test_evals_scale.py` — a **first** test file for `evals/scale.py`, which had
@@ -442,7 +459,7 @@ Notes
   a correct fix is a deliberate change to that error path rather than something bolted onto
   a testing change. Recorded in `docs/test-gaps.md` so it is located rather than mysterious.
 
-## Unreleased — the call-site defect class, measured and half closed
+### the call-site defect class, measured and half closed
 
 Added
 - `tests/unit/test_mcp_tool_bodies_are_reached.py`. `test_mcp_server` asserted the MCP tool
@@ -487,7 +504,7 @@ Notes
   `INAPPLICABLE` -> `SURVIVED`, and none ever flipped between `SURVIVED` and `caught`. The
   contamination only failed conservatively, which was luck rather than design.
 
-## Unreleased — a field the contract never declared no longer kills a run
+### a field the contract never declared no longer kills a run
 
 Fixed
 - `_repair_once` now drops keys the schema does not declare. Measured: run `7c18e262` on a
@@ -524,7 +541,7 @@ Notes
   by that run. So a local 7B on this hardware hits two independent walls: one that was this
   project's bug and is now fixed, and one that is the model, which no repair addresses.
 
-## Unreleased — a local open model, and the context window nobody mentioned
+### a local open model, and the context window nobody mentioned
 
 Fixed
 - `docs/open-source-model.md` told you a 4 096-token window will not finish a Coder loop
@@ -552,7 +569,7 @@ Notes
   the transfer — plausibly the TLS-inspecting proxy that also broke the clean clone's
   GitHub certificate check — recorded as an observation, not a diagnosis.
 
-## Unreleased — a clean clone, timed, and the bug only a second checkout could find
+### a clean clone, timed, and the bug only a second checkout could find
 
 Fixed
 - `scripts/bringup.sh` hardcoded `:8000` for the API in seven places — starting uvicorn,
@@ -596,7 +613,7 @@ Notes
   failing imports or narrow the test run, which are the two shortcuts `docs/evals.md` §2
   warns about.
 
-## Unreleased — the first real SWE-bench instance, and two things it corrected
+### the first real SWE-bench instance, and two things it corrected
 
 Fixed
 - Every SWE-bench prediction recorded `wall_clock_s: 0.0`. `measure()` never sets that
@@ -619,7 +636,7 @@ Notes
   rewinds before replanning. One instance is not a score. `docs/numbers.md` has it,
   including a cache hit rate of 0.4667 against 0.0000–0.2472 on the fixture suite.
 
-## Unreleased — SWE-bench keeps the patch
+### SWE-bench keeps the patch
 
 Fixed
 - `evals/swebench.py` gated `model_patch` on `status == "done"` and threw away every patch
@@ -636,7 +653,7 @@ Notes
 - A `failed` status in `predictions.jsonl` is not "unsolved" — `model_patch` says that.
   Both travel, so "solved it and could not push" and "produced nothing" stay distinct.
 
-## Unreleased — the defect class, closed
+### the defect class, closed
 
 Added
 - `tests/integration/test_request_columns_are_read.py`. Four times this phase a `runs`
@@ -658,7 +675,7 @@ Notes
   and says plainly that the wall-clock difference is not a speed-up — two arms an hour
   apart on a shared free endpoint compare themselves and nothing else.
 
-## Unreleased — the budget a run asked for is the budget it gets
+### the budget a run asked for is the budget it gets
 
 Fixed
 - **`runs.budget` was written by the API and never read.** `initial_state` built a fresh
@@ -684,7 +701,7 @@ Notes
   were spent on the day's runs. The fix has tests from the POST body to the worker's state;
   what is missing is a complete run, which is quota rather than code.
 
-## Unreleased — the private suite, run
+### the private suite, run
 
 The eval harness was driven rather than left as machinery nobody had used, and it found
 things in both directions. `docs/numbers.md` has the table; both runs are in
@@ -716,7 +733,7 @@ Added
   denominator is untouched, and a suite whose tasks all died on the same 503 still reads
   0/3. That is where this could have become improving a number by redefining it.
 
-## Unreleased — run from a base commit
+### run from a base commit
 
 Added
 - `RunCreate.base_commit` and migration 0007: start a run from a commit rather than from
@@ -738,7 +755,7 @@ Fixed
   would have started from a branch head, so a patch would fail to apply for a reason the
   score could not show; that is no longer true.
 
-## 1.0.0 — Phase 6: interop, independence, and evaluation
+### Phase 6 as planned: the six steps, step by step
 
 The platform is an MCP server another agent can drive and an MCP client that mounts other
 people's tools; a run chooses its provider and the worker honours it; there is an
@@ -750,13 +767,23 @@ Anthropic provider. The project runs on whatever is cheap or free, which is why
 `docs/open-source-model.md` is candid that for this build the open-model path is not a fallback
 but the only path.
 
-Three of the phase's eight exit criteria are marked `[~]` rather than ticked, and
-`docs/PHASE-6-interop-and-evals.md` §1 gives the reason for each. The shortest version:
-one needs a person watching an editor, one needs a GPU, and one needs `RunCreate` to
-accept a base commit. None of them is met by the code alone, and ticking them from a
-passing test suite would be claiming a result nobody saw.
+**Two** of the phase's eight exit criteria are marked `[~]` rather than ticked, and
+`docs/PHASE-6-interop-and-evals.md` §1 gives the reason for each. The shortest version: one
+needs a CUDA device, and one needs about forty hours. Neither is met by the code alone, and
+ticking them from a passing test suite would be claiming a result nobody saw.
 
-### Phase 6 step 6.5–6.6: the CLI, cross-fork pull requests, and the release
+This paragraph said *three*, and named them as "a person watching an editor, a GPU, and
+`RunCreate` accepting a base commit" — written when six criteria were still `[~]`, so the
+count was wrong on the day it was written and all three reasons have since moved. The editor
+one is `[x]`; the base-commit blocker shipped in `c227978` and the document retracted it;
+the third `[~]`, when this was written, was the tag, which was pushed on 2026-10-07. What
+remain are Qwen3-Coder via vLLM and SWE-bench at `--limit 50`.
+
+**A summary is the one part of a document nobody re-derives.** `tests/unit/test_phase_5_tally.py`
+exists because the same thing happened to Phase 5's §1 count, and it pins that one file's
+arithmetic to its boxes. Nothing pins this paragraph, and this is what that costs.
+
+#### Phase 6 step 6.5–6.6: the CLI, cross-fork pull requests, and the release
 
 Added
 - `RunCreate.upstream` (`owner/repo`) and migration 0006. The branch is pushed to
@@ -785,7 +812,7 @@ Fixed
   repository in the ordinary state of having a release prepared and not yet tagged. It now
   asserts the version is never *behind* the tag, which is the drift it was written for.
 
-### Phase 6 step 6.4: the evaluation harness
+#### Phase 6 step 6.4: the evaluation harness
 
 Added
 - `evals/suite.py`, `evals/run.py`, `evals/report.py`, `evals/judge.py`,
@@ -812,7 +839,7 @@ Notes
   harness's job. `--require-sha` refuses to run until `RunCreate` accepts a base commit,
   rather than producing a low number nobody can attribute.
 
-### Phase 6 step 6.3: a run chooses its provider
+#### Phase 6 step 6.3: a run chooses its provider
 
 Added
 - `gateway/providers.py`: which providers exist (`KNOWN`), which this build can construct
@@ -840,7 +867,7 @@ Notes
   loop shared between two providers, and an abstraction with one implementation is a guess
   about the second.
 
-### Phase 6 step 6.2: external MCP servers as agent tools
+#### Phase 6 step 6.2: external MCP servers as agent tools
 
 A GitHub server that can read issues, a Postgres server that can run a read-only query:
 tools the agents did not have to be written to know about. `docs/mcp.md` Part B.
@@ -870,7 +897,7 @@ Notes
   `debugger`. `${VAR}` expands in `env` only, not in `command` — the plan put a database
   DSN in argv, where `ps` shows it to everyone on the box.
 
-### Phase 6 step 6.1: the control plane as an MCP server
+#### Phase 6 step 6.1: the control plane as an MCP server
 
 An editor can drive a run: start it, wait for it, answer its questions, approve the tool
 calls it asks about, and read the diff and the PR URL. Over stdio (`autoswe-mcp`, a child
