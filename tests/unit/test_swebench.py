@@ -480,3 +480,151 @@ async def test_no_provider_reaches_predict_as_none(
 
     assert await swebench.main() == 0
     assert seen.get("provider") is None
+
+
+# ---- concurrency and the repository lock ----------------------------------------------------
+
+
+async def test_two_instances_from_one_repository_never_run_at_the_same_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Measured: `--limit 5 --concurrency 2` failed four of five instances in SETUP.
+
+        RuntimeError: another run holds https://github.com/astropy/astropy@main
+
+    The orchestrator takes a lock per `repo_url@base_branch`, and it is right to: two runs
+    sharing one bare clone and one worktree would interleave their commits. SWE-bench Lite
+    is **grouped by repository** — the first ten instances span two repos, six astropy and
+    four django — so any `--concurrency` above one is not an optimisation, it is a
+    near-guaranteed row of SETUP failures recorded as unsolved instances.
+
+    That matters for the number this harness exists to produce. A `--limit 50` run with
+    concurrency would report mostly lock errors, and an empty `model_patch` is a legitimate
+    prediction meaning "not solved" — so the failures would be indistinguishable from the
+    model being bad at the task.
+
+    So concurrency is now per repository: different repositories overlap, the same
+    repository serialises.
+    """
+    import asyncio as aio
+
+    inflight: dict[str, int] = {}
+    overlaps: list[str] = []
+
+    class SlowPlane(FakePlane):
+        async def create(self, task: Any, provider: str | None, ablation: str | None = None) -> str:
+            repo = task.repo
+            inflight[repo] = inflight.get(repo, 0) + 1
+            if inflight[repo] > 1:
+                overlaps.append(repo)
+            await aio.sleep(0.05)
+            inflight[repo] -= 1
+            return "r1"
+
+    monkeypatch.setattr(swebench, "Client", lambda *a, **k: SlowPlane(status="done"))
+
+    same_repo = [
+        swebench.Instance(
+            instance_id=f"astropy__astropy-{n}",
+            repo="astropy/astropy",
+            base_commit="a" * 40,
+            problem_statement=f"problem {n}",
+        )
+        for n in range(4)
+    ]
+
+    await swebench.predict(
+        same_repo, api="http://x", key="k", fork_owner=None, concurrency=4, timeout_s=1.0
+    )
+
+    assert overlaps == [], (
+        f"{len(overlaps)} overlapping starts on {set(overlaps)}: two runs against one "
+        "repository contend for its lock, and the loser fails in SETUP"
+    )
+
+
+async def test_instances_from_different_repositories_still_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The counterweight, and the reason this is not just `concurrency = 1`.
+
+    Serialising everything would make `--limit 50` take fifty times one instance — upwards
+    of a day at the wall-clock a single instance costs. Different repositories take
+    different locks, so they are free to overlap, and that is where the concurrency flag
+    earns its keep.
+    """
+    import asyncio as aio
+
+    concurrent = 0
+    peak = 0
+
+    class SlowPlane(FakePlane):
+        async def create(self, task: Any, provider: str | None, ablation: str | None = None) -> str:
+            nonlocal concurrent, peak
+            concurrent += 1
+            peak = max(peak, concurrent)
+            await aio.sleep(0.05)
+            concurrent -= 1
+            return "r1"
+
+    monkeypatch.setattr(swebench, "Client", lambda *a, **k: SlowPlane(status="done"))
+
+    different_repos = [
+        swebench.Instance(
+            instance_id=f"{owner}__{owner}-1",
+            repo=f"{owner}/{owner}",
+            base_commit="a" * 40,
+            problem_statement="p",
+        )
+        for owner in ("astropy", "django", "sympy", "requests")
+    ]
+
+    await swebench.predict(
+        different_repos, api="http://x", key="k", fork_owner=None, concurrency=4, timeout_s=1.0
+    )
+
+    assert peak > 1, (
+        f"peak concurrency was {peak}: four different repositories take four different "
+        "locks and must be allowed to overlap, or --limit 50 is a day of serial work"
+    )
+
+
+async def test_the_global_concurrency_ceiling_is_still_honoured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-repository serialisation must not become unlimited parallelism.
+
+    Fifty instances across ten repositories at once is fifty containers and fifty
+    worktrees. The ceiling the operator asked for is still a ceiling.
+    """
+    import asyncio as aio
+
+    concurrent = 0
+    peak = 0
+
+    class SlowPlane(FakePlane):
+        async def create(self, task: Any, provider: str | None, ablation: str | None = None) -> str:
+            nonlocal concurrent, peak
+            concurrent += 1
+            peak = max(peak, concurrent)
+            await aio.sleep(0.05)
+            concurrent -= 1
+            return "r1"
+
+    monkeypatch.setattr(swebench, "Client", lambda *a, **k: SlowPlane(status="done"))
+
+    many = [
+        swebench.Instance(
+            instance_id=f"repo{n}__repo{n}-1",
+            repo=f"owner{n}/repo{n}",
+            base_commit="a" * 40,
+            problem_statement="p",
+        )
+        for n in range(8)
+    ]
+
+    await swebench.predict(
+        many, api="http://x", key="k", fork_owner=None, concurrency=2, timeout_s=1.0
+    )
+
+    assert peak <= 2, f"peak concurrency {peak} exceeded the requested ceiling of 2"
