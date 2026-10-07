@@ -1063,3 +1063,53 @@ independent walls — one that was this project's bug and is fixed, and one that
 being a general 7B rather than a coder model, which is not. The open-model criterion needs
 better hardware *and* a better model, and the first run's failure had made only the first
 of those visible.
+
+
+---
+
+# Phase 6 — five SWE-bench instances
+
+**2026-10-07 · the first five of SWE-bench Lite · `gemini-3.1-flash-lite` via Gemini's free
+endpoint.** Predictions in `evals/results/swebench-limit5.jsonl`. This is the step
+`docs/evals.md` recommends before fifty, and taking it found two bugs before it produced a
+number — see the CHANGELOG entries for the per-repository lock and the `uv run` sync.
+
+| instance | patch | outcome | wall clock | debugger steps |
+|---|---|---|---|---|
+| `astropy__astropy-12907` | none | failed | 391 s | 6 |
+| `astropy__astropy-14182` | none | failed | 782 s | 6 |
+| `astropy__astropy-14365` | none | failed | 561 s | 6 |
+| `astropy__astropy-14995` | none | failed | 959 s | 7 |
+| `astropy__astropy-6938` | none | **timeout** | 2 702 s | 0 |
+
+**0 of 5 resolved. $0.00.** Five well-formed predictions, every row carrying its status and
+its wall clock.
+
+**This is one repository, not five.** SWE-bench Lite is grouped, and its first five instances
+are all `astropy/astropy` — so this measures a free flash-lite model against one large
+scientific Python codebase, not a spread across the benchmark. A score needs the whole split;
+this is a floor saying the pipeline runs, nothing more. It is not offered as a score and the
+README does not quote it.
+
+**0/5 is the honest outcome and is roughly what the one-instance run predicted.** Four
+instances spent six or seven Debugger attempts and gave up; the model is not strong enough
+for these bugs. Recording it matters more than it flattering: a benchmark harness that has
+only ever been run on its good afternoon is a harness nobody can calibrate.
+
+## The fifth instance never left SETUP
+
+`astropy__astropy-6938` consumed its **entire 2 700-second task budget in SETUP**, with zero
+Debugger steps — it was still installing astropy's dependencies when the timeout cancelled
+it. So for a repository of this size the per-task timeout is not a limit on *solving*, it is
+a limit on *starting*, and the default leaves no room for the agent at all.
+
+Worth knowing before anyone runs fifty: `--budget-usd` and the task timeout are per instance,
+and on heavy scientific repositories the install alone can eat it. `DEFAULT_TIMEOUT_S` is
+2 700 s in `evals/swebench.py` and raising it is a one-line change, but a serial fifty at
+3 000 s each is over forty hours — which is the real shape of that criterion.
+
+## What this run validated incidentally
+
+`wall_clock_s` is populated — 391 to 2 702 seconds, not `0.0`. That field was always zero
+until it was fixed, and this is the first multi-instance run to carry real values, so the fix
+is confirmed in production rather than only by its tests.
