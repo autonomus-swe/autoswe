@@ -154,9 +154,20 @@ stream and every other route requires the header (`api/auth.require_api_key_or_q
   | Setting | Why |
   |---|---|
   | `SANDBOX_RUNTIME=runsc` | gVisor; the single biggest difference between the development and production threat models |
-  | `EGRESS_ENFORCED=true` | the sandbox joins an internal network and leaves only through the allow-listed proxy |
-  | `KEEP_FAILED_SANDBOX_TTL` short | a kept container is a debugging aid in development and a running process holding somebody's repository in production |
+  | `EGRESS_PROXY_URL=http://agent-egress-proxy:8888` | the sandbox joins an internal network and leaves only through the allow-listed proxy |
+  | `KEEP_FAILED_SANDBOX=false`, `SANDBOX_TTL_S` short | a kept container is a debugging aid in development and a running process holding somebody's repository in production |
   | TLS at a reverse proxy | not in compose on purpose: a self-signed certificate baked into a compose file is the kind of thing that ends up in production because it worked |
+
+  Three of those four rows named a variable that does not exist until 2026-10-07. The table
+  said `EGRESS_ENFORCED=true` and `KEEP_FAILED_SANDBOX_TTL`, and `Settings` is declared
+  `extra="ignore"` (`core/settings.py:26`), so an operator who followed this table set two
+  variables that were read by nothing and got a sandbox with ordinary egress. **The control
+  was never missing** — `egress_enforced` is a property derived from `egress_proxy_url`
+  (`core/settings.py:137-139`), and `docs/egress.md:26` had the name right the whole time.
+  The second row was worse than a typo: it folded two real settings, a boolean and a number
+  (`core/settings.py:115,123`), into one invented name.
+
+  A setting is spelled the way `.env.example` spells it. That file is the list.
 
   **Rotate `API_KEYS` by adding the new key, deploying, then removing the old one.**
   Replacing it in one step is an outage for every caller that has not been told.
