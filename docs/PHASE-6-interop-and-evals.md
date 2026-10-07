@@ -157,9 +157,27 @@ is recorded as such rather than ticked from the code that would make it work.
       never sets that field and this path does not go through `run_task`. An instance that
       took 3 151 seconds was reported as instant. Now timed where it is run.
 
-      What remains is spend and a large optional dependency — `uv pip install datasets
-      swebench`, then fifty instances at a few dollars each. Run five first. Nothing here
-      is blocked on code.
+      **"Run five first" was advice nobody had taken, and taking it found two things that
+      were blocked on code after all.**
+
+      `--limit 5 --concurrency 2` failed four of its five instances in SETUP with
+      *"another run holds …/astropy@main"*. The orchestrator locks per
+      `repo_url@base_branch` and is right to; SWE-bench Lite is **grouped by repository**,
+      and measured, the first ten instances are six astropy and four django. A flat
+      semaphore therefore turns concurrency into a row of lock errors — and because an
+      empty `model_patch` is a legitimate "not solved", those would have been
+      indistinguishable in the results file from a model that could not do the task. A
+      `--limit 50` run with concurrency would have scored contention. `predict` now takes a
+      lock per repository under the global ceiling.
+
+      And the documented command could not run at all: `uv run python -m evals.swebench`
+      syncs the environment to the lock file first, which removes the `datasets` the line
+      above it installs. `.venv/bin/python` does not sync. Both fixed, both with the reason
+      written down.
+
+      What remains is spend and hours: fifty instances serially at the wall clock one
+      instance costs. A five-instance run is in flight as this is written; whatever it
+      returns goes in `docs/numbers.md` with its conditions, and five is still not fifty.
 - [x] Ablations recorded: with/without Debugger, with/without repo map, Opus 5 vs Sonnet 5 as Coder, Claude vs Qwen3-Coder, effort `high` vs `xhigh`.
       **One arm run and recorded**, on the same three tasks and the same model as the
       baseline: `--ablate no-debugger`, 3/3 resolved, **zero Debugger steps** against two
