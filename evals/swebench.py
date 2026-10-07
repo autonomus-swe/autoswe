@@ -167,12 +167,36 @@ async def predict(
     timeout_s: float = DEFAULT_TIMEOUT_S,
     provider: str | None = None,
 ) -> list[dict[str, Any]]:
-    """One prediction per instance, in the order they were given."""
+    """One prediction per instance, in the order they were given.
+
+    `concurrency` is a ceiling across *different* repositories, and one at a time within
+    any single repository. Both halves are needed and the reason is measured rather than
+    anticipated: `--limit 5 --concurrency 2` failed four of its five instances in SETUP with
+
+        RuntimeError: another run holds https://github.com/astropy/astropy@main
+
+    The orchestrator locks per `repo_url@base_branch`, correctly — two runs sharing one bare
+    clone and one worktree would interleave their commits. SWE-bench Lite is **grouped by
+    repository**: the first ten instances span two repos, six astropy and four django. So a
+    flat semaphore turns concurrency from an optimisation into a row of lock errors, and
+    because an empty `model_patch` is a legitimate prediction meaning "not solved", those
+    failures are indistinguishable in the results file from a model that could not do the
+    task.
+
+    Serialising everything instead would be the other wrong answer: fifty instances at the
+    wall clock of one is upwards of a day.
+    """
     client = Client(api, key)
     limit = asyncio.Semaphore(max(1, concurrency))
+    # One lock per repository, created on first sight. `predict` is single-threaded inside
+    # one event loop, so plain `setdefault` is enough; a dict comprehension over the
+    # instances would be equivalent but would also allocate locks for repositories a
+    # `--limit` never reaches.
+    repo_locks: dict[str, asyncio.Lock] = {}
 
     async def one(instance: Instance) -> dict[str, Any]:
-        async with limit:
+        repo_lock = repo_locks.setdefault(instance.repo, asyncio.Lock())
+        async with limit, repo_lock:
             task = instance.task(fork_owner, budget_usd, timeout_s)
             started = time.monotonic()
             log.info("swebench_instance_started", instance=instance.instance_id)

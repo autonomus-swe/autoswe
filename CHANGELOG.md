@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased — SWE-bench concurrency is per repository
+
+Found by running the step `docs/evals.md` recommends — "run five before you run fifty" —
+rather than by reading it.
+
+Fixed
+- `evals/swebench.predict` took a flat semaphore, so `--limit 5 --concurrency 2` **failed
+  four of its five instances in SETUP**:
+
+      RuntimeError: another run holds https://github.com/astropy/astropy@main
+
+  The orchestrator locks per `repo_url@base_branch` and is right to — two runs sharing one
+  bare clone and one worktree would interleave their commits. But **SWE-bench Lite is grouped
+  by repository**: measured, the first ten instances are six astropy and four django. So a
+  flat ceiling turns concurrency from an optimisation into a row of lock errors.
+
+  That matters for the number this harness exists to produce. An empty `model_patch` is a
+  legitimate prediction meaning "not solved", so those lock failures are **indistinguishable
+  in the results file from a model that could not do the task** — a `--limit 50` run with
+  concurrency would have reported a score that was mostly contention.
+
+  Now one lock per repository under the global ceiling: different repositories overlap, the
+  same repository serialises. Serialising everything would have been the other wrong answer —
+  fifty instances at the wall clock of one is upwards of a day.
+- `docs/evals.md` told you to run `uv run python -m evals.swebench`. `datasets` is not in
+  `pyproject.toml` on purpose, and `uv run` syncs to the lock file before running — which
+  removes the package the line above just installed, and then reports it missing. The
+  documented two-line sequence could not work. Now `.venv/bin/python`, which does not sync,
+  with the reason beside it.
+
+Notes
+- **Killing the harness does not cancel its runs.** `SIGKILL` to the client leaves every run
+  it started going in the worker, still holding its repository lock — so the next attempt
+  fails in SETUP for a reason that looks like the bug above but is not. One orphan from the
+  first attempt was still in `code` phase hours later. The runs are driven through the API by
+  design, so this is correct behaviour and worth knowing rather than changing: cancel the runs
+  (`autoswe cancel <id>`) before restarting a batch.
+- Three mutations caught, including both counterweights: dropping the per-repository lock
+  (the original bug), collapsing it to one lock for the whole batch (serial, the other wrong
+  answer), and dropping the global ceiling (unbounded containers).
+
 ## Unreleased — every security claim, mutation-tested; two were hopes
 
 `docs/security.md` opens by saying **"a guarantee with no test beside it is a hope"** and

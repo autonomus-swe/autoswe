@@ -177,10 +177,25 @@ have one, and say which model judged beside the scores.
 
 ```bash
 uv pip install datasets swebench          # deliberately not dependencies of this project
-uv run python -m evals.swebench --limit 5            # no fork needed; see below
+.venv/bin/python -m evals.swebench --limit 5         # no fork needed; see below
 python -m swebench.harness.run_evaluation \
     --predictions_path evals/results/predictions.jsonl --run_id <id>
 ```
+
+**`.venv/bin/python`, not `uv run`.** `datasets` is not in `pyproject.toml` on purpose, and
+`uv run` syncs the environment to the lock file before it runs anything — which removes the
+package you just installed, and reports it as absent on the next invocation. The venv
+interpreter does not sync. Measured here, after the documented two-line sequence failed with
+its own "SWE-bench needs the `datasets` package" message.
+
+**`--concurrency` is per repository, and the default of 1 is the safe one.** SWE-bench Lite
+is grouped by repository — the first ten instances are six astropy and four django — and the
+orchestrator locks per `repo_url@base_branch`, so two instances from one repository cannot
+run at once. `predict` now takes a lock per repository under the global ceiling, so different
+repositories overlap and the same repository serialises. Before that, `--limit 5
+--concurrency 2` failed four of its five instances in SETUP with *"another run holds
+…/astropy@main"* — and an empty `model_patch` is a legitimate "not solved", so those lock
+errors were indistinguishable in the results file from a model that could not do the task.
 
 This **produces patches and does not score them**. Every instance needs a specific Python
 version and pinned dependencies, and the official harness has an environment image per
